@@ -35,25 +35,17 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "Releasing $version as v$version"
 
-  macos:
-    name: macOS ${{ matrix.arch }}
+  macos-aarch64:
+    name: macOS Apple Silicon (arm64)
     needs: version
     runs-on: macos-14
-    strategy:
-      matrix:
-        include:
-          - arch: aarch64
-            target: aarch64-apple-darwin
-          - arch: x86_64
-            target: x86_64-apple-darwin
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -61,20 +53,56 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: macos-aarch64
 
       - name: Build macOS Binary
-        run: cargo build --release --target ${{ matrix.target }} -p router-switch
+        run: cargo build --release --target aarch64-apple-darwin -p router-switch
 
       - name: Bundle macOS App & DMG
         run: |
           chmod +x scripts/bundle-dmg.sh
-          ./scripts/bundle-dmg.sh ${{ matrix.target }} ${{ needs.version.outputs.version }}
+          ./scripts/bundle-dmg.sh aarch64-apple-darwin ${{ needs.version.outputs.version }}
 
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}
+          name: macos-aarch64
+          path: |
+            dist/*.dmg
+            dist/*.zip
+
+  macos-x86_64:
+    name: macOS Intel (x86_64)
+    needs: version
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-x86_64
+
+      - name: Build macOS Binary
+        run: cargo build --release --target x86_64-apple-darwin -p router-switch
+
+      - name: Bundle macOS App & DMG
+        run: |
+          chmod +x scripts/bundle-dmg.sh
+          ./scripts/bundle-dmg.sh x86_64-apple-darwin ${{ needs.version.outputs.version }}
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
           path: |
             dist/*.dmg
             dist/*.zip
@@ -132,7 +160,7 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [version, macos, windows]
+    needs: [version, macos-aarch64, macos-x86_64, windows]
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:

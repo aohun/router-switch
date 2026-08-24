@@ -2,7 +2,7 @@ use gpui::{hsla, px, rgb, rgba, App, Div, FontWeight, Hsla, IntoElement, ParentE
 use gpui_component::theme::{Theme, ThemeMode};
 use store::ThemePreference;
 
-/// Fixed status colors (matching Motrix status pills).
+/// Fixed status colors for status pills.
 #[allow(dead_code)]
 pub struct StatusColors;
 
@@ -60,7 +60,7 @@ fn ha(hex: u32, alpha: f32) -> Hsla {
     c
 }
 
-/// Override gpui-component's default theme with Motrix's palette.
+/// Override gpui-component's default theme with custom palette.
 pub fn apply_palette(cx: &mut App) {
     let dark = Theme::global(cx).is_dark();
     let theme = Theme::global_mut(cx);
@@ -156,7 +156,7 @@ pub fn inset_bg(dark: bool) -> Hsla {
     }
 }
 
-/// Motrix tile container style.
+/// Router Switch tile container style.
 pub fn tile(cx: &App) -> Div {
     let dark = Theme::global(cx).is_dark();
     gpui::div()
@@ -176,7 +176,7 @@ pub fn tile(cx: &App) -> Div {
         .overflow_hidden()
 }
 
-/// Motrix tile uppercase label.
+/// Router Switch tile uppercase label.
 pub fn tile_label(text: impl Into<gpui::SharedString>, cx: &App) -> impl IntoElement {
     let muted = Theme::global(cx).muted_foreground;
     let s = text.into();
