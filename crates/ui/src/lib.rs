@@ -2,6 +2,9 @@ mod app_view;
 pub mod assets;
 mod theme;
 
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::OnceLock;
+
 use gpui::{
     px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBackgroundAppearance,
     WindowBounds, WindowKind, WindowOptions,
@@ -13,35 +16,68 @@ use crate::assets::AppAssets;
 
 rust_i18n::i18n!("locales", fallback = "zh-CN");
 
+static DEEPLINK_CHANNEL: OnceLock<(Sender<String>, std::sync::Mutex<Receiver<String>>)> =
+    OnceLock::new();
+
+pub fn get_deeplink_channel() -> &'static (Sender<String>, std::sync::Mutex<Receiver<String>>) {
+    DEEPLINK_CHANNEL.get_or_init(|| {
+        let (tx, rx) = channel();
+        (tx, std::sync::Mutex::new(rx))
+    })
+}
+
+pub fn send_deeplink(url: String) {
+    let (tx, _) = get_deeplink_channel();
+    let _ = tx.send(url);
+}
+
 pub fn run() {
-    Application::new()
-        .with_assets(AppAssets)
-        .run(|cx: &mut App| {
-            gpui_component::init(cx);
-            theme::apply_palette(cx);
-            cx.activate(true);
+    let (tx, _) = get_deeplink_channel();
+    let tx_clone = tx.clone();
 
-            let window_size = size(px(1213.), px(816.));
-            let bounds = Bounds::centered(None, window_size, cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Router Switch".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(gpui::point(px(16.), px(16.))),
-                }),
-                window_background: WindowBackgroundAppearance::Blurred,
-                window_min_size: Some(size(px(880.), px(600.))),
-                kind: WindowKind::Normal,
-                ..Default::default()
-            };
+    // Catch CLI argument deep links on launch
+    for arg in std::env::args().skip(1) {
+        if arg.starts_with("router-switch://")
+            || arg.starts_with("ccswitch://")
+            || arg.starts_with("routerswitch://")
+        {
+            let _ = tx.send(arg);
+        }
+    }
 
-            cx.open_window(options, |window, cx| {
-                let app = cx.new(|cx| RouterApp::new(window, cx));
-                cx.new(|cx| Root::new(app, window, cx))
-            })
-            .expect("failed to open window");
-        });
+    let app = Application::new().with_assets(AppAssets);
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            let _ = tx_clone.send(url);
+        }
+    });
+
+    app.run(|cx: &mut App| {
+        gpui_component::init(cx);
+        theme::apply_palette(cx);
+        cx.activate(true);
+
+        let window_size = size(px(1213.), px(816.));
+        let bounds = Bounds::centered(None, window_size, cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Router Switch".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(gpui::point(px(16.), px(16.))),
+            }),
+            window_background: WindowBackgroundAppearance::Blurred,
+            window_min_size: Some(size(px(880.), px(600.))),
+            kind: WindowKind::Normal,
+            ..Default::default()
+        };
+
+        cx.open_window(options, |window, cx| {
+            let app = cx.new(|cx| RouterApp::new(window, cx));
+            cx.new(|cx| Root::new(app, window, cx))
+        })
+        .expect("failed to open window");
+    });
 }
 
 #[cfg(test)]

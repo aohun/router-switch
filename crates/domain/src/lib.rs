@@ -5,6 +5,7 @@ mod app_kind;
 mod claude;
 mod clipboard;
 mod codex;
+mod deeplink;
 mod env_checker;
 mod error;
 mod grok;
@@ -14,6 +15,7 @@ mod provider;
 
 pub use app_kind::AppKind;
 pub use clipboard::{parse_clipboard_provider_info, ClipboardProviderInfo};
+pub use deeplink::{parse_deeplink_url, DeepLinkImportRequest};
 pub use env_checker::{
     build_tool_search_paths, compare_semver, extract_version, fetch_remote_latest_version,
     infer_install_source, inspect_all_tools, inspect_tool_environment, is_version_outdated,

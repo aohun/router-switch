@@ -1,4 +1,8 @@
 /target
+/dist
+*.dmg
+*.exe
+*.zip
 **/*.rs.bk
 .DS_Store
 *.swp

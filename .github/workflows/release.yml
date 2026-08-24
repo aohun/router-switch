@@ -4,18 +4,45 @@ on:
   push:
     tags:
       - "v*"
+      - "*.*.*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version from Cargo.toml
+        id: resolve
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::No version found in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version as v$version"
+
   macos:
+    name: macOS ${{ matrix.arch }}
+    needs: version
     runs-on: macos-14
     strategy:
       matrix:
         include:
-          - arch: arm64
+          - arch: aarch64
             target: aarch64-apple-darwin
           - arch: x86_64
             target: x86_64-apple-darwin
@@ -28,6 +55,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -36,29 +66,33 @@ jobs:
       - name: Build macOS Binary
         run: cargo build --release --target ${{ matrix.target }} -p router-switch
 
-      - name: Package macOS Artifact
+      - name: Bundle macOS App & DMG
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/router-switch dist/
-          cd dist
-          zip -r ../router-switch-macOS-${{ matrix.arch }}.zip router-switch
-          cd ..
+          chmod +x scripts/bundle-dmg.sh
+          ./scripts/bundle-dmg.sh ${{ matrix.target }} ${{ needs.version.outputs.version }}
 
-      - name: Upload Artifact
+      - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: router-switch-macOS-${{ matrix.arch }}.zip
+          path: |
+            dist/*.dmg
+            dist/*.zip
 
   windows:
+    name: Windows x86_64
+    needs: version
     runs-on: windows-latest
-    continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -68,20 +102,34 @@ jobs:
       - name: Build Windows Binary
         run: cargo build --release -p router-switch
 
-      - name: Package Windows Artifact
+      - name: Package Windows Artifacts (Setup.exe & Zip)
         shell: pwsh
         run: |
-          Compress-Archive -Path target/release/router-switch.exe -DestinationPath router-switch-windows-x86_64.zip
+          $version = "${{ needs.version.outputs.version }}"
+          mkdir -p dist
+          
+          # 1. Package Portable Zip
+          Compress-Archive -Path target/release/router-switch.exe -DestinationPath "dist/Router-Switch-$version-x86_64-pc-windows-msvc.zip"
 
-      - name: Upload Artifact
+          # 2. Build Inno Setup Installer
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "ISCC.exe"
+          }
+          & $iscc "/DAppVersion=$version" "/DArch=x86_64" "/DStageDir=target/release" "/DOutputDir=dist" "resources/windows/router-switch.iss"
+
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x86_64
-          path: router-switch-windows-x86_64.zip
+          path: |
+            dist/*.exe
+            dist/*.zip
 
   release:
-    needs: [macos, windows]
-    if: always() && startsWith(github.ref, 'refs/tags/v') && needs.macos.result == 'success'
+    name: Publish Release
+    needs: [version, macos, windows]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,5 +143,10 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Router Switch ${{ needs.version.outputs.tag }}
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
+            artifacts/*.zip
           generate_release_notes: true

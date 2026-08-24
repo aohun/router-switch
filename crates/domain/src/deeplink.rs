@@ -1,0 +1,490 @@
+use std::collections::HashMap;
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+use base64::Engine;
+use url::Url;
+
+use crate::{
+    AppKind, ClaudeForm, ClaudeKind, CodexForm, CodexKind, DomainError, GrokForm,
+    GrokKind, OpenCodeForm, OpenCodeKind, PiForm, PiKind, ProviderForm,
+    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_GROK_MODEL,
+    DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_NPM, DEFAULT_PI_API_TYPE, DEFAULT_PI_MODEL,
+};
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeepLinkImportRequest {
+    pub version: String,
+    pub resource: String,
+    pub app: Option<String>,
+    pub name: Option<String>,
+    pub enabled: Option<bool>,
+    pub homepage: Option<String>,
+    pub endpoint: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub notes: Option<String>,
+    pub config: Option<String>,
+    pub config_format: Option<String>,
+    pub haiku_model: Option<String>,
+    pub sonnet_model: Option<String>,
+    pub opus_model: Option<String>,
+    pub npm: Option<String>,
+    pub api_type: Option<String>,
+}
+
+pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, DomainError> {
+    let trimmed = url_str.trim();
+    let parsed_url = Url::parse(trimmed)
+        .map_err(|e| DomainError::Validation(format!("无效的深链接 URL: {e}")))?;
+
+    let scheme = parsed_url.scheme().to_ascii_lowercase();
+    if scheme != "router-switch" && scheme != "ccswitch" && scheme != "routerswitch" {
+        return Err(DomainError::Validation(format!(
+            "不支持的深链接协议 scheme: '{scheme}', 仅支持 router-switch:// 或 ccswitch://"
+        )));
+    }
+
+    let host = parsed_url.host_str().unwrap_or("v1");
+    let path = parsed_url.path().trim_start_matches('/');
+
+    let pairs: HashMap<String, String> = parsed_url.query_pairs().into_owned().collect();
+
+    let mut resource = pairs
+        .get("resource")
+        .cloned()
+        .unwrap_or_else(|| {
+            if path == "provider" || host == "provider" {
+                "provider".to_string()
+            } else {
+                "provider".to_string()
+            }
+        })
+        .to_ascii_lowercase();
+
+    if resource.is_empty() {
+        resource = "provider".to_string();
+    }
+
+    if resource != "provider" {
+        return Err(DomainError::Validation(format!(
+            "当前仅支持 provider 资源类型导入, 收到: '{resource}'"
+        )));
+    }
+
+    let app = pairs
+        .get("app")
+        .or_else(|| pairs.get("targetApp"))
+        .cloned();
+
+    let name = pairs
+        .get("name")
+        .or_else(|| pairs.get("providerName"))
+        .cloned();
+
+    let endpoint = pairs
+        .get("endpoint")
+        .or_else(|| pairs.get("baseUrl"))
+        .or_else(|| pairs.get("base_url"))
+        .or_else(|| pairs.get("url"))
+        .cloned();
+
+    let api_key = pairs
+        .get("apiKey")
+        .or_else(|| pairs.get("api_key"))
+        .or_else(|| pairs.get("key"))
+        .or_else(|| pairs.get("token"))
+        .cloned();
+
+    let homepage = pairs
+        .get("homepage")
+        .or_else(|| pairs.get("website"))
+        .or_else(|| pairs.get("websiteUrl"))
+        .or_else(|| pairs.get("website_url"))
+        .cloned();
+
+    let model = pairs
+        .get("model")
+        .or_else(|| pairs.get("defaultModel"))
+        .cloned();
+
+    let notes = pairs.get("notes").cloned();
+    let config = pairs.get("config").cloned();
+    let config_format = pairs
+        .get("configFormat")
+        .or_else(|| pairs.get("config_format"))
+        .cloned();
+
+    let enabled = pairs
+        .get("enabled")
+        .and_then(|v| match v.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        });
+
+    let haiku_model = pairs
+        .get("haikuModel")
+        .or_else(|| pairs.get("haiku_model"))
+        .cloned();
+    let sonnet_model = pairs
+        .get("sonnetModel")
+        .or_else(|| pairs.get("sonnet_model"))
+        .cloned();
+    let opus_model = pairs
+        .get("opusModel")
+        .or_else(|| pairs.get("opus_model"))
+        .cloned();
+
+    let npm = pairs.get("npm").cloned();
+    let api_type = pairs
+        .get("apiType")
+        .or_else(|| pairs.get("api_type"))
+        .cloned();
+
+    Ok(DeepLinkImportRequest {
+        version: host.to_string(),
+        resource,
+        app,
+        name,
+        enabled,
+        homepage,
+        endpoint,
+        api_key,
+        model,
+        notes,
+        config,
+        config_format,
+        haiku_model,
+        sonnet_model,
+        opus_model,
+        npm,
+        api_type,
+    })
+}
+
+fn decode_base64(raw: &str) -> Option<String> {
+    let cleaned = raw.trim();
+    if let Ok(bytes) = STANDARD.decode(cleaned) {
+        if let Ok(s) = String::from_utf8(bytes) {
+            return Some(s);
+        }
+    }
+    if let Ok(bytes) = STANDARD_NO_PAD.decode(cleaned) {
+        if let Ok(s) = String::from_utf8(bytes) {
+            return Some(s);
+        }
+    }
+    if let Ok(bytes) = URL_SAFE.decode(cleaned) {
+        if let Ok(s) = String::from_utf8(bytes) {
+            return Some(s);
+        }
+    }
+    if let Ok(bytes) = URL_SAFE_NO_PAD.decode(cleaned) {
+        if let Ok(s) = String::from_utf8(bytes) {
+            return Some(s);
+        }
+    }
+    None
+}
+
+impl DeepLinkImportRequest {
+    pub fn resolve_app_kind(&self) -> Result<AppKind, DomainError> {
+        let app_str = self
+            .app
+            .as_deref()
+            .unwrap_or("claude")
+            .trim()
+            .to_ascii_lowercase();
+
+        match app_str.as_str() {
+            "claude" | "claudecode" | "claude_code" | "anthropic" => Ok(AppKind::Claude),
+            "codex" | "openai" | "chatgpt" => Ok(AppKind::Codex),
+            "grok" | "grokbuild" | "grok_build" | "xai" => Ok(AppKind::Grok),
+            "opencode" | "open_code" => Ok(AppKind::OpenCode),
+            "pi" | "pi_switch" => Ok(AppKind::Pi),
+            other => Err(DomainError::Validation(format!(
+                "不支持的应用类型: '{other}', 可用应用: claude, codex, grok, opencode, pi"
+            ))),
+        }
+    }
+
+    pub fn to_provider_form(&self) -> Result<(AppKind, ProviderForm, bool), DomainError> {
+        let app_kind = self.resolve_app_kind()?;
+        let is_enabled = self.enabled.unwrap_or(false);
+
+        // 1. Extract values from config (Base64 JSON or TOML) if provided
+        let mut cfg_api_key: Option<String> = None;
+        let mut cfg_base_url: Option<String> = None;
+        let mut cfg_model: Option<String> = None;
+        let mut cfg_haiku: Option<String> = None;
+        let mut cfg_sonnet: Option<String> = None;
+        let mut cfg_opus: Option<String> = None;
+
+        if let Some(config_b64) = &self.config {
+            if let Some(decoded) = decode_base64(config_b64) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decoded) {
+                    // Extract Claude env
+                    let env_obj = json
+                        .get("env")
+                        .and_then(|v| v.as_object())
+                        .or_else(|| json.as_object());
+
+                    if let Some(env) = env_obj {
+                        if let Some(k) = env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()) {
+                            cfg_api_key = Some(k.to_string());
+                        } else if let Some(k) = env.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
+                            cfg_api_key = Some(k.to_string());
+                        } else if let Some(k) = env.get("GEMINI_API_KEY").and_then(|v| v.as_str()) {
+                            cfg_api_key = Some(k.to_string());
+                        } else if let Some(k) = env.get("apiKey").and_then(|v| v.as_str()) {
+                            cfg_api_key = Some(k.to_string());
+                        }
+
+                        if let Some(u) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
+                            cfg_base_url = Some(u.to_string());
+                        } else if let Some(u) = env.get("OPENAI_BASE_URL").and_then(|v| v.as_str()) {
+                            cfg_base_url = Some(u.to_string());
+                        } else if let Some(u) = env.get("GEMINI_BASE_URL").and_then(|v| v.as_str()) {
+                            cfg_base_url = Some(u.to_string());
+                        } else if let Some(u) = env.get("baseUrl").or_else(|| env.get("baseURL")).and_then(|v| v.as_str()) {
+                            cfg_base_url = Some(u.to_string());
+                        }
+
+                        if let Some(m) = env.get("ANTHROPIC_MODEL").and_then(|v| v.as_str()) {
+                            cfg_model = Some(m.to_string());
+                        } else if let Some(m) = env.get("OPENAI_MODEL").and_then(|v| v.as_str()) {
+                            cfg_model = Some(m.to_string());
+                        } else if let Some(m) = env.get("GEMINI_MODEL").and_then(|v| v.as_str()) {
+                            cfg_model = Some(m.to_string());
+                        } else if let Some(m) = env.get("model").and_then(|v| v.as_str()) {
+                            cfg_model = Some(m.to_string());
+                        }
+
+                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").and_then(|v| v.as_str()) {
+                            cfg_haiku = Some(m.to_string());
+                        }
+                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").and_then(|v| v.as_str()) {
+                            cfg_sonnet = Some(m.to_string());
+                        }
+                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()) {
+                            cfg_opus = Some(m.to_string());
+                        }
+                    }
+
+                    // Extract Codex auth / config
+                    if let Some(auth) = json.get("auth").and_then(|v| v.as_object()) {
+                        if let Some(k) = auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()) {
+                            cfg_api_key = Some(k.to_string());
+                        }
+                    }
+                    if let Some(cfg_toml) = json.get("config").and_then(|v| v.as_str()) {
+                        if let Ok(parsed_toml) = toml::from_str::<toml::Value>(cfg_toml) {
+                            if let Some(u) = parsed_toml
+                                .get("model_providers")
+                                .and_then(|v| v.get("openai").or_else(|| v.get("custom")))
+                                .and_then(|v| v.get("base_url"))
+                                .and_then(|v| v.as_str())
+                            {
+                                cfg_base_url = Some(u.to_string());
+                            }
+                            if let Some(m) = parsed_toml.get("general").or_else(|| Some(&parsed_toml)).and_then(|v| v.get("model")).and_then(|v| v.as_str()) {
+                                cfg_model = Some(m.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. URL parameters override config values (Precedence rule)
+        let primary_endpoint = self
+            .endpoint
+            .as_deref()
+            .and_then(|ep| ep.split(',').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or(cfg_base_url)
+            .unwrap_or_default();
+
+        let api_key = self
+            .api_key
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or(cfg_api_key)
+            .unwrap_or_default();
+
+        let model = self
+            .model
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or(cfg_model);
+
+        let name = self
+            .name
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("{} 导入配置", app_kind.display_name()));
+
+        let website_url = self
+            .homepage
+            .clone()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                if !primary_endpoint.is_empty() {
+                    Url::parse(&primary_endpoint).ok().map(|u| {
+                        format!(
+                            "{}://{}",
+                            u.scheme(),
+                            u.host_str().unwrap_or("api.anthropic.com")
+                        )
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        let form = match app_kind {
+            AppKind::Claude => {
+                let sonnet = self
+                    .sonnet_model
+                    .clone()
+                    .or(cfg_sonnet)
+                    .or(self.opus_model.clone())
+                    .or(cfg_opus)
+                    .or(self.haiku_model.clone())
+                    .or(cfg_haiku)
+                    .or(model.clone())
+                    .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_string());
+
+                ProviderForm::Claude(ClaudeForm {
+                    name,
+                    website_url,
+                    kind: ClaudeKind::ThirdParty,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: sonnet,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::Codex => {
+                let m = model.unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
+                ProviderForm::Codex(CodexForm {
+                    name,
+                    website_url,
+                    kind: CodexKind::ResponsesThirdParty,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::Grok => {
+                let m = model.unwrap_or_else(|| DEFAULT_GROK_MODEL.to_string());
+                ProviderForm::Grok(GrokForm {
+                    name,
+                    website_url,
+                    kind: GrokKind::ThirdParty,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::OpenCode => {
+                let m = model.unwrap_or_else(|| DEFAULT_OPENCODE_MODEL.to_string());
+                let npm = self.npm.clone().unwrap_or_else(|| DEFAULT_OPENCODE_NPM.to_string());
+                ProviderForm::OpenCode(OpenCodeForm {
+                    name,
+                    website_url,
+                    kind: OpenCodeKind::ThirdParty,
+                    npm,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::Pi => {
+                let m = model.unwrap_or_else(|| DEFAULT_PI_MODEL.to_string());
+                let api_type = self.api_type.clone().unwrap_or_else(|| DEFAULT_PI_API_TYPE.to_string());
+                ProviderForm::Pi(PiForm {
+                    name,
+                    website_url,
+                    kind: PiKind::ThirdParty,
+                    api_type,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    model_mappings: Vec::new(),
+                })
+            }
+        };
+
+        Ok((app_kind, form, is_enabled))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_router_switch_claude_url() {
+        let url = "router-switch://v1/import?resource=provider&app=claude&name=Claude%20Proxy&endpoint=https%3A%2F%2Fapi.anthropic.com%2Fv1&apiKey=sk-ant-test-123&model=claude-3-7-sonnet&enabled=true";
+        let req = parse_deeplink_url(url).unwrap();
+        assert_eq!(req.resource, "provider");
+        assert_eq!(req.app.as_deref(), Some("claude"));
+        assert_eq!(req.name.as_deref(), Some("Claude Proxy"));
+        assert_eq!(req.endpoint.as_deref(), Some("https://api.anthropic.com/v1"));
+        assert_eq!(req.api_key.as_deref(), Some("sk-ant-test-123"));
+        assert_eq!(req.model.as_deref(), Some("claude-3-7-sonnet"));
+        assert_eq!(req.enabled, Some(true));
+
+        let (app, form, enabled) = req.to_provider_form().unwrap();
+        assert_eq!(app, AppKind::Claude);
+        assert!(enabled);
+        if let ProviderForm::Claude(f) = form {
+            assert_eq!(f.name, "Claude Proxy");
+            assert_eq!(f.base_url, "https://api.anthropic.com/v1");
+            assert_eq!(f.api_key, "sk-ant-test-123");
+            assert_eq!(f.model, "claude-3-7-sonnet");
+        } else {
+            panic!("Expected Claude form");
+        }
+    }
+
+    #[test]
+    fn test_parse_ccswitch_compatibility() {
+        let url = "ccswitch://v1/import?resource=provider&app=codex&name=OpenAI%20Relay&endpoint=https%3A%2F%2Fapi.openai.com%2Fv1&apiKey=sk-proj-test&model=gpt-5.1";
+        let req = parse_deeplink_url(url).unwrap();
+        assert_eq!(req.app.as_deref(), Some("codex"));
+        let (app, form, enabled) = req.to_provider_form().unwrap();
+        assert_eq!(app, AppKind::Codex);
+        assert!(!enabled);
+        if let ProviderForm::Codex(f) = form {
+            assert_eq!(f.name, "OpenAI Relay");
+            assert_eq!(f.base_url, "https://api.openai.com/v1");
+            assert_eq!(f.api_key, "sk-proj-test");
+            assert_eq!(f.model, "gpt-5.1");
+        } else {
+            panic!("Expected Codex form");
+        }
+    }
+
+    #[test]
+    fn test_parse_base64_config_with_url_override() {
+        let config_json = r#"{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-from-config","ANTHROPIC_BASE_URL":"https://config.example.com","ANTHROPIC_MODEL":"claude-haiku"}}"#;
+        let b64 = STANDARD.encode(config_json);
+        let url = format!("router-switch://v1/import?resource=provider&app=claude&name=Config%20Import&apiKey=sk-override-key&config={}", b64);
+        let req = parse_deeplink_url(&url).unwrap();
+        let (app, form, _) = req.to_provider_form().unwrap();
+        assert_eq!(app, AppKind::Claude);
+        if let ProviderForm::Claude(f) = form {
+            assert_eq!(f.api_key, "sk-override-key"); // URL parameter overrides config
+            assert_eq!(f.base_url, "https://config.example.com"); // extracted from config
+            assert_eq!(f.model, "claude-haiku"); // extracted from config
+        } else {
+            panic!("Expected Claude form");
+        }
+    }
+}

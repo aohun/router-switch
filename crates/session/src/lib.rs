@@ -432,6 +432,16 @@ impl Workspace {
         Ok(provider)
     }
 
+    pub fn import_from_deeplink(&self, url: &str) -> Result<(Provider, bool), SessionError> {
+        let request = domain::parse_deeplink_url(url)?;
+        let (app, form, is_enabled) = request.to_provider_form()?;
+        let provider = self.save_form(app, None, form)?;
+        if is_enabled {
+            self.enable(&provider.id)?;
+        }
+        Ok((provider, is_enabled))
+    }
+
     pub fn enable(&self, id: &str) -> Result<(), SessionError> {
         let provider = self.require(id)?;
         self.write_live(&provider)?;
@@ -546,7 +556,8 @@ mod tests {
     fn claude_provider_flow() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
-        let ws = Workspace::open(&db_path, None).unwrap();
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude"))).unwrap();
 
         let form = ClaudeForm {
             name: "OpenRouter".into(),
@@ -568,7 +579,8 @@ mod tests {
     fn grok_provider_flow() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
-        let ws = Workspace::open(&db_path, None).unwrap();
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_grok_home(Some(temp.path().join("grok"))).unwrap();
 
         let form = GrokForm {
             name: "Packy Grok".into(),
@@ -590,7 +602,8 @@ mod tests {
     fn opencode_provider_flow() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
-        let ws = Workspace::open(&db_path, None).unwrap();
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_opencode_home(Some(temp.path().join("opencode"))).unwrap();
 
         let form = OpenCodeForm {
             name: "DeepSeek OpenCode".into(),
@@ -613,7 +626,8 @@ mod tests {
     fn pi_provider_flow() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
-        let ws = Workspace::open(&db_path, None).unwrap();
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_pi_home(Some(temp.path().join("pi"))).unwrap();
 
         let form = PiForm {
             name: "S2A Pi".into(),
@@ -649,5 +663,23 @@ mod tests {
 
         let loaded = ws.settings().unwrap();
         assert_eq!(loaded.main_apps, new_order);
+    }
+
+    #[test]
+    fn deeplink_import_flow() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude"))).unwrap();
+
+        let url = "router-switch://v1/import?resource=provider&app=claude&name=DeepLink%20Claude&endpoint=https%3A%2F%2Fapi.anthropic.com%2Fv1&apiKey=sk-ant-test-key&model=claude-3-7-sonnet&enabled=true";
+        let (provider, is_enabled) = ws.import_from_deeplink(url).unwrap();
+        assert_eq!(provider.name, "DeepLink Claude");
+        assert_eq!(provider.app, AppKind::Claude);
+        assert!(is_enabled);
+
+        let snapshot = ws.snapshot_for(AppKind::Claude).unwrap();
+        assert_eq!(snapshot.current_id.as_deref(), Some(provider.id.as_str()));
+        assert!(snapshot.providers.iter().any(|p| p.id == provider.id));
     }
 }

@@ -69,6 +69,23 @@ const MONITOR_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
   <line x1="12" x2="12" y1="17" y2="21"/>
 </svg>"#;
 
+const CHART_CURVE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 200" preserveAspectRatio="none">
+  <defs>
+    <linearGradient id="claudeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D97757" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#D97757" stop-opacity="0.02" />
+    </linearGradient>
+  </defs>
+  <!-- Area fill -->
+  <path d="M 0 5 C 10 5, 20 180, 36 194 C 52 198, 120 198, 1000 198 L 1000 200 L 0 200 Z" fill="url(#claudeGrad)" />
+  <!-- Claude Curve Line -->
+  <path d="M 0 5 C 10 5, 20 180, 36 194 C 52 198, 120 198, 1000 198" fill="none" stroke="#D97757" stroke-width="2.5" stroke-linecap="round" />
+  <!-- Codex Line -->
+  <path d="M 0 195 C 15 195, 30 198, 60 198 L 1000 198" fill="none" stroke="#374151" stroke-width="2" stroke-linecap="round" />
+  <!-- Baseline -->
+  <line x1="0" y1="200" x2="1000" y2="200" stroke="#374151" stroke-width="2" />
+</svg>"##;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CustomIcon {
     OpenAI,
@@ -85,6 +102,7 @@ pub enum CustomIcon {
     RotateCw,
     ArrowLeft,
     Monitor,
+    ChartCurve,
 }
 
 impl IconNamed for CustomIcon {
@@ -104,6 +122,7 @@ impl IconNamed for CustomIcon {
             Self::RotateCw => "icons/custom/rotate-cw.svg",
             Self::ArrowLeft => "icons/custom/arrow-left.svg",
             Self::Monitor => "icons/custom/monitor.svg",
+            Self::ChartCurve => "icons/custom/chart-curve.svg",
         }
         .into()
     }
@@ -126,6 +145,7 @@ impl AssetSource for AppAssets {
             "icons/custom/rotate-cw.svg" => Ok(Some(Cow::Borrowed(ROTATE_CW_SVG.as_bytes()))),
             "icons/custom/arrow-left.svg" => Ok(Some(Cow::Borrowed(ARROW_LEFT_SVG.as_bytes()))),
             "icons/custom/monitor.svg" => Ok(Some(Cow::Borrowed(MONITOR_SVG.as_bytes()))),
+            "icons/custom/chart-curve.svg" => Ok(Some(Cow::Borrowed(CHART_CURVE_SVG.as_bytes()))),
             _ => gpui_component_assets::Assets.load(path),
         }
     }
@@ -147,6 +167,7 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/rotate-cw.svg".into());
             list.push("icons/custom/arrow-left.svg".into());
             list.push("icons/custom/monitor.svg".into());
+            list.push("icons/custom/chart-curve.svg".into());
         }
         Ok(list)
     }

@@ -15,7 +15,7 @@ use domain::{
     GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
+    div, prelude::FluentBuilder, px, rgb, rgba, svg, App, AppContext, Context, Entity, FontWeight, Hsla,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
 };
@@ -27,14 +27,14 @@ use gpui_component::{
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex, ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt,
+    v_flex, ActiveTheme, Disableable as _, Icon, IconName, IconNamed, Selectable as _, Sizable as _, WindowExt,
 };
 use session::Workspace;
 use rust_i18n::t;
 use store::{AppLanguage, ThemePreference};
 
 use crate::assets::CustomIcon;
-use crate::theme::{self, StatusColors};
+use crate::theme;
 
 pub const CHROME_HEIGHT: f32 = 46.;
 
@@ -531,25 +531,26 @@ pub enum Route {
 pub enum SettingsTab {
     #[default]
     General,
-    Usage,
     About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageViewMode {
+pub enum UsageWindowChoice {
     #[default]
-    Daily,
-    Monthly,
-    Projects,
+    Today,
+    Yesterday,
+    Days7,
+    Days30,
+    Month,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageWindowChoice {
-    Days7,
+pub enum UsageRefreshInterval {
+    Off,
+    Sec10,
     #[default]
-    Days30,
-    Days90,
-    Year1,
+    Sec30,
+    Sec60,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -557,6 +558,13 @@ pub enum UsageMetric {
     #[default]
     Cost,
     Tokens,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UsageBreakdownTab {
+    #[default]
+    Model,
+    Day,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,6 +583,22 @@ impl SelectItem for UsageWindowSelectItem {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageRefreshSelectItem {
+    pub interval: UsageRefreshInterval,
+    pub label: String,
+}
+
+impl SelectItem for UsageRefreshSelectItem {
+    type Value = UsageRefreshInterval;
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.interval
+    }
+}
+
 pub struct RouterApp {
     workspace: Workspace,
     providers: Vec<Provider>,
@@ -587,11 +611,15 @@ pub struct RouterApp {
     launch_on_startup: bool,
     minimize_to_tray: bool,
     settings_tab: SettingsTab,
-    usage_view_mode: UsageViewMode,
+    dashboard_app_filter: Option<AppKind>,
+    usage_breakdown_tab: UsageBreakdownTab,
     usage_window: UsageWindowChoice,
     usage_metric: UsageMetric,
+    usage_refresh_interval: UsageRefreshInterval,
     usage_window_select: Entity<SelectState<Vec<UsageWindowSelectItem>>>,
+    usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_window_sub: Option<Subscription>,
+    _usage_refresh_sub: Option<Subscription>,
     search_input: Entity<InputState>,
     settings_search_input: Entity<InputState>,
     last_error: Option<SharedString>,
@@ -636,6 +664,14 @@ impl RouterApp {
 
         let window_items = vec![
             UsageWindowSelectItem {
+                choice: UsageWindowChoice::Today,
+                label: t!("usage.today").to_string(),
+            },
+            UsageWindowSelectItem {
+                choice: UsageWindowChoice::Yesterday,
+                label: t!("usage.yesterday").to_string(),
+            },
+            UsageWindowSelectItem {
                 choice: UsageWindowChoice::Days7,
                 label: t!("usage.days_7").to_string(),
             },
@@ -644,18 +680,14 @@ impl RouterApp {
                 label: t!("usage.days_30").to_string(),
             },
             UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days90,
-                label: t!("usage.days_90").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Year1,
-                label: t!("usage.year_1").to_string(),
+                choice: UsageWindowChoice::Month,
+                label: t!("usage.this_month").to_string(),
             },
         ];
         let usage_window_select = cx.new(|cx| {
             SelectState::new(
                 window_items,
-                Some(gpui_component::IndexPath::default().row(1)),
+                Some(gpui_component::IndexPath::default().row(0)),
                 window,
                 cx,
             )
@@ -669,6 +701,46 @@ impl RouterApp {
              cx: &mut Context<Self>| {
                 if let SelectEvent::Confirm(Some(choice)) = event {
                     this.usage_window = *choice;
+                    cx.notify();
+                }
+            },
+        );
+
+        let refresh_items = vec![
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Off,
+                label: t!("usage.refresh_off").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec10,
+                label: t!("usage.refresh_10s").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec30,
+                label: t!("usage.refresh_30s").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec60,
+                label: t!("usage.refresh_60s").to_string(),
+            },
+        ];
+        let usage_refresh_select = cx.new(|cx| {
+            SelectState::new(
+                refresh_items,
+                Some(gpui_component::IndexPath::default().row(2)),
+                window,
+                cx,
+            )
+        });
+
+        let usage_refresh_sub = cx.subscribe(
+            &usage_refresh_select,
+            |this: &mut RouterApp,
+             _emitter: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
+             event: &SelectEvent<Vec<UsageRefreshSelectItem>>,
+             cx: &mut Context<Self>| {
+                if let SelectEvent::Confirm(Some(interval)) = event {
+                    this.usage_refresh_interval = *interval;
                     cx.notify();
                 }
             },
@@ -703,11 +775,15 @@ impl RouterApp {
             launch_on_startup: settings.launch_on_startup,
             minimize_to_tray: settings.minimize_to_tray,
             settings_tab: SettingsTab::General,
-            usage_view_mode: UsageViewMode::Daily,
-            usage_window: UsageWindowChoice::Days30,
+            dashboard_app_filter: None,
+            usage_breakdown_tab: UsageBreakdownTab::Model,
+            usage_window: UsageWindowChoice::Today,
             usage_metric: UsageMetric::Cost,
+            usage_refresh_interval: UsageRefreshInterval::Sec30,
             usage_window_select,
+            usage_refresh_select,
             _usage_window_sub: Some(usage_window_sub),
+            _usage_refresh_sub: Some(usage_refresh_sub),
             search_input,
             settings_search_input,
             last_error: None,
@@ -717,7 +793,76 @@ impl RouterApp {
             is_inspecting_env: false,
         };
         app.reload();
+
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(150))
+                            .await;
+                        let mut pending = Vec::new();
+                        if let Ok(rx) = crate::get_deeplink_channel().1.lock() {
+                            while let Ok(url) = rx.try_recv() {
+                                pending.push(url);
+                            }
+                        }
+                        if !pending.is_empty() {
+                            let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                                let _ = view.update(cx, |this, cx| {
+                                    for url in pending {
+                                        this.handle_deeplink_url(&url, window, cx);
+                                    }
+                                });
+                            });
+                        }
+                    }
+                }
+            })
+            .detach();
+
         app
+    }
+
+    pub fn handle_deeplink_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        match self.workspace.import_from_deeplink(trimmed) {
+            Ok((provider, is_enabled)) => {
+                self.reload();
+                self.form = None;
+
+                let target_route = match provider.app {
+                    AppKind::Claude => Route::Claude,
+                    AppKind::Codex => Route::Codex,
+                    AppKind::Grok => Route::Grok,
+                    AppKind::OpenCode => Route::OpenCode,
+                    AppKind::Pi => Route::Pi,
+                };
+                self.route = target_route;
+
+                let app_name = provider.app.display_name();
+                let msg = if is_enabled {
+                    format!("成功导入并启用供应商「{}」({})", provider.name, app_name)
+                } else {
+                    format!("成功导入供应商「{}」({})", provider.name, app_name)
+                };
+
+                self.logs.push(format!("DeepLink: {}", msg));
+                window.push_notification(Notification::success(msg), cx);
+                cx.notify();
+            }
+            Err(err) => {
+                let err_msg = format!("深链接导入失败: {err}");
+                self.logs.push(format!("DeepLink Error: {}", err_msg));
+                self.fail(err, window, cx);
+            }
+        }
     }
 
     fn reload(&mut self) {
@@ -768,6 +913,14 @@ impl RouterApp {
 
         let window_items = vec![
             UsageWindowSelectItem {
+                choice: UsageWindowChoice::Today,
+                label: t!("usage.today").to_string(),
+            },
+            UsageWindowSelectItem {
+                choice: UsageWindowChoice::Yesterday,
+                label: t!("usage.yesterday").to_string(),
+            },
+            UsageWindowSelectItem {
                 choice: UsageWindowChoice::Days7,
                 label: t!("usage.days_7").to_string(),
             },
@@ -776,16 +929,34 @@ impl RouterApp {
                 label: t!("usage.days_30").to_string(),
             },
             UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days90,
-                label: t!("usage.days_90").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Year1,
-                label: t!("usage.year_1").to_string(),
+                choice: UsageWindowChoice::Month,
+                label: t!("usage.this_month").to_string(),
             },
         ];
         self.usage_window_select.update(cx, |this, cx| {
             this.set_items(window_items, window, cx);
+        });
+
+        let refresh_items = vec![
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Off,
+                label: t!("usage.refresh_off").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec10,
+                label: t!("usage.refresh_10s").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec30,
+                label: t!("usage.refresh_30s").to_string(),
+            },
+            UsageRefreshSelectItem {
+                interval: UsageRefreshInterval::Sec60,
+                label: t!("usage.refresh_60s").to_string(),
+            },
+        ];
+        self.usage_refresh_select.update(cx, |this, cx| {
+            this.set_items(refresh_items, window, cx);
         });
         self.search_input.update(cx, |this, cx| {
             this.set_placeholder(t!("provider.search_placeholder").to_string(), window, cx);
@@ -1737,276 +1908,544 @@ impl RouterApp {
             )
     }
 
-    fn render_dashboard_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let codex_curr = self.current_id_for(AppKind::Codex);
-        let claude_curr = self.current_id_for(AppKind::Claude);
-        let grok_curr = self.current_id_for(AppKind::Grok);
+    fn render_usage_line_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
 
-        let codex_provider = codex_curr
-            .as_ref()
-            .and_then(|id| self.providers.iter().find(|p| &p.id == id));
-        let claude_provider = claude_curr
-            .as_ref()
-            .and_then(|id| self.providers.iter().find(|p| &p.id == id));
-        let grok_provider = grok_curr
-            .as_ref()
-            .and_then(|id| self.providers.iter().find(|p| &p.id == id));
+        // Y-axis tick labels matching the screenshot
+        let (y_max_label, y_mid2_label, y_mid1_label, y_zero_label) = if self.usage_metric == UsageMetric::Cost {
+            ("$300.00", "$200.00", "$100.00", "0")
+        } else {
+            ("300 M", "200 M", "100 M", "0")
+        };
 
-        let codex_name = codex_provider
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "默认官方".into());
-        let claude_name = claude_provider
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "默认官方".into());
-        let grok_name = grok_provider
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "默认官方".into());
+        // X-axis date labels matching the screenshot
+        let x_labels = vec!["7月26日", "8月10日", "8月24日"];
 
-        let total_count = self.providers.len();
-        let official_count = self.providers.iter().filter(|p| p.is_official()).count();
-        let third_party_count = total_count.saturating_sub(official_count);
-
-        v_flex()
+        theme::tile(cx)
             .w_full()
-            .gap(px(16.))
             .child(
-                div()
-                    .text_size(px(28.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(cx.theme().foreground)
-                    .child("Dashboard"),
-            )
-            .child(
-                // 4-tile metric grid
-                h_flex()
+                v_flex()
                     .w_full()
                     .gap(px(12.))
+                    // 1. Chart Top Bar (Title + [费用 | 令牌] Switcher + Legend)
                     .child(
-                        theme::tile(cx)
-                            .flex_1()
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
                             .child(
-                                v_flex()
-                                    .gap(px(8.))
-                                    .child(theme::tile_label("ENGINE / CODEX", cx))
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .child(if self.usage_metric == UsageMetric::Cost {
+                                        t!("usage.daily_cost").to_string()
+                                    } else {
+                                        t!("usage.daily_tokens").to_string()
+                                    }),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap(px(16.))
+                                    // Segmented Switcher [ 费用 | 令牌 ]
+                                    .child(
+                                        h_flex()
+                                            .p(px(2.))
+                                            .rounded(px(6.))
+                                            .bg(theme.secondary.opacity(0.5))
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .gap(px(2.))
+                                            .child(
+                                                Button::new("chart-metric-cost")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .selected(self.usage_metric == UsageMetric::Cost)
+                                                    .label("费用")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.usage_metric = UsageMetric::Cost;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("chart-metric-tokens")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .selected(self.usage_metric == UsageMetric::Tokens)
+                                                    .label("令牌")
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.usage_metric = UsageMetric::Tokens;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    // Legend Items (Claude Code, Codex)
                                     .child(
                                         h_flex()
                                             .items_center()
-                                            .justify_between()
+                                            .gap(px(14.))
                                             .child(
-                                                div()
-                                                    .text_size(px(20.))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(cx.theme().foreground)
-                                                    .child(codex_name),
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(5.))
+                                                    .child(Icon::new(CustomIcon::Claude).size(px(14.)).text_color(rgb(0xD97757)))
+                                                    .child(div().text_size(px(13.)).text_color(theme.foreground).child("Claude Code")),
                                             )
                                             .child(
-                                                div()
-                                                    .size(px(10.))
-                                                    .rounded_full()
-                                                    .bg(rgb(StatusColors::GREEN_500)),
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(5.))
+                                                    .child(Icon::new(CustomIcon::OpenAI).size(px(14.)).text_color(rgb(0x10A37F)))
+                                                    .child(div().text_size(px(13.)).text_color(theme.foreground).child("Codex")),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    // 2. Plot Area: Y-Axis Ticks + Horizontal Grid Lines + Vector Spline Curve + Tooltip
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(px(10.))
+                            // Y-Axis Labels
+                            .child(
+                                v_flex()
+                                    .w(px(56.))
+                                    .h(px(170.))
+                                    .justify_between()
+                                    .items_end()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.muted_foreground)
+                                    .child(div().child(y_max_label))
+                                    .child(div().child(y_mid2_label))
+                                    .child(div().child(y_mid1_label))
+                                    .child(div().child(y_zero_label)),
+                            )
+                            // Chart Canvas Area
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .h(px(170.))
+                                    .relative()
+                                    .overflow_hidden()
+                                    // Horizontal Grid Lines
+                                    .child(
+                                        v_flex()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .justify_between()
+                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
+                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
+                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
+                                            .child(div().w_full().h(px(1.5)).bg(theme.foreground.opacity(0.85))), // Baseline at 0
+                                    )
+                                    // Smooth Vector Spline Area Curve SVG
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .right_0()
+                                            .bottom_0()
+                                            .child(
+                                                svg()
+                                                    .path(CustomIcon::ChartCurve.path())
+                                                    .w_full()
+                                                    .h_full(),
                                             ),
                                     )
+                                    // Vertical Guideline at 7月28日 (X ≈ 8%)
                                     .child(
                                         div()
-                                            .text_size(px(12.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .line_clamp(1)
-                                            .child("Codex CLI 引擎就绪"),
+                                            .absolute()
+                                            .left(gpui::relative(0.08))
+                                            .top_0()
+                                            .bottom_0()
+                                            .w(px(1.))
+                                            .bg(theme.muted_foreground.opacity(0.55)),
+                                    )
+                                    // Floating Tooltip Card (7月28日)
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(gpui::relative(0.08))
+                                            .top(px(6.))
+                                            .ml(px(8.))
+                                            .w(px(170.))
+                                            .p(px(10.))
+                                            .rounded(px(8.))
+                                            .bg(theme.background)
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .shadow_lg()
+                                            .child(
+                                                v_flex()
+                                                    .w_full()
+                                                    .gap(px(6.))
+                                                    // Tooltip Date Header
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.muted_foreground)
+                                                            .child("7月28日"),
+                                                    )
+                                                    // Row 1: Claude Code
+                                                    .child(
+                                                        h_flex()
+                                                            .w_full()
+                                                            .justify_between()
+                                                            .items_center()
+                                                            .child(
+                                                                h_flex()
+                                                                    .items_center()
+                                                                    .gap(px(6.))
+                                                                    .child(Icon::new(CustomIcon::Claude).size(px(13.)).text_color(rgb(0xD97757)))
+                                                                    .child(div().text_size(px(12.)).text_color(theme.foreground).child("Claude Code")),
+                                                            )
+                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child("$0.00")),
+                                                    )
+                                                    // Row 2: Codex
+                                                    .child(
+                                                        h_flex()
+                                                            .w_full()
+                                                            .justify_between()
+                                                            .items_center()
+                                                            .child(
+                                                                h_flex()
+                                                                    .items_center()
+                                                                    .gap(px(6.))
+                                                                    .child(Icon::new(CustomIcon::OpenAI).size(px(13.)).text_color(rgb(0x10A37F)))
+                                                                    .child(div().text_size(px(12.)).text_color(theme.foreground).child("Codex")),
+                                                            )
+                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child("$0.00")),
+                                                    )
+                                                    // Horizontal Divider
+                                                    .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.5)))
+                                                    // Total Summary Row
+                                                    .child(
+                                                        h_flex()
+                                                            .w_full()
+                                                            .justify_between()
+                                                            .items_center()
+                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.foreground).child("总计"))
+                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.foreground).child("$0.00")),
+                                                    ),
+                                            ),
                                     ),
                             ),
                     )
+                    // 3. X-Axis Date Labels
                     .child(
-                        theme::tile(cx)
-                            .flex_1()
+                        h_flex()
+                            .w_full()
+                            .pl(px(66.))
+                            .pr(px(6.))
+                            .justify_between()
+                            .text_size(px(11.5))
+                            .text_color(theme.muted_foreground)
+                            .children(x_labels.into_iter().map(|lbl| div().child(lbl))),
+                    ),
+            )
+    }
+
+    fn render_dashboard_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+
+        let is_claude_selected = self.dashboard_app_filter == Some(AppKind::Claude);
+        let is_codex_selected = self.dashboard_app_filter == Some(AppKind::Codex);
+        let is_grok_selected = self.dashboard_app_filter == Some(AppKind::Grok);
+
+        let total_cost = if is_claude_selected {
+            297.57
+        } else if is_codex_selected {
+            3.16
+        } else if is_grok_selected {
+            0.40
+        } else {
+            300.73
+        };
+
+        let total_tokens_display = if is_claude_selected {
+            "263 M"
+        } else if is_codex_selected {
+            "2.15 M"
+        } else if is_grok_selected {
+            "296 K"
+        } else {
+            "265 M"
+        };
+
+        v_flex()
+            .w_full()
+            .gap(px(14.))
+            // 1. CCSwitch Brand Filter Chips & Date / Refresh Selectors
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .p(px(8.))
+                    .rounded(px(10.))
+                    .bg(theme.secondary.opacity(0.35))
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        // Left: Multi-App Brand Chips
+                        h_flex()
+                            .items_center()
+                            .gap(px(6.))
+                            // All
                             .child(
-                                v_flex()
-                                    .gap(px(8.))
-                                    .child(theme::tile_label("CLAUDE CODE", cx))
-                                    .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(cx.theme().foreground)
-                                            .line_clamp(1)
-                                            .child(claude_name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .line_clamp(1)
-                                            .child("Claude Code 引擎就绪"),
-                                    ),
+                                Button::new("filter-app-all")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter.is_none())
+                                    .label(t!("usage.app_all").to_string())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            // Claude
+                            .child(
+                                Button::new("filter-app-claude")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::Claude))
+                                    .icon(CustomIcon::Claude)
+                                    .label("Claude")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Claude) { None } else { Some(AppKind::Claude) };
+                                        cx.notify();
+                                    })),
+                            )
+                            // Codex
+                            .child(
+                                Button::new("filter-app-codex")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::Codex))
+                                    .icon(CustomIcon::OpenAI)
+                                    .label("Codex")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Codex) { None } else { Some(AppKind::Codex) };
+                                        cx.notify();
+                                    })),
+                            )
+                            // Gemini
+                            .child(
+                                Button::new("filter-app-gemini")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(CustomIcon::DeepSeek)
+                                    .label("Gemini")
+                                    .on_click(cx.listener(|_this, _, window, cx| {
+                                        notify_info("Gemini 暂无近期用量记录", window, cx);
+                                    })),
+                            )
+                            // Grok
+                            .child(
+                                Button::new("filter-app-grok")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::Grok))
+                                    .icon(CustomIcon::Grok)
+                                    .label("Grok")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Grok) { None } else { Some(AppKind::Grok) };
+                                        cx.notify();
+                                    })),
+                            )
+                            // OpenCode
+                            .child(
+                                Button::new("filter-app-opencode")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::OpenCode))
+                                    .icon(CustomIcon::OpenCode)
+                                    .label("OpenCode")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::OpenCode) { None } else { Some(AppKind::OpenCode) };
+                                        cx.notify();
+                                    })),
+                            )
+                            // Pi
+                            .child(
+                                Button::new("filter-app-pi")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::Pi))
+                                    .icon(CustomIcon::Pi)
+                                    .label("Pi")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Pi) { None } else { Some(AppKind::Pi) };
+                                        cx.notify();
+                                    })),
                             ),
                     )
                     .child(
-                        theme::tile(cx)
-                            .flex_1()
+                        // Right: Date Selector first, then Refresh Selector, and Refresh button
+                        h_flex()
+                            .items_center()
+                            .gap(px(8.))
                             .child(
-                                v_flex()
-                                    .gap(px(8.))
-                                    .child(theme::tile_label("GROK BUILD", cx))
-                                    .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(cx.theme().foreground)
-                                            .line_clamp(1)
-                                            .child(grok_name),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .line_clamp(1)
-                                            .child("Grok Build 引擎就绪"),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        theme::tile(cx)
-                            .flex_1()
+                                div()
+                                    .w(px(115.))
+                                    .child(Select::new(&self.usage_window_select).small()),
+                            )
                             .child(
-                                v_flex()
-                                    .gap(px(8.))
-                                    .child(theme::tile_label("TOTAL PROVIDERS", cx))
-                                    .child(
-                                        div()
-                                            .text_size(px(20.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(cx.theme().foreground)
-                                            .child(format!("{total_count}")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("{} 官方 · {} 第三方", official_count, third_party_count)),
-                                    ),
+                                div()
+                                    .w(px(80.))
+                                    .child(Select::new(&self.usage_refresh_select).small()),
+                            )
+                            .child(
+                                Button::new("dash-refresh-btn")
+                                    .outline()
+                                    .small()
+                                    .icon(CustomIcon::RotateCw)
+                                    .tooltip(t!("about.refresh").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        let msg = if this.language == AppLanguage::En {
+                                            "Dashboard stats refreshed"
+                                        } else {
+                                            "仪表盘数据已刷新"
+                                        };
+                                        notify_success(msg, window, cx);
+                                    })),
                             ),
                     ),
             )
+            // 2. 5-Tile Metric Strip (Processed, Cached Input, Uncached Input, Output, Cache Savings)
             .child(
-                // Quick switcher card
-                theme::tile(cx).child(
-                    v_flex()
-                        .w_full()
-                        .gap(px(12.))
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .items_center()
-                                .justify_between()
-                                .child(theme::tile_label("QUICK SWITCHER / 快速切换", cx))
-                                .child(
-                                    Button::new("manage-all")
-                                        .ghost()
-                                        .small()
-                                        .label("进入 Codex 管理 →")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.set_route(Route::Codex, cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            v_flex()
-                                .w_full()
-                                .gap(px(8.))
-                                .children(self.providers.iter().take(6).map(|provider| {
-                                    let current_id = self.current_id_for(provider.app);
-                                    let is_current = current_id.as_deref() == Some(&provider.id);
-                                    let id = provider.id.clone();
-                                    let model = match &provider.settings {
-                                        ProviderSettings::Codex(s) => extract_codex_model(&s.config_toml).unwrap_or_else(|| "默认模型".into()),
-                                        ProviderSettings::Claude(s) => extract_claude_model(&s.env).unwrap_or_else(|| "默认模型".into()),
-                                        ProviderSettings::Grok(s) => extract_grok_model(&s.config_toml).unwrap_or_else(|| "默认模型".into()),
-                                        ProviderSettings::OpenCode(s) => extract_opencode_model(&s.models).unwrap_or_else(|| "默认模型".into()),
-                                        ProviderSettings::Pi(s) => if !s.model.is_empty() { s.model.clone() } else { "默认模型".into() },
-                                        ProviderSettings::Unsupported { .. } => "-".into(),
-                                    };
-                                    let endpoint = match &provider.settings {
-                                        ProviderSettings::Codex(s) => extract_codex_base_url(&s.config_toml).unwrap_or_else(|| "官方端点".into()),
-                                        ProviderSettings::Claude(s) => extract_claude_base_url(&s.env).unwrap_or_else(|| "官方端点".into()),
-                                        ProviderSettings::Grok(s) => extract_grok_base_url(&s.config_toml).unwrap_or_else(|| "官方端点".into()),
-                                        ProviderSettings::OpenCode(s) => extract_opencode_base_url(&s.options).unwrap_or_else(|| "官方端点".into()),
-                                        ProviderSettings::Pi(s) => if !s.base_url.is_empty() { s.base_url.clone() } else { "官方端点".into() },
-                                        ProviderSettings::Unsupported { .. } => "-".into(),
-                                    };
-
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
-                                        .justify_between()
-                                        .p(px(10.))
-                                        .rounded(px(10.))
-                                        .bg(if is_current {
-                                            cx.theme().primary.opacity(0.06)
-                                        } else {
-                                            cx.theme().secondary.opacity(0.5)
-                                        })
-                                        .border_1()
-                                        .border_color(if is_current {
-                                            cx.theme().primary
-                                        } else {
-                                            cx.theme().border
-                                        })
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(10.))
-                                                .child(
-                                                    div()
-                                                        .size(px(24.))
-                                                        .rounded(px(6.))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .bg(if is_current {
-                                                            cx.theme().primary
-                                                        } else {
-                                                            cx.theme().border
-                                                        })
-                                                        .text_color(if is_current {
-                                                            cx.theme().primary_foreground
-                                                        } else {
-                                                            cx.theme().foreground
-                                                        })
-                                                        .child(if provider.is_official() {
-                                                            IconName::Bot
-                                                        } else {
-                                                            IconName::SquareTerminal
-                                                        }),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .text_size(px(14.))
-                                                        .child(provider.name.clone()),
-                                                )
-                                                .child(Tag::secondary().small().child(provider.app.display_name()))
-                                                .when(is_current, |this| {
-                                                    this.child(Tag::primary().small().child(t!("provider.in_use").to_string()))
-                                                })
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.))
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(format!("{} · {}", model, endpoint)),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!("dash-enable-{}", provider.id)))
-                                                .primary()
-                                                .small()
-                                                .label(if is_current { "使用中" } else { "一键切换" })
-                                                .disabled(is_current)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.enable(&id, window, cx);
-                                                })),
-                                        )
-                                })),
-                        ),
-                ),
+                theme::tile(cx)
+                    .p(px(0.))
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            // Tile 1: Processed Tokens / Total Spend
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .p(px(12.))
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(if self.usage_metric == UsageMetric::Cost { t!("usage.total_cost").to_string() } else { t!("usage.processed_tokens").to_string() }))
+                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child(if self.usage_metric == UsageMetric::Cost { format!("${:.2}", total_cost) } else { total_tokens_display.to_string() }))
+                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.per_active_day", count = "22.1 M").to_string())),
+                            )
+                            // Tile 2: Cached Input
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .p(px(12.))
+                                    .border_l_1()
+                                    .border_color(theme.border)
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.cached_input").to_string()))
+                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("258 M"))
+                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.observed_input_share", share = "99.8%").to_string())),
+                            )
+                            // Tile 3: Uncached Input
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .p(px(12.))
+                                    .border_l_1()
+                                    .border_color(theme.border)
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.uncached_input").to_string()))
+                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("596 K"))
+                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.cache_writes", count = "5.69M").to_string())),
+                            )
+                            // Tile 4: Output
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .p(px(12.))
+                                    .border_l_1()
+                                    .border_color(theme.border)
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.output_tokens").to_string()))
+                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("969 K"))
+                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.includes_reasoning", count = "10.5 K").to_string())),
+                            )
+                            // Tile 5: Cache Savings
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .p(px(12.))
+                                    .border_l_1()
+                                    .border_color(theme.border)
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.cache_savings").to_string()))
+                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(rgb(0x10B981)).child("$1,843.73"))
+                                    .child(div().text_size(px(11.)).text_color(rgb(0x10B981)).child(t!("usage.raw_cost_multiple", multiple = "6.1").to_string())),
+                            ),
+                    ),
+            )
+            // 3. Line Chart (折线图) directly below 5-Tile metric strip
+            .child(self.render_usage_line_chart(cx))
+            // 4. Detail Breakdown Table (Full-Width)
+            .child(
+                theme::tile(cx)
+                    .w_full()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(10.))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child(t!("usage.breakdown_title").to_string()),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .p(px(2.))
+                                            .rounded(px(7.))
+                                            .bg(theme.secondary.opacity(0.5))
+                                            .border_1()
+                                            .border_color(theme.border)
+                                            .gap(px(2.))
+                                            .child(
+                                                Button::new("tab-breakdown-model")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .selected(self.usage_breakdown_tab == UsageBreakdownTab::Model)
+                                                    .label(t!("usage.tab_model"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.usage_breakdown_tab = UsageBreakdownTab::Model;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("tab-breakdown-day")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .selected(self.usage_breakdown_tab == UsageBreakdownTab::Day)
+                                                    .label(t!("usage.tab_day"))
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.usage_breakdown_tab = UsageBreakdownTab::Day;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                            .child(match self.usage_breakdown_tab {
+                                UsageBreakdownTab::Model => self.render_usage_daily_table(cx).into_any_element(),
+                                UsageBreakdownTab::Day => self.render_usage_day_table(cx).into_any_element(),
+                            }),
+                    ),
             )
     }
 
@@ -2325,10 +2764,6 @@ impl RouterApp {
             || "通用 general 界面 语言 简体中文 english language 外观 主题 浅色 深色 跟随系统 theme light dark system 主页面 显示 claude codex gemini grok opencode openclaw hermes pi amp cursor deepseek fx kimi ohmypi 窗口行为 开机自启 startup 托盘 minimize tray"
                 .contains(&query);
 
-        let usage_matches = query.is_empty()
-            || "用量 usage 统计 账单 消费 费用 成本 消耗 token tokens 日视图 月账单 每日 每月 项目 日期 范围 筛选 cost daily monthly projects window claude codex openai"
-                .contains(&query);
-
         let about_matches = query.is_empty()
             || "关于 about 版本 version aicwitch 环境 检查 诊断 升级 update cli github 官网 冲突"
                 .contains(&query);
@@ -2385,14 +2820,6 @@ impl RouterApp {
                             cx,
                         ))
                     })
-                    .when(usage_matches, |this| {
-                        this.child(self.render_settings_sidebar_item(
-                            SettingsTab::Usage,
-                            IconName::ChartPie,
-                            t!("settings.usage").to_string(),
-                            cx,
-                        ))
-                    })
                     .when(about_matches, |this| {
                         this.child(self.render_settings_sidebar_item(
                             SettingsTab::About,
@@ -2401,7 +2828,7 @@ impl RouterApp {
                             cx,
                         ))
                     })
-                    .when(!general_matches && !usage_matches && !about_matches, |this| {
+                    .when(!general_matches && !about_matches, |this| {
                         this.child(
                             div()
                                 .px(px(10.))
@@ -2814,615 +3241,112 @@ impl RouterApp {
     }
 
     fn render_usage_daily_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        v_flex()
-            .w_full()
-            .gap(px(6.))
-            .child(
-                h_flex()
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .bg(theme.secondary.opacity(0.5))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.muted_foreground)
-                    .child(div().w(px(200.)).child("模型名称"))
-                    .child(div().w(px(140.)).child("服务商"))
-                    .child(div().w(px(90.)).child("请求次数"))
-                    .child(div().w(px(110.)).child("输入 Token"))
-                    .child(div().w(px(110.)).child("输出 Token"))
-                    .child(div().flex_1().child("预估费用")),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(px(2.))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(200.)).font_weight(FontWeight::MEDIUM).child("gpt-4o"))
-                            .child(div().w(px(140.)).text_color(rgb(0x10A37F)).child("Codex (OpenAI)"))
-                            .child(div().w(px(90.)).child("642"))
-                            .child(div().w(px(110.)).child("1.85 M"))
-                            .child(div().w(px(110.)).child("0.92 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$9.25")),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(200.)).font_weight(FontWeight::MEDIUM).child("claude-3-7-sonnet"))
-                            .child(div().w(px(140.)).text_color(rgb(0xD97757)).child("Claude Code"))
-                            .child(div().w(px(90.)).child("418"))
-                            .child(div().w(px(110.)).child("1.10 M"))
-                            .child(div().w(px(110.)).child("0.54 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$6.16")),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(200.)).font_weight(FontWeight::MEDIUM).child("grok-4.5"))
-                            .child(div().w(px(140.)).text_color(rgb(0x8B5CF6)).child("Grok Build"))
-                            .child(div().w(px(90.)).child("224"))
-                            .child(div().w(px(110.)).child("0.29 M"))
-                            .child(div().w(px(110.)).child("0.12 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$3.05")),
-                    ),
-            )
-    }
-
-    fn render_usage_monthly_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        v_flex()
-            .w_full()
-            .gap(px(6.))
-            .child(
-                h_flex()
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .bg(theme.secondary.opacity(0.5))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.muted_foreground)
-                    .child(div().w(px(140.)).child("月份"))
-                    .child(div().w(px(120.)).child("活跃应用"))
-                    .child(div().w(px(110.)).child("总请求数"))
-                    .child(div().w(px(140.)).child("总 Token 消耗"))
-                    .child(div().flex_1().child("账单总额")),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(px(2.))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(140.)).font_weight(FontWeight::MEDIUM).child("2026 年 8 月"))
-                            .child(div().w(px(120.)).child("Codex / Claude"))
-                            .child(div().w(px(110.)).child("1,284 次"))
-                            .child(div().w(px(140.)).child("4.82 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$18.46")),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(140.)).font_weight(FontWeight::MEDIUM).child("2026 年 7 月"))
-                            .child(div().w(px(120.)).child("Codex"))
-                            .child(div().w(px(110.)).child("2,140 次"))
-                            .child(div().w(px(140.)).child("7.95 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$29.80")),
-                    ),
-            )
-    }
-
-    fn render_usage_projects_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        v_flex()
-            .w_full()
-            .gap(px(6.))
-            .child(
-                h_flex()
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .bg(theme.secondary.opacity(0.5))
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.muted_foreground)
-                    .child(div().w(px(260.)).child("工作区目录 / 项目"))
-                    .child(div().w(px(120.)).child("主要服务商"))
-                    .child(div().w(px(90.)).child("调用次数"))
-                    .child(div().w(px(120.)).child("消耗 Token"))
-                    .child(div().flex_1().child("预估费用")),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(px(2.))
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(260.)).font_weight(FontWeight::MEDIUM).truncate().child("~/Desktop/git/router-switch"))
-                            .child(div().w(px(120.)).text_color(rgb(0x10A37F)).child("Codex"))
-                            .child(div().w(px(90.)).child("712"))
-                            .child(div().w(px(120.)).child("2.65 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$10.15")),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(260.)).font_weight(FontWeight::MEDIUM).truncate().child("~/Desktop/git/waku"))
-                            .child(div().w(px(120.)).text_color(rgb(0xD97757)).child("Claude Code"))
-                            .child(div().w(px(90.)).child("386"))
-                            .child(div().w(px(120.)).child("1.48 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$5.62")),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .px(px(8.))
-                            .py(px(6.))
-                            .items_center()
-                            .text_size(px(12.))
-                            .child(div().w(px(260.)).font_weight(FontWeight::MEDIUM).truncate().child("~/Desktop/git/ai-api"))
-                            .child(div().w(px(120.)).text_color(rgb(0x10A37F)).child("Codex"))
-                            .child(div().w(px(90.)).child("186"))
-                            .child(div().w(px(120.)).child("0.69 M"))
-                            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("$2.69")),
-                    ),
-            )
-    }
-
-    fn render_usage_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
 
-        let total_cost = 18.46;
-        let codex_cost = 12.30;
-        let claude_cost = 6.16;
-
-        let codex_share = codex_cost / total_cost;
-        let claude_share = claude_cost / total_cost;
-
-        let range_label = match self.usage_window {
-            UsageWindowChoice::Days7 => format!("2026-08-17 ~ 2026-08-23 ({})", t!("usage.days_7")),
-            UsageWindowChoice::Days30 => format!("2026-07-24 ~ 2026-08-23 ({})", t!("usage.days_30")),
-            UsageWindowChoice::Days90 => format!("2026-05-25 ~ 2026-08-23 ({})", t!("usage.days_90")),
-            UsageWindowChoice::Year1 => format!("2025-08-24 ~ 2026-08-23 ({})", t!("usage.year_1")),
-        };
+        let models = [
+            ("claude-3-7-sonnet", CustomIcon::Claude, rgb(0xD97757), "$220.51", "73.3%", "156 M"),
+            ("claude-3-5-sonnet", CustomIcon::Claude, rgb(0xD97757), "$77.06", "25.6%", "107 M"),
+            ("gpt-4o", CustomIcon::OpenAI, rgb(0x10A37F), "$2.41", "0.8%", "1.37 M"),
+            ("grok-2", CustomIcon::Grok, rgb(0x8B5CF6), "$0.25", "0.1%", "162 K"),
+            ("o3-mini", CustomIcon::OpenAI, rgb(0x10A37F), "$0.15", "0.1%", "127 K"),
+            ("grok-beta", CustomIcon::Grok, rgb(0x8B5CF6), "$0.15", "0.0%", "134 K"),
+            ("gpt-4o-mini", CustomIcon::OpenAI, rgb(0x10A37F), "$0.12", "0.0%", "35.7 K"),
+            ("claude-3-haiku", CustomIcon::Claude, rgb(0xD97757), "$0.08", "0.0%", "345 K"),
+        ];
 
         v_flex()
             .w_full()
-            .gap(px(16.))
-            // Header Bar
+            .text_size(px(12.5))
             .child(
                 h_flex()
                     .w_full()
+                    .pb(px(8.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_color(theme.muted_foreground)
+                    .child(div().flex_1().min_w_0().child(t!("usage.col_model").to_string()))
+                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().child(t!("usage.col_cost").to_string())))
+                    .child(div().w(px(64.)).child(h_flex().justify_end().w_full().child(t!("usage.col_share").to_string())))
+                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().child(t!("usage.col_tokens").to_string()))),
+            )
+            .children(models.iter().map(|(name, icon, color, cost, share, tokens)| {
+                h_flex()
+                    .w_full()
+                    .py(px(7.))
+                    .border_b_1()
+                    .border_color(theme.border.opacity(0.4))
                     .items_center()
-                    .justify_between()
-                    .child(
-                        v_flex()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_size(px(24.))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(theme.foreground)
-                                    .child(t!("settings.usage").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(theme.muted_foreground)
-                                    .child(range_label),
-                            ),
-                    )
                     .child(
                         h_flex()
+                            .flex_1()
+                            .min_w_0()
                             .items_center()
                             .gap(px(8.))
-                            // View Switcher (Daily / Monthly / Projects)
+                            .child(Icon::new(*icon).size(px(13.)).text_color(*color))
                             .child(
-                                h_flex()
-                                    .p(px(2.))
-                                    .rounded(px(8.))
-                                    .bg(theme.secondary.opacity(0.5))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(
-                                        Button::new("usage-view-daily")
-                                            .ghost()
-                                            .xsmall()
-                                            .selected(self.usage_view_mode == UsageViewMode::Daily)
-                                            .label(t!("usage.view_daily"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.usage_view_mode = UsageViewMode::Daily;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("usage-view-monthly")
-                                            .ghost()
-                                            .xsmall()
-                                            .selected(self.usage_view_mode == UsageViewMode::Monthly)
-                                            .label(t!("usage.view_monthly"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.usage_view_mode = UsageViewMode::Monthly;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("usage-view-projects")
-                                            .ghost()
-                                            .xsmall()
-                                            .selected(self.usage_view_mode == UsageViewMode::Projects)
-                                            .label(t!("usage.view_projects"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.usage_view_mode = UsageViewMode::Projects;
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                            // Window Selector Dropdown (when not Monthly)
-                            .when(self.usage_view_mode != UsageViewMode::Monthly, |this| {
-                                this.child(
-                                    div()
-                                        .w(px(130.))
-                                        .child(Select::new(&self.usage_window_select).small())
-                                )
-                            })
-                            // Refresh
-                            .child(
-                                Button::new("usage-refresh-btn")
-                                    .outline()
-                                    .small()
-                                    .icon(CustomIcon::RotateCw)
-                                    .tooltip(t!("about.refresh").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let msg = if this.language == AppLanguage::En {
-                                            "Usage stats refreshed"
-                                        } else {
-                                            "用量数据已刷新"
-                                        };
-                                        notify_success(msg, window, cx);
-                                    })),
-                            )
-                            // Metric Switcher (Cost / Tokens)
-                            .child(
-                                h_flex()
-                                    .p(px(2.))
-                                    .rounded(px(8.))
-                                    .bg(theme.secondary.opacity(0.5))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(
-                                        Button::new("metric-cost")
-                                            .ghost()
-                                            .xsmall()
-                                            .selected(self.usage_metric == UsageMetric::Cost)
-                                            .label(t!("usage.metric_cost"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.usage_metric = UsageMetric::Cost;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("metric-tokens")
-                                            .ghost()
-                                            .xsmall()
-                                            .selected(self.usage_metric == UsageMetric::Tokens)
-                                            .label(t!("usage.metric_tokens"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.usage_metric = UsageMetric::Tokens;
-                                                cx.notify();
-                                            })),
-                                    ),
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .child(*name),
                             ),
-                    ),
-            )
-            // Overview row (Headline + Provider share bars)
+                    )
+                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child(*cost)))
+                    .child(div().w(px(64.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*share)))
+                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*tokens)))
+            }))
+    }
+
+    fn render_usage_day_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+
+        let days = [
+            ("8月24日", "$0.42", "$12.80", "$13.22", "11.8 M"),
+            ("8月23日", "$0.21", "$24.50", "$24.71", "21.3 M"),
+            ("8月22日", "$0.55", "$18.30", "$18.85", "16.4 M"),
+            ("8月21日", "$0.30", "$15.60", "$15.90", "14.2 M"),
+            ("8月20日", "$0.18", "$32.10", "$32.28", "28.6 M"),
+            ("8月19日", "$0.45", "$28.40", "$28.85", "25.1 M"),
+            ("8月18日", "$0.12", "$19.90", "$20.02", "17.5 M"),
+        ];
+
+        v_flex()
+            .w_full()
+            .text_size(px(12.5))
             .child(
                 h_flex()
                     .w_full()
-                    .gap(px(12.))
-                    // Headline tile
-                    .child(
-                        theme::tile(cx)
-                            .w(px(280.))
-                            .child(
-                                v_flex()
-                                    .w_full()
-                                    .gap(px(6.))
-                                    .child(theme::tile_label(if self.usage_metric == UsageMetric::Cost {
-                                        "ESTIMATED COST / 预估总费用"
-                                    } else {
-                                        "PROCESSED TOKENS / 处理总 TOKEN"
-                                    }, cx))
-                                    .child(
-                                        div()
-                                            .text_size(px(32.))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(theme.foreground)
-                                            .child(if self.usage_metric == UsageMetric::Cost {
-                                                format!("${:.2}", total_cost)
-                                            } else {
-                                                "4.82 M".to_string()
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(theme.muted_foreground)
-                                            .child(t!("usage.breakdown").to_string()),
-                                    ),
-                            ),
-                    )
-                    // Provider share distribution tile
-                    .child(
-                        theme::tile(cx)
-                            .flex_1()
-                            .child(
-                                v_flex()
-                                    .w_full()
-                                    .gap(px(10.))
-                                    .child(theme::tile_label("PROVIDER SHARE / 服务商消耗占比", cx))
-                                    .child(
-                                        v_flex()
-                                            .w_full()
-                                            .gap(px(8.))
-                                            // Codex bar
-                                            .child(
-                                                v_flex()
-                                                    .w_full()
-                                                    .gap(px(4.))
-                                                    .child(
-                                                        h_flex()
-                                                            .w_full()
-                                                            .justify_between()
-                                                            .text_size(px(12.))
-                                                            .child(
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap(px(6.))
-                                                                    .child(Icon::new(CustomIcon::OpenAI).size(px(13.)).text_color(rgb(0x10A37F)))
-                                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Codex (OpenAI)")),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_color(theme.muted_foreground)
-                                                                    .child(format!("${:.2} ({:.1}%) • 3.21M tokens", codex_cost, codex_share * 100.)),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .h(px(6.))
-                                                            .w_full()
-                                                            .rounded_full()
-                                                            .bg(theme.secondary)
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .w(gpui::relative(codex_share as f32))
-                                                                    .rounded_full()
-                                                                    .bg(rgb(0x10A37F)),
-                                                            ),
-                                                    ),
-                                            )
-                                            // Claude Code bar
-                                            .child(
-                                                v_flex()
-                                                    .w_full()
-                                                    .gap(px(4.))
-                                                    .child(
-                                                        h_flex()
-                                                            .w_full()
-                                                            .justify_between()
-                                                            .text_size(px(12.))
-                                                            .child(
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap(px(6.))
-                                                                    .child(Icon::new(CustomIcon::Claude).size(px(13.)).text_color(rgb(0xD97757)))
-                                                                    .child(div().font_weight(FontWeight::MEDIUM).child("Claude Code")),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_color(theme.muted_foreground)
-                                                                    .child(format!("${:.2} ({:.1}%) • 1.61M tokens", claude_cost, claude_share * 100.)),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .h(px(6.))
-                                                            .w_full()
-                                                            .rounded_full()
-                                                            .bg(theme.secondary)
-                                                            .child(
-                                                                div()
-                                                                    .h_full()
-                                                                    .w(gpui::relative(claude_share as f32))
-                                                                    .rounded_full()
-                                                                    .bg(rgb(0xD97757)),
-                                                            ),
-                                                    ),
-                                            ),
-                                    ),
-                            ),
-                    ),
+                    .pb(px(8.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_color(theme.muted_foreground)
+                    .child(div().flex_1().min_w_0().child(t!("usage.col_date").to_string()))
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child("Codex")))
+                    .child(div().w(px(90.)).child(h_flex().justify_end().w_full().child("Claude Code")))
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child(t!("usage.col_cost").to_string())))
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child(t!("usage.col_tokens").to_string()))),
             )
-            // 4-tile Metrics Strip
-            .child(
+            .children(days.iter().map(|(day, codex, claude, total, tokens)| {
                 h_flex()
                     .w_full()
-                    .gap(px(12.))
+                    .py(px(7.))
+                    .border_b_1()
+                    .border_color(theme.border.opacity(0.4))
+                    .items_center()
                     .child(
-                        theme::tile(cx)
+                        div()
                             .flex_1()
-                            .child(
-                                v_flex()
-                                    .gap(px(4.))
-                                    .child(theme::tile_label("PROMPT TOKENS / 输入", cx))
-                                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("3.24 M"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child("占比 67.2%")),
-                            ),
+                            .min_w_0()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.foreground)
+                            .child(*day),
                     )
-                    .child(
-                        theme::tile(cx)
-                            .flex_1()
-                            .child(
-                                v_flex()
-                                    .gap(px(4.))
-                                    .child(theme::tile_label("COMPLETION / 输出", cx))
-                                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("1.58 M"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child("占比 32.8%")),
-                            ),
-                    )
-                    .child(
-                        theme::tile(cx)
-                            .flex_1()
-                            .child(
-                                v_flex()
-                                    .gap(px(4.))
-                                    .child(theme::tile_label("CACHE HITS / 缓存命中", cx))
-                                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("1.12 M"))
-                                    .child(div().text_size(px(11.)).text_color(rgb(0x10B981)).child("命中率 34.5% (省 $4.20)")),
-                            ),
-                    )
-                    .child(
-                        theme::tile(cx)
-                            .flex_1()
-                            .child(
-                                v_flex()
-                                    .gap(px(4.))
-                                    .child(theme::tile_label("REQUESTS / 请求次数", cx))
-                                    .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child("1,284 次"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child("活跃模型 3 个")),
-                            ),
-                    ),
-            )
-            // Visual Timeline / Bar Chart Tile
-            .child(
-                theme::tile(cx).child(
-                    v_flex()
-                        .w_full()
-                        .gap(px(12.))
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .justify_between()
-                                .items_center()
-                                .child(theme::tile_label("USAGE TIMELINE / 用量趋势分布", cx))
-                                .child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap(px(12.))
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(4.))
-                                                .child(div().size(px(8.)).rounded_xs().bg(rgb(0x10A37F)))
-                                                .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child("Codex")),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(4.))
-                                                .child(div().size(px(8.)).rounded_xs().bg(rgb(0xD97757)))
-                                                .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child("Claude Code")),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .h(px(110.))
-                                .w_full()
-                                .items_end()
-                                .justify_between()
-                                .gap(px(4.))
-                                .px(px(6.))
-                                .py(px(8.))
-                                .rounded(px(8.))
-                                .bg(theme.secondary.opacity(0.3))
-                                .children((0..28).map(|i| {
-                                    let h1 = ((i * 13 + 7) % 65 + 15) as f32;
-                                    let h2 = ((i * 19 + 11) % 30 + 5) as f32;
-                                    v_flex()
-                                        .flex_1()
-                                        .h_full()
-                                        .items_center()
-                                        .justify_end()
-                                        .gap(px(1.))
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .max_w(px(16.))
-                                                .h(px(h2))
-                                                .rounded_t(px(2.))
-                                                .bg(rgb(0xD97757)),
-                                        )
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .max_w(px(16.))
-                                                .h(px(h1))
-                                                .rounded_t(px(2.))
-                                                .bg(rgb(0x10A37F)),
-                                        )
-                                })),
-                        ),
-                ),
-            )
-            // Tabular Breakdown section
-            .child(
-                theme::tile(cx).child(
-                    v_flex()
-                        .w_full()
-                        .gap(px(10.))
-                        .child(theme::tile_label(match self.usage_view_mode {
-                            UsageViewMode::Daily => "MODEL & PROVIDER BREAKDOWN / 模型与服务商细目",
-                            UsageViewMode::Monthly => "MONTHLY STATEMENT / 月度账单明细",
-                            UsageViewMode::Projects => "PROJECT WORKSPACE BREAKDOWN / 项目工作区细目",
-                        }, cx))
-                        .child(match self.usage_view_mode {
-                            UsageViewMode::Daily => self.render_usage_daily_table(cx).into_any_element(),
-                            UsageViewMode::Monthly => self.render_usage_monthly_table(cx).into_any_element(),
-                            UsageViewMode::Projects => self.render_usage_projects_table(cx).into_any_element(),
-                        }),
-                ),
-            )
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*codex)))
+                    .child(div().w(px(90.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*claude)))
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child(*total)))
+                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*tokens)))
+            }))
     }
 
     fn render_about_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3930,7 +3854,6 @@ impl RouterApp {
             .size_full()
             .child(match self.settings_tab {
                 SettingsTab::General => self.render_general_settings(cx).into_any_element(),
-                SettingsTab::Usage => self.render_usage_page(cx).into_any_element(),
                 SettingsTab::About => self.render_about_settings(cx).into_any_element(),
             })
     }
@@ -4883,6 +4806,10 @@ fn field(
 
 fn notify_success(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::success(message), cx);
+}
+
+fn notify_info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
+    window.push_notification(Notification::info(message), cx);
 }
 
 fn empty_state(app_name: &str, cx: &App) -> impl IntoElement {
