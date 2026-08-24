@@ -106,17 +106,21 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.version.outputs.version }}"
-          mkdir -p dist
+          $rootDir = (Get-Location).Path
+          $stageDir = Join-Path $rootDir "target\release"
+          $distDir = Join-Path $rootDir "dist"
+          
+          New-Item -ItemType Directory -Force -Path $distDir
           
           # 1. Package Portable Zip
-          Compress-Archive -Path target/release/router-switch.exe -DestinationPath "dist/Router-Switch-$version-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Path (Join-Path $stageDir "router-switch.exe") -DestinationPath (Join-Path $distDir "Router-Switch-$version-x86_64-pc-windows-msvc.zip") -Force
 
           # 2. Build Inno Setup Installer
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) {
             $iscc = "ISCC.exe"
           }
-          & $iscc "/DAppVersion=$version" "/DArch=x86_64" "/DStageDir=target/release" "/DOutputDir=dist" "resources/windows/router-switch.iss"
+          & $iscc "/DAppVersion=$version" "/DArch=x86_64" "/DStageDir=$stageDir" "/DOutputDir=$distDir" (Join-Path $rootDir "resources\windows\router-switch.iss")
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
