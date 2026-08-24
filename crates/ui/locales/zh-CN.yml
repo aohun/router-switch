@@ -1,7 +1,7 @@
 app:
   name: "AICWITCH"
   version: "版本 v0.1.0"
-  subtitle: "下一代 AI CLI 与模型网关切换器 · 多应用多端点统一管理"
+  subtitle: "新一代AI 网关桌面工具"
   started: "应用已启动并加载工作区"
 
 nav:
@@ -136,3 +136,9 @@ provider:
   official_desc: "使用官方原生登录会话与官方 API 端点"
   custom_model: "默认模型"
   custom_endpoint: "官方端点"
+  clipboard_import: "从剪贴板导入"
+  clipboard_import_tip: "自动识别并导入剪贴板中的 NewAPI 链接与 API Key 配置"
+  clipboard_imported_success: "已成功从剪贴板识别并导入 API 端点与 Key！"
+  clipboard_imported_not_found: "剪贴板中未检测到有效的 NewAPI / 供应商连接信息"
+  clipboard_auto_detected: "已自动从剪贴板识别并填入 NewAPI 供应商信息"
+  clipboard_helper_tip: "💡 支持自动识别 NewAPI 导出的渠道连接 JSON (包含 _type: newapi_channel_conn, url, key)，自动提取端点与 Key。"

@@ -4,3 +4,9 @@
 *.swp
 .idea
 .vscode
+.cargo/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+.router-switch/

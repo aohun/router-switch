@@ -1,7 +1,7 @@
 app:
   name: "AICWITCH"
   version: "Version v0.1.0"
-  subtitle: "Next-Generation AI CLI & Gateway Provider Switcher · Unified Multi-App Management"
+  subtitle: "Next-Generation AI Gateway Desktop Tool"
   started: "Application started and workspace loaded"
 
 nav:
@@ -136,3 +136,9 @@ provider:
   official_desc: "Use official native login session and official endpoint"
   custom_model: "Default Model"
   custom_endpoint: "Official Endpoint"
+  clipboard_import: "Import from Clipboard"
+  clipboard_import_tip: "Auto-detect and import NewAPI channel or API Key config from clipboard"
+  clipboard_imported_success: "Successfully imported API Endpoint and Key from clipboard!"
+  clipboard_imported_not_found: "No valid NewAPI or provider connection info found in clipboard"
+  clipboard_auto_detected: "Auto-detected and filled NewAPI provider config from clipboard"
+  clipboard_helper_tip: "💡 Automatically detects NewAPI channel connection JSON (_type: newapi_channel_conn, url, key) to extract endpoint & key."

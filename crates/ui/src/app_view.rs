@@ -3,6 +3,7 @@ use domain::{
     extract_codex_base_url, extract_codex_model,
     extract_grok_base_url, extract_grok_model,
     extract_opencode_base_url, extract_opencode_model,
+    parse_clipboard_provider_info, ClipboardProviderInfo,
     AppKind, ClaudeForm, ClaudeKind, ClaudeModelMapping,
     CodexForm, CodexKind, CodexModelMapping, GrokForm, GrokKind, GrokModelMapping,
     OpenCodeForm, OpenCodeKind, OpenCodeModelMapping,
@@ -1062,8 +1063,51 @@ impl RouterApp {
     }
 
     fn open_create_form(&mut self, app: AppKind, window: &mut Window, cx: &mut Context<Self>) {
-        self.form = Some(FormDraft::create(app, window, cx));
+        let mut form = FormDraft::create(app, window, cx);
+        let mut auto_filled = false;
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            if let Some(info) = parse_clipboard_provider_info(&text) {
+                form.apply_clipboard_info(info, window, cx);
+                auto_filled = true;
+            }
+        }
+        self.form = Some(form);
+        if auto_filled {
+            self.logs.push("新建供应商：已从剪贴板自动识别并填入配置".into());
+            window.push_notification(
+                Notification::info(t!("provider.clipboard_auto_detected").to_string()),
+                cx,
+            );
+        }
         cx.notify();
+    }
+
+    fn import_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let clipboard_text = cx.read_from_clipboard().and_then(|item| item.text());
+        let Some(text) = clipboard_text else {
+            window.push_notification(
+                Notification::warning(t!("provider.clipboard_imported_not_found").to_string()),
+                cx,
+            );
+            return;
+        };
+
+        if let Some(info) = parse_clipboard_provider_info(&text) {
+            if let Some(form) = self.form.as_mut() {
+                form.apply_clipboard_info(info, window, cx);
+                self.logs.push("已从剪贴板成功识别并导入 API 端点与 Key".into());
+                window.push_notification(
+                    Notification::success(t!("provider.clipboard_imported_success").to_string()),
+                    cx,
+                );
+                cx.notify();
+            }
+        } else {
+            window.push_notification(
+                Notification::warning(t!("provider.clipboard_imported_not_found").to_string()),
+                cx,
+            );
+        }
     }
 
     fn open_edit_form(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -3480,7 +3524,7 @@ impl RouterApp {
                                             .icon(IconName::GitHub)
                                             .label("GitHub")
                                             .on_click(cx.listener(|_, _, window, cx| {
-                                                window.push_notification(Notification::info("https://github.com/aohun/AICWITCH"), cx);
+                                                window.push_notification(Notification::info("https://github.com/aohun/router-switch"), cx);
                                             })),
                                     )
                                     .child(
@@ -4006,6 +4050,17 @@ impl RouterApp {
                             .items_center()
                             .gap(px(8.))
                             .child(
+                                Button::new("clipboard-import-header-btn")
+                                    .outline()
+                                    .small()
+                                    .icon(IconName::Copy)
+                                    .label(t!("provider.clipboard_import").to_string())
+                                    .tooltip(t!("provider.clipboard_import_tip").to_string())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.import_from_clipboard(window, cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new("cancel-page-btn")
                                     .outline()
                                     .small()
@@ -4071,7 +4126,24 @@ impl RouterApp {
                     v_flex()
                         .w_full()
                         .gap(px(12.))
-                        .child(theme::tile_label("BASIC & API CREDENTIALS / 基础配置与接口凭证", cx))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .child(theme::tile_label("BASIC & API CREDENTIALS / 基础配置与接口凭证", cx))
+                                .child(
+                                    Button::new("clipboard-import-card-btn")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::Copy)
+                                        .label(t!("provider.clipboard_import").to_string())
+                                        .tooltip(t!("provider.clipboard_import_tip").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.import_from_clipboard(window, cx);
+                                        })),
+                                ),
+                        )
                         .child(form_field("供应商名称", Input::new(&form.name)))
                         .child(form_field(
                             "API Key / 凭据",
@@ -4118,6 +4190,12 @@ impl RouterApp {
                                                 })),
                                         ),
                                 ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("provider.clipboard_helper_tip").to_string()),
                         ),
                 ),
             )
@@ -4637,6 +4715,61 @@ impl FormDraft {
             is_fetching_models: false,
             _preset_sub: Some(_preset_sub),
             _default_model_sub: None,
+        }
+    }
+
+    pub fn apply_clipboard_info(
+        &mut self,
+        info: ClipboardProviderInfo,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(name) = info.name {
+            let cur_name = self.name.read(cx).value().to_string();
+            if cur_name.trim().is_empty() || cur_name == "PackyCode" || cur_name == "Custom" {
+                self.name.update(cx, |input, cx| input.set_value(name, window, cx));
+            }
+        }
+        self.api_key.update(cx, |input, cx| input.set_value(info.api_key, window, cx));
+        self.base_url.update(cx, |input, cx| input.set_value(info.base_url, window, cx));
+        if let Some(model) = info.model {
+            self.model.update(cx, |input, cx| input.set_value(model, window, cx));
+        }
+        if !info.models.is_empty() {
+            self.fetched_models = info.models.clone();
+            self.has_fetched_models = true;
+            let items: Vec<ModelSelectItem> = info
+                .models
+                .iter()
+                .map(|m| ModelSelectItem { name: m.clone() })
+                .collect();
+            let current_model = self.model.read(cx).value().to_string();
+            let selected_idx = info
+                .models
+                .iter()
+                .position(|m| m == &current_model)
+                .map(|i| gpui_component::IndexPath::default().row(i));
+            let default_select = cx.new(|cx| {
+                SelectState::new(items, selected_idx, window, cx).searchable(true)
+            });
+            let form_model_state = self.model.clone();
+            let default_sub = window.subscribe(
+                &default_select,
+                cx,
+                move |_, event: &SelectEvent<Vec<ModelSelectItem>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(m)) = event {
+                        let val = m.clone();
+                        form_model_state.update(cx, |input, cx| {
+                            input.set_value(val, window, cx);
+                        });
+                    }
+                },
+            );
+            self.default_model_select = Some(default_select);
+            self._default_model_sub = Some(default_sub);
+            for row in &mut self.catalog_rows {
+                row.set_fetched_models(&info.models, window, cx);
+            }
         }
     }
 
