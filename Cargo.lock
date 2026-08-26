@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapters-claude"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-codex"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-grok"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-opencode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-pi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-zcode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -1561,7 +1561,7 @@ checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "cursor-gateway"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-stream",
  "axum",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "dirs 6.0.0",
@@ -5472,7 +5472,7 @@ dependencies = [
 
 [[package]]
 name = "router-switch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6017,7 +6017,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "adapters-claude",
  "adapters-codex",
@@ -6287,7 +6287,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -7255,7 +7255,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "domain",
  "gpui",
