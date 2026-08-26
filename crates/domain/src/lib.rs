@@ -278,7 +278,7 @@ mod tests {
             website_url: "https://cchost.ai".into(),
             kind: ZCodeKind::ThirdParty,
             provider_kind: "anthropic".into(),
-            api_key: "sk-cchost-S19Q-JLKeD7F8LsF2pkW3A".into(),
+            api_key: "sk-zcode-mock-key-12345".into(),
             base_url: "https://cchost.ai".into(),
             model: "gemini-3.7-flash-high".into(),
             modality_text: true,
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(val["kind"], "anthropic");
         assert_eq!(val["source"], "custom");
         assert_eq!(val["options"]["baseURL"], "https://cchost.ai");
-        assert_eq!(val["options"]["apiKey"], "sk-cchost-S19Q-JLKeD7F8LsF2pkW3A");
+        assert_eq!(val["options"]["apiKey"], "sk-zcode-mock-key-12345");
         assert_eq!(val["options"]["apiKeyRequired"], true);
         assert_eq!(
             val["models"]["gemini-3.7-flash-high"]["limit"]["context"],
@@ -308,7 +308,7 @@ mod tests {
         );
         assert_eq!(
             extract_zcode_api_key(&settings.options).as_deref(),
-            Some("sk-cchost-S19Q-JLKeD7F8LsF2pkW3A")
+            Some("sk-zcode-mock-key-12345")
         );
         assert_eq!(
             extract_zcode_base_url(&settings.options).as_deref(),

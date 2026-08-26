@@ -262,7 +262,7 @@ mod tests {
             website_url: "https://cchost.ai".into(),
             kind: ZCodeKind::ThirdParty,
             provider_kind: "anthropic".into(),
-            api_key: "sk-cchost-S19Q-JLKeD7F8LsF2pkW3A".into(),
+            api_key: "sk-zcode-mock-key-12345".into(),
             base_url: "https://cchost.ai".into(),
             model: "gemini-3.7-flash-high".into(),
             modality_text: true,

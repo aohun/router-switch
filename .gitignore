@@ -9,8 +9,36 @@
 .idea
 .vscode
 .cargo/
+.claude/
+
+# Secrets & Environment variables
+.env
+.env.*
+*.env
+*.local
+
+# Local User Configurations & Live Config Backups
+.router-switch/
+.zcode/
+.codex/
+.claude/
+.grok/
+.opencode/
+.pi/
+config.json
+auth.json
+settings.json
+
+# Keys & Certificates
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
-.router-switch/
+*.sqlite3
