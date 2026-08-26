@@ -46,7 +46,8 @@ impl CodexSettings {
             kind: self.kind,
             api_key: extract_codex_api_key(&self.auth).unwrap_or_default(),
             base_url: extract_codex_base_url(&self.config_toml).unwrap_or_default(),
-            model: extract_codex_model(&self.config_toml).unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string()),
+            model: extract_codex_model(&self.config_toml)
+                .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string()),
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -353,13 +354,21 @@ pub fn fetch_models_from_api(base_url: &str, api_key: &str) -> Result<Vec<String
                         }
                     } else if let Some(arr) = json_val.get("models").and_then(|v| v.as_array()) {
                         for item in arr {
-                            if let Some(id) = item.get("id").and_then(|v| v.as_str()).or_else(|| item.as_str()) {
+                            if let Some(id) = item
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| item.as_str())
+                            {
                                 models.push(id.to_string());
                             }
                         }
                     } else if let Some(arr) = json_val.as_array() {
                         for item in arr {
-                            if let Some(id) = item.get("id").and_then(|v| v.as_str()).or_else(|| item.as_str()) {
+                            if let Some(id) = item
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| item.as_str())
+                            {
                                 models.push(id.to_string());
                             }
                         }
@@ -378,7 +387,7 @@ pub fn fetch_models_from_api(base_url: &str, api_key: &str) -> Result<Vec<String
     }
 
     if last_error.is_empty() {
-        Err("供应商未返回可用模型列表或响应格式不兼容".into())
+        Err("服务商未返回可用模型列表或响应格式不兼容".into())
     } else {
         Err(format!("请求模型列表失败: {last_error}"))
     }
@@ -397,13 +406,13 @@ pub fn parse_codex_form(form: CodexForm) -> Result<CodexSettings, DomainError> {
             let base_url = form.base_url.trim();
             let model = form.model.trim();
             if api_key.is_empty() {
-                return Err(DomainError::validation("第三方供应商需要 API Key"));
+                return Err(DomainError::validation("第三方服务商需要 API Key"));
             }
             if base_url.is_empty() {
-                return Err(DomainError::validation("第三方供应商需要 API 端点"));
+                return Err(DomainError::validation("第三方服务商需要 API 端点"));
             }
             if model.is_empty() {
-                return Err(DomainError::validation("第三方供应商需要模型名"));
+                return Err(DomainError::validation("第三方服务商需要模型名"));
             }
             let has_catalog = !form.model_mappings.is_empty();
             Ok(CodexSettings {

@@ -163,7 +163,8 @@ mod tests {
 
     #[test]
     fn parses_markdown_fenced_json() {
-        let text = "```json\n{\"apiKey\":\"sk-abc\",\"baseUrl\":\"https://api.openai.com/v1\"}\n```";
+        let text =
+            "```json\n{\"apiKey\":\"sk-abc\",\"baseUrl\":\"https://api.openai.com/v1\"}\n```";
         let info = parse_clipboard_provider_info(text).expect("should parse fenced json");
         assert_eq!(info.api_key, "sk-abc");
         assert_eq!(info.base_url, "https://api.openai.com/v1");

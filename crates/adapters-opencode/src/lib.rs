@@ -54,7 +54,9 @@ pub fn resolve_opencode_paths(
         }
     }
     let home = dirs::home_dir().ok_or(OpenCodeAdapterError::HomeDir)?;
-    Ok(OpenCodePaths::from_home(home.join(".config").join("opencode")))
+    Ok(OpenCodePaths::from_home(
+        home.join(".config").join("opencode"),
+    ))
 }
 
 pub fn read_live(paths: &OpenCodePaths) -> Result<LiveOpenCode, OpenCodeAdapterError> {

@@ -139,7 +139,7 @@ pub const CLAUDE_PRESETS: &[ClaudePreset] = &[
     },
     ClaudePreset {
         id: "custom",
-        name: "自定义供应商",
+        name: "自定义服务商",
         website_url: "",
         kind: ClaudeKind::ThirdParty,
         base_url: "",
@@ -171,7 +171,7 @@ pub fn official_claude_provider() -> Provider {
 pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return Err(DomainError::Validation("供应商名称不能为空".into()));
+        return Err(DomainError::Validation("服务商名称不能为空".into()));
     }
     match form.kind {
         ClaudeKind::Official => Ok(ClaudeSettings {
@@ -182,11 +182,15 @@ pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError
         ClaudeKind::ThirdParty => {
             let api_key = form.api_key.trim();
             if api_key.is_empty() {
-                return Err(DomainError::Validation("第三方供应商 API 密钥不能为空".into()));
+                return Err(DomainError::Validation(
+                    "第三方服务商 API 密钥不能为空".into(),
+                ));
             }
             let base_url = form.base_url.trim();
             if base_url.is_empty() {
-                return Err(DomainError::Validation("第三方供应商 API 端点不能为空".into()));
+                return Err(DomainError::Validation(
+                    "第三方服务商 API 端点不能为空".into(),
+                ));
             }
             let model = form.model.trim();
             let model = if model.is_empty() {
@@ -242,10 +246,7 @@ pub fn extract_claude_provider_name(_env: &Value) -> Option<String> {
     None
 }
 
-pub fn backfill_claude_settings(
-    stored: &ClaudeSettings,
-    live_env: &Value,
-) -> ClaudeSettings {
+pub fn backfill_claude_settings(stored: &ClaudeSettings, live_env: &Value) -> ClaudeSettings {
     if stored.kind.is_official() {
         return stored.clone();
     }

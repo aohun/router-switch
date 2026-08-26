@@ -1,18 +1,21 @@
-//! App-layer glue: SQLite SSOT + live config adapters for Codex, Claude, Grok, OpenCode, and Pi.
+//! App-layer glue: SQLite SSOT + live config adapters for Codex, Claude, Grok, OpenCode, Pi, Cursor, and ZCode.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use adapters_claude::{
     read_live as read_claude_live, resolve_claude_paths,
     write_live_for_provider as write_claude_live, ClaudeAdapterError, ClaudePaths,
 };
 use adapters_codex::{
-    read_live as read_codex_live, resolve_codex_paths,
-    write_live_for_provider as write_codex_live, CodexAdapterError, CodexPaths,
+    read_live as read_codex_live, resolve_codex_paths, write_live_for_provider as write_codex_live,
+    CodexAdapterError, CodexPaths,
 };
 use adapters_grok::{
-    read_live as read_grok_live, resolve_grok_paths,
-    write_live_for_provider as write_grok_live, GrokAdapterError, GrokPaths,
+    read_live as read_grok_live, resolve_grok_paths, write_live_for_provider as write_grok_live,
+    GrokAdapterError, GrokPaths,
 };
 use adapters_opencode::{
     resolve_opencode_paths, write_live_for_provider as write_opencode_live, OpenCodeAdapterError,
@@ -21,17 +24,37 @@ use adapters_opencode::{
 use adapters_pi::{
     resolve_pi_paths, write_live_for_provider as write_pi_live, PiAdapterError, PiPaths,
 };
-use domain::{
-    backfill_claude_settings, backfill_codex_settings, backfill_grok_settings,
-    inspect_all_tools, inspect_tool_environment,
-    new_provider_id, parse_claude_form, parse_codex_form, parse_grok_form,
-    parse_opencode_form, parse_pi_form, AppKind, ClaudeForm, CodexForm, DomainError,
-    GrokForm, OpenCodeForm, PiForm, Provider, ProviderForm, ProviderSettings,
-    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID,
-    OFFICIAL_PI_ID,
+use adapters_zcode::{
+    delete_live_for_provider as delete_zcode_live, list_custom_providers_from_config,
+    resolve_zcode_paths, write_live_for_provider as write_zcode_live, ZCodeAdapterError,
+    ZCodePaths,
 };
+pub use cursor_gateway::{CaState, LoadedCa};
+use cursor_gateway::{CursorGatewayRuntime, GatewayError};
+use domain::{
+    backfill_claude_settings, backfill_codex_settings, backfill_cursor_settings,
+    backfill_grok_settings, inspect_all_tools, inspect_tool_environment, new_provider_id,
+    parse_claude_form, parse_codex_form, parse_cursor_form, parse_grok_form, parse_opencode_form,
+    parse_pi_form, parse_zcode_form, AppKind, ClaudeForm, CodexForm, CursorForm, DomainError,
+    GrokForm, OpenCodeForm, PiForm, Provider, ProviderForm, ProviderSettings, ZCodeForm,
+    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
+    OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_ZCODE_ID,
+};
+use parking_lot::Mutex;
+use std::sync::OnceLock;
 use store::{AppLanguage, AppSettings, Store, StoreError, ThemePreference};
 use thiserror::Error;
+
+static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
+    TOKIO_RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to initialize tokio runtime for cursor gateway")
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -48,6 +71,10 @@ pub enum SessionError {
     #[error(transparent)]
     PiAdapter(#[from] PiAdapterError),
     #[error(transparent)]
+    CursorGateway(#[from] GatewayError),
+    #[error(transparent)]
+    ZCodeAdapter(#[from] ZCodeAdapterError),
+    #[error(transparent)]
     Domain(#[from] DomainError),
     #[error("{0}")]
     Message(String),
@@ -62,6 +89,8 @@ pub struct Workspace {
     grok_paths: GrokPaths,
     opencode_paths: OpenCodePaths,
     pi_paths: PiPaths,
+    zcode_paths: ZCodePaths,
+    cursor_gateway: Arc<Mutex<Option<CursorGatewayRuntime>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,14 +118,48 @@ impl Workspace {
         let grok_paths = resolve_grok_paths(settings.grok_home.as_deref())?;
         let opencode_paths = resolve_opencode_paths(settings.opencode_home.as_deref())?;
         let pi_paths = resolve_pi_paths(settings.pi_home.as_deref())?;
-        Ok(Self {
+        let zcode_paths = resolve_zcode_paths(settings.zcode_home.as_deref())?;
+        let cursor_gateway = match CursorGatewayRuntime::new() {
+            Ok(gw) => Arc::new(Mutex::new(Some(gw))),
+            Err(e) => {
+                tracing::warn!(%e, "could not initialize CursorGatewayRuntime");
+                Arc::new(Mutex::new(None))
+            }
+        };
+        let ws = Self {
             store,
             codex_paths,
             claude_paths,
             grok_paths,
             opencode_paths,
             pi_paths,
-        })
+            zcode_paths,
+            cursor_gateway,
+        };
+        let _ = ws.sync_zcode_from_live();
+        Ok(ws)
+    }
+
+    pub fn sync_zcode_from_live(&self) -> Result<(), SessionError> {
+        let custom_providers = list_custom_providers_from_config(&self.zcode_paths)?;
+        let now = now_secs();
+        for (idx, (id, name, website_url, settings)) in custom_providers.into_iter().enumerate() {
+            let existing = self.store.get_provider(&id)?;
+            let provider = Provider {
+                id,
+                app: AppKind::ZCode,
+                name,
+                website_url,
+                settings: ProviderSettings::ZCode(settings),
+                created_at: existing.as_ref().map(|p| p.created_at).unwrap_or(now),
+                sort_index: existing
+                    .as_ref()
+                    .map(|p| p.sort_index)
+                    .unwrap_or(idx as i64),
+            };
+            self.store.upsert_provider(&provider)?;
+        }
+        Ok(())
     }
 
     pub fn open_default() -> Result<Self, SessionError> {
@@ -125,6 +188,10 @@ impl Workspace {
 
     pub fn pi_home(&self) -> &Path {
         &self.pi_paths.home
+    }
+
+    pub fn zcode_home(&self) -> &Path {
+        &self.zcode_paths.home
     }
 
     pub fn settings(&self) -> Result<AppSettings, SessionError> {
@@ -173,6 +240,14 @@ impl Workspace {
         settings.pi_home = home.clone();
         self.store.save_settings(&settings)?;
         self.pi_paths = resolve_pi_paths(home.as_deref())?;
+        Ok(())
+    }
+
+    pub fn apply_zcode_home(&mut self, home: Option<PathBuf>) -> Result<(), SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.zcode_home = home.clone();
+        self.store.save_settings(&settings)?;
+        self.zcode_paths = resolve_zcode_paths(home.as_deref())?;
         Ok(())
     }
 
@@ -285,18 +360,23 @@ impl Workspace {
                     provider.website_url.as_deref(),
                 )))
             }
-            ProviderSettings::OpenCode(settings) => {
-                Ok(ProviderForm::OpenCode(settings.form_snapshot(
+            ProviderSettings::OpenCode(settings) => Ok(ProviderForm::OpenCode(
+                settings.form_snapshot(&provider.name, provider.website_url.as_deref()),
+            )),
+            ProviderSettings::Pi(settings) => Ok(ProviderForm::Pi(
+                settings.form_snapshot(&provider.name, provider.website_url.as_deref()),
+            )),
+            ProviderSettings::Cursor(settings) => {
+                let mut settings = settings.clone();
+                backfill_cursor_settings(&mut settings);
+                Ok(ProviderForm::Cursor(settings.form_snapshot(
                     &provider.name,
                     provider.website_url.as_deref(),
                 )))
             }
-            ProviderSettings::Pi(settings) => {
-                Ok(ProviderForm::Pi(settings.form_snapshot(
-                    &provider.name,
-                    provider.website_url.as_deref(),
-                )))
-            }
+            ProviderSettings::ZCode(settings) => Ok(ProviderForm::ZCode(
+                settings.form_snapshot(&provider.name, provider.website_url.as_deref()),
+            )),
             ProviderSettings::Unsupported { app } => Err(SessionError::Message(format!(
                 "暂不支持应用 {} 的表单配置",
                 app.display_name()
@@ -344,6 +424,22 @@ impl Workspace {
         self.save_form(AppKind::Pi, editing_id, ProviderForm::Pi(form))
     }
 
+    pub fn save_cursor_form(
+        &self,
+        editing_id: Option<&str>,
+        form: CursorForm,
+    ) -> Result<Provider, SessionError> {
+        self.save_form(AppKind::Cursor, editing_id, ProviderForm::Cursor(form))
+    }
+
+    pub fn save_zcode_form(
+        &self,
+        editing_id: Option<&str>,
+        form: ZCodeForm,
+    ) -> Result<Provider, SessionError> {
+        self.save_form(AppKind::ZCode, editing_id, ProviderForm::ZCode(form))
+    }
+
     pub fn save_form(
         &self,
         app: AppKind,
@@ -356,28 +452,52 @@ impl Workspace {
                 let url = optional_url(&f.website_url);
                 let is_off = f.kind.is_official();
                 let s = parse_codex_form(f)?;
-                (name, url, ProviderSettings::Codex(s), OFFICIAL_CODEX_ID, is_off)
+                (
+                    name,
+                    url,
+                    ProviderSettings::Codex(s),
+                    OFFICIAL_CODEX_ID,
+                    is_off,
+                )
             }
             ProviderForm::Claude(f) => {
                 let name = f.name.trim().to_string();
                 let url = optional_url(&f.website_url);
                 let is_off = f.kind.is_official();
                 let s = parse_claude_form(f)?;
-                (name, url, ProviderSettings::Claude(s), OFFICIAL_CLAUDE_ID, is_off)
+                (
+                    name,
+                    url,
+                    ProviderSettings::Claude(s),
+                    OFFICIAL_CLAUDE_ID,
+                    is_off,
+                )
             }
             ProviderForm::Grok(f) => {
                 let name = f.name.trim().to_string();
                 let url = optional_url(&f.website_url);
                 let is_off = f.kind.is_official();
                 let s = parse_grok_form(f)?;
-                (name, url, ProviderSettings::Grok(s), OFFICIAL_GROK_ID, is_off)
+                (
+                    name,
+                    url,
+                    ProviderSettings::Grok(s),
+                    OFFICIAL_GROK_ID,
+                    is_off,
+                )
             }
             ProviderForm::OpenCode(f) => {
                 let name = f.name.trim().to_string();
                 let url = optional_url(&f.website_url);
                 let is_off = f.kind.is_official();
                 let s = parse_opencode_form(f)?;
-                (name, url, ProviderSettings::OpenCode(s), OFFICIAL_OPENCODE_ID, is_off)
+                (
+                    name,
+                    url,
+                    ProviderSettings::OpenCode(s),
+                    OFFICIAL_OPENCODE_ID,
+                    is_off,
+                )
             }
             ProviderForm::Pi(f) => {
                 let name = f.name.trim().to_string();
@@ -385,6 +505,32 @@ impl Workspace {
                 let is_off = f.kind.is_official();
                 let s = parse_pi_form(f)?;
                 (name, url, ProviderSettings::Pi(s), OFFICIAL_PI_ID, is_off)
+            }
+            ProviderForm::Cursor(f) => {
+                let name = f.name.trim().to_string();
+                let url = optional_url(&f.website_url);
+                let is_off = f.kind.is_official();
+                let s = parse_cursor_form(f)?;
+                (
+                    name,
+                    url,
+                    ProviderSettings::Cursor(s),
+                    OFFICIAL_CURSOR_ID,
+                    is_off,
+                )
+            }
+            ProviderForm::ZCode(f) => {
+                let name = f.name.trim().to_string();
+                let url = optional_url(&f.website_url);
+                let is_off = f.kind.is_official();
+                let s = parse_zcode_form(f)?;
+                (
+                    name,
+                    url,
+                    ProviderSettings::ZCode(s),
+                    OFFICIAL_ZCODE_ID,
+                    is_off,
+                )
             }
         };
 
@@ -414,8 +560,13 @@ impl Workspace {
             }
         } else {
             let sort_index = next_sort(&self.store, app)?;
+            let id = if app == AppKind::ZCode {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                new_provider_id(&name)
+            };
             Provider {
-                id: new_provider_id(&name),
+                id,
                 app,
                 name,
                 website_url,
@@ -426,7 +577,15 @@ impl Workspace {
         };
 
         self.store.upsert_provider(&provider)?;
-        if self.store.current_id(app)?.as_deref() == Some(provider.id.as_str()) {
+        if app == AppKind::ZCode {
+            if let ProviderSettings::ZCode(ref s) = provider.settings {
+                if s.kind == domain::ZCodeKind::ThirdParty {
+                    write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, s)?;
+                } else if self.store.current_id(app)?.as_deref() == Some(provider.id.as_str()) {
+                    self.write_live(&provider)?;
+                }
+            }
+        } else if self.store.current_id(app)?.as_deref() == Some(provider.id.as_str()) {
             self.write_live(&provider)?;
         }
         Ok(provider)
@@ -436,7 +595,7 @@ impl Workspace {
         let request = domain::parse_deeplink_url(url)?;
         let (app, form, is_enabled) = request.to_provider_form()?;
         let provider = self.save_form(app, None, form)?;
-        if is_enabled {
+        if is_enabled && app != AppKind::ZCode {
             self.enable(&provider.id)?;
         }
         Ok((provider, is_enabled))
@@ -450,6 +609,12 @@ impl Workspace {
     }
 
     pub fn delete(&self, id: &str) -> Result<(), SessionError> {
+        let provider = self.store.get_provider(id)?;
+        if let Some(ref p) = provider {
+            if p.app == AppKind::ZCode {
+                delete_zcode_live(&self.zcode_paths, id)?;
+            }
+        }
         self.store.delete_provider(id)?;
         Ok(())
     }
@@ -457,11 +622,22 @@ impl Workspace {
     pub fn duplicate(&self, id: &str) -> Result<Provider, SessionError> {
         let source = self.require(id)?;
         let mut copy = source.clone();
-        copy.id = new_provider_id(&format!("{}-copy", source.name));
+        if copy.app == AppKind::ZCode {
+            copy.id = uuid::Uuid::new_v4().to_string();
+        } else {
+            copy.id = new_provider_id(&format!("{}-copy", source.name));
+        }
         copy.name = format!("{} copy", source.name);
         copy.created_at = now_secs();
         copy.sort_index = next_sort(&self.store, source.app)?;
         self.store.upsert_provider(&copy)?;
+        if copy.app == AppKind::ZCode {
+            if let ProviderSettings::ZCode(ref s) = copy.settings {
+                if s.kind == domain::ZCodeKind::ThirdParty {
+                    write_zcode_live(&self.zcode_paths, &copy.id, &copy.name, s)?;
+                }
+            }
+        }
         Ok(copy)
     }
 
@@ -482,6 +658,16 @@ impl Workspace {
             ProviderSettings::Pi(settings) => {
                 write_pi_live(&self.pi_paths, &provider.id, settings)?;
             }
+            ProviderSettings::Cursor(settings) => {
+                if let Some(guard) = self.cursor_gateway.try_lock() {
+                    if let Some(gw) = guard.as_ref() {
+                        gw.set_settings(Some(settings.clone()));
+                    }
+                }
+            }
+            ProviderSettings::ZCode(settings) => {
+                write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, settings)?;
+            }
             ProviderSettings::Unsupported { app } => {
                 return Err(SessionError::Message(format!(
                     "暂不支持应用 {} 的切换操作",
@@ -492,10 +678,95 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn start_cursor_gateway(
+        &self,
+        proxy_port: Option<u16>,
+        backend_port: Option<u16>,
+    ) -> Result<(u16, u16), SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(async {
+            let mut guard = self.cursor_gateway.lock();
+            let gw = match guard.as_mut() {
+                Some(gw) => gw,
+                None => {
+                    let new_gw = CursorGatewayRuntime::new().map_err(|e| {
+                        SessionError::Message(format!("初始化 Cursor 网关失败: {e}"))
+                    })?;
+                    *guard = Some(new_gw);
+                    guard.as_mut().unwrap()
+                }
+            };
+            // Sync current cursor provider settings
+            if let Ok(Some(current_id)) = self.store.current_id(AppKind::Cursor) {
+                if let Ok(Some(provider)) = self.store.get_provider(&current_id) {
+                    if let ProviderSettings::Cursor(s) = provider.settings {
+                        gw.set_settings(Some(s));
+                    }
+                }
+            }
+            let ports = gw
+                .start(proxy_port, backend_port)
+                .await
+                .map_err(|e| SessionError::Message(format!("启动 Cursor 网关失败: {e}")))?;
+            Ok(ports)
+        })
+    }
+
+    pub fn stop_cursor_gateway(&self) -> Result<(), SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(async {
+            let mut guard = self.cursor_gateway.lock();
+            if let Some(gw) = guard.as_mut() {
+                gw.stop()
+                    .await
+                    .map_err(|e| SessionError::Message(format!("停止 Cursor 网关失败: {e}")))?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn is_cursor_gateway_running(&self) -> bool {
+        let guard = self.cursor_gateway.lock();
+        guard.as_ref().map(|gw| gw.is_running()).unwrap_or(false)
+    }
+
+    pub fn cursor_proxy_port(&self) -> u16 {
+        let guard = self.cursor_gateway.lock();
+        guard
+            .as_ref()
+            .and_then(|gw| gw.proxy_port())
+            .unwrap_or(2080)
+    }
+
+    pub fn cursor_backend_port(&self) -> u16 {
+        let guard = self.cursor_gateway.lock();
+        guard
+            .as_ref()
+            .and_then(|gw| gw.backend_port())
+            .unwrap_or(2081)
+    }
+
+    pub fn cursor_ca_state(&self) -> bool {
+        let guard = self.cursor_gateway.lock();
+        guard
+            .as_ref()
+            .and_then(|gw| gw.ca_state().ok())
+            .map(|s| s.is_trusted())
+            .unwrap_or(false)
+    }
+
+    pub fn cursor_ca_install_command(&self) -> String {
+        let guard = self.cursor_gateway.lock();
+        guard
+            .as_ref()
+            .and_then(|gw| gw.ca_install_command())
+            .unwrap_or_else(|| "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.router-switch/ca/ca.crt".into())
+    }
+
     fn require(&self, id: &str) -> Result<Provider, SessionError> {
         self.store
             .get_provider(id)?
-            .ok_or_else(|| SessionError::Message("供应商不存在".into()))
+            .ok_or_else(|| SessionError::Message("服务商不存在".into()))
     }
 }
 
@@ -524,9 +795,7 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{
-        ClaudeKind, CodexKind, GrokKind, OpenCodeKind, PiKind,
-    };
+    use domain::{ClaudeKind, CodexKind, CursorKind, GrokKind, OpenCodeKind, PiKind, ZCodeKind};
     use tempfile::TempDir;
 
     #[test]
@@ -557,7 +826,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
         let mut ws = Workspace::open(&db_path, None).unwrap();
-        ws.apply_claude_home(Some(temp.path().join("claude"))).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude")))
+            .unwrap();
 
         let form = ClaudeForm {
             name: "OpenRouter".into(),
@@ -603,7 +873,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
         let mut ws = Workspace::open(&db_path, None).unwrap();
-        ws.apply_opencode_home(Some(temp.path().join("opencode"))).unwrap();
+        ws.apply_opencode_home(Some(temp.path().join("opencode")))
+            .unwrap();
 
         let form = OpenCodeForm {
             name: "DeepSeek OpenCode".into(),
@@ -647,6 +918,77 @@ mod tests {
     }
 
     #[test]
+    fn zcode_provider_flow() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        let zcode_home = temp.path().join("zcode");
+        ws.apply_zcode_home(Some(zcode_home.clone())).unwrap();
+
+        let form = ZCodeForm {
+            name: "cchost".into(),
+            website_url: "https://cchost.ai".into(),
+            kind: ZCodeKind::ThirdParty,
+            provider_kind: "anthropic".into(),
+            api_key: "sk-cchost-S19Q-JLKeD7F8LsF2pkW3A".into(),
+            base_url: "https://cchost.ai".into(),
+            model: "gemini-3.7-flash-high".into(),
+            modality_text: true,
+            modality_image: true,
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_zcode_form(None, form).unwrap();
+
+        // 1. Immediately written to config.json upon save
+        let live_paths = adapters_zcode::ZCodePaths::from_home(&zcode_home);
+        let live = adapters_zcode::read_live(&live_paths).unwrap();
+        assert_eq!(live.config["provider"][&provider.id]["name"], "cchost");
+        assert_eq!(
+            live.config["provider"][&provider.id]["options"]["baseURL"],
+            "https://cchost.ai"
+        );
+
+        // 2. Duplicate immediately writes copy into config.json
+        let copy = ws.duplicate(&provider.id).unwrap();
+        let live_after_dup = adapters_zcode::read_live(&live_paths).unwrap();
+        assert_eq!(
+            live_after_dup.config["provider"][&copy.id]["name"],
+            "cchost copy"
+        );
+
+        // 3. Delete immediately removes from config.json
+        ws.delete(&provider.id).unwrap();
+        let live_after_del = adapters_zcode::read_live(&live_paths).unwrap();
+        assert!(live_after_del.config["provider"]
+            .get(&provider.id)
+            .is_none());
+        assert!(live_after_del.config["provider"].get(&copy.id).is_some());
+    }
+
+    #[test]
+    fn cursor_provider_flow() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let ws = Workspace::open(&db_path, None).unwrap();
+
+        let form = CursorForm {
+            name: "Packy Cursor".into(),
+            website_url: "https://packy.ai".into(),
+            kind: CursorKind::ThirdParty,
+            provider_type: "openai-chat".into(),
+            api_key: "sk-cursor-test".into(),
+            base_url: "https://api.packy.ai/v1".into(),
+            model: "gpt-4o".into(),
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_cursor_form(None, form).unwrap();
+        ws.enable(&provider.id).unwrap();
+
+        let snapshot = ws.snapshot_for(AppKind::Cursor).unwrap();
+        assert_eq!(snapshot.current_id.as_deref(), Some(provider.id.as_str()));
+    }
+
+    #[test]
     fn reorder_main_apps_persists() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
@@ -658,6 +1000,7 @@ mod tests {
             "codex".into(),
             "opencode".into(),
             "pi".into(),
+            "cursor".into(),
         ];
         ws.reorder_main_apps(new_order.clone()).unwrap();
 
@@ -670,7 +1013,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
         let mut ws = Workspace::open(&db_path, None).unwrap();
-        ws.apply_claude_home(Some(temp.path().join("claude"))).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude")))
+            .unwrap();
 
         let url = "router-switch://v1/import?resource=provider&app=claude&name=DeepLink%20Claude&endpoint=https%3A%2F%2Fapi.anthropic.com%2Fv1&apiKey=sk-ant-test-key&model=claude-3-7-sonnet&enabled=true";
         let (provider, is_enabled) = ws.import_from_deeplink(url).unwrap();

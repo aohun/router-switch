@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInstallation {
@@ -129,7 +129,10 @@ pub fn infer_install_source(path: &Path) -> &'static str {
         "pnpm"
     } else if s.contains("/scoop/") {
         "scoop"
-    } else if s.contains("/library/python") || s.contains("/scripts/") || s.contains("/site-packages/") {
+    } else if s.contains("/library/python")
+        || s.contains("/scripts/")
+        || s.contains("/site-packages/")
+    {
         "pip"
     } else if s.contains("/.opencode/") {
         "opencode"
@@ -306,7 +309,10 @@ pub fn fetch_remote_latest_version(tool_id: &str) -> Option<String> {
                 .call()
                 .ok()?;
             let val: serde_json::Value = resp.into_json().ok()?;
-            val.get("info")?.get("version")?.as_str().map(|s| s.to_string())
+            val.get("info")?
+                .get("version")?
+                .as_str()
+                .map(|s| s.to_string())
         }
         _ => None,
     }
@@ -353,7 +359,15 @@ pub fn inspect_tool_environment(
                 let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let detail = if stderr.is_empty() { stdout } else { stderr };
                 let err_msg = detail.lines().rev().take(3).collect::<Vec<_>>().join(" ");
-                (None, false, Some(if err_msg.is_empty() { "执行返回非零状态".into() } else { err_msg }))
+                (
+                    None,
+                    false,
+                    Some(if err_msg.is_empty() {
+                        "执行返回非零状态".into()
+                    } else {
+                        err_msg
+                    }),
+                )
             }
             Err(e) => (None, false, Some(e.to_string())),
         };
@@ -375,10 +389,14 @@ pub fn inspect_tool_environment(
     // Sort: default path first
     installations.sort_by_key(|i| std::cmp::Reverse(i.is_path_default));
 
-    let default_inst = installations.iter().find(|i| i.is_path_default).or_else(|| installations.first());
+    let default_inst = installations
+        .iter()
+        .find(|i| i.is_path_default)
+        .or_else(|| installations.first());
     let current_version = default_inst.and_then(|i| i.version.clone());
     let is_installed = !installations.is_empty();
-    let installed_but_broken = is_installed && current_version.is_none() && installations.iter().any(|i| !i.runnable);
+    let installed_but_broken =
+        is_installed && current_version.is_none() && installations.iter().any(|i| !i.runnable);
     let error = default_inst.and_then(|i| i.error.clone());
 
     let latest_version = if fetch_remote {
@@ -465,17 +483,37 @@ mod tests {
     #[test]
     fn test_extract_version() {
         assert_eq!(extract_version("2.1.238 (Claude Code)"), "2.1.238");
-        assert_eq!(extract_version("codex-cli 0.147.0-alpha.6.6"), "0.147.0-alpha.6.6");
+        assert_eq!(
+            extract_version("codex-cli 0.147.0-alpha.6.6"),
+            "0.147.0-alpha.6.6"
+        );
         assert_eq!(extract_version("grok 1.0.5 (5115b46bc909)"), "1.0.5");
         assert_eq!(extract_version("v1.17.9"), "1.17.9");
     }
 
     #[test]
     fn test_infer_install_source() {
-        assert_eq!(infer_install_source(Path::new("/Users/wayne/.nvm/versions/node/v24.14.0/bin/claude")), "nvm");
-        assert_eq!(infer_install_source(Path::new("/opt/homebrew/bin/codex")), "homebrew");
-        assert_eq!(infer_install_source(Path::new("/Users/wayne/.volta/bin/grok")), "volta");
-        assert_eq!(infer_install_source(Path::new("/Users/wayne/.opencode/bin/opencode")), "opencode");
-        assert_eq!(infer_install_source(Path::new("/usr/local/bin/pi")), "system");
+        assert_eq!(
+            infer_install_source(Path::new(
+                "/Users/wayne/.nvm/versions/node/v24.14.0/bin/claude"
+            )),
+            "nvm"
+        );
+        assert_eq!(
+            infer_install_source(Path::new("/opt/homebrew/bin/codex")),
+            "homebrew"
+        );
+        assert_eq!(
+            infer_install_source(Path::new("/Users/wayne/.volta/bin/grok")),
+            "volta"
+        );
+        assert_eq!(
+            infer_install_source(Path::new("/Users/wayne/.opencode/bin/opencode")),
+            "opencode"
+        );
+        assert_eq!(
+            infer_install_source(Path::new("/usr/local/bin/pi")),
+            "system"
+        );
     }
 }

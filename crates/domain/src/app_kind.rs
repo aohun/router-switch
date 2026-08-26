@@ -8,6 +8,8 @@ pub enum AppKind {
     Grok,
     OpenCode,
     Pi,
+    Cursor,
+    ZCode,
 }
 
 impl AppKind {
@@ -18,6 +20,8 @@ impl AppKind {
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
+            Self::Cursor => "cursor",
+            Self::ZCode => "zcode",
         }
     }
 
@@ -28,6 +32,8 @@ impl AppKind {
             Self::Grok => "Grok Build",
             Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
+            Self::Cursor => "Cursor",
+            Self::ZCode => "ZCode",
         }
     }
 
@@ -38,6 +44,8 @@ impl AppKind {
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
+            "cursor" => Some(Self::Cursor),
+            "zcode" => Some(Self::ZCode),
             _ => None,
         }
     }

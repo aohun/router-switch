@@ -20,7 +20,7 @@
 
 ## 📖 项目简介
 
-**Router Switch** 是专为 AI 开发者打造的新一代 AI 网关桌面工具与配置中枢。它解决了在各大 AI CLI 工具（如 OpenAI Codex、Anthropic Claude Code、xAI Grok Build、OpenCode、Pi 等）中频繁手动修改配置文件、切换第三方 API 供应商以及管理多端点凭据的繁琐痛点。
+**Router Switch** 是专为 AI 开发者打造的新一代 AI 网关桌面工具与配置中枢。它解决了在各大 AI CLI 工具（如 OpenAI Codex、Anthropic Claude Code、xAI Grok Build、OpenCode、Pi 等）中频繁手动修改配置文件、切换第三方 API 服务商以及管理多端点凭据的繁琐痛点。
 
 通过原生 GPU 渲染引擎，Router Switch 提供了毫秒级冷启动、极低内存占用与 60+ FPS 流畅交互体验，彻底告别传统前端桌面框架的资源开销。
 
@@ -28,18 +28,20 @@
 
 ## ✨ 已实现功能
 
-### 1. 多工具多供应商统一管理
+### 1. 多工具多服务商统一管理
 - **支持全系列主流 AI 工具**：
   - **OpenAI Codex** (`~/.codex/config.toml`, `~/.codex/auth.json`)
   - **Anthropic Claude Code** (`~/.claude/settings.json`)
   - **xAI Grok Build** (`~/.grok/config.toml`)
   - **OpenCode** (`~/.config/opencode/opencode.json`)
   - **Pi Coding Agent** (`~/.pi/agent/`)
-- **一键原子切换**：支持官方登录认证与第三方 API 供应商之间的一键平滑切换，提供双文件写入原子保护与错误自动回滚机制。
+  - **ZCode** (`~/.zcode/v2/config.json`)
+  - **Cursor** (本地网关代理)
+- **一键原子切换**：支持官方登录认证与第三方 API 服务商之间的一键平滑切换，提供双文件写入原子保护与错误自动回滚机制。
 
 ### 2. 剪贴板智能识别与一键导入
 - **NewAPI / OneAPI 链接识别**：自动监控并解析剪贴板中导出的渠道连接 JSON（如 `{"_type":"newapi_channel_conn","key":"sk-...","url":"https://..."}`）。
-- **自动填充与提取**：在新建供应商页面自动提取 API 端点 (Base URL)、API Key、服务商名称与模型列表，无需手动复制粘贴。
+- **自动填充与提取**：在新建服务商页面自动提取 API 端点 (Base URL)、API Key、服务商名称与模型列表，无需手动复制粘贴。
 
 ### 3. 模型探测与模型映射 (Model Mapping)
 - **在线模型获取**：支持从第三方端点一键拉取可用的模型列表 (`/v1/models`)。
@@ -95,8 +97,10 @@ router-switch/
 │   ├── adapters-grok/       # Grok Build live 配置适配器 (~/.grok)
 │   ├── adapters-opencode/   # OpenCode live 配置适配器 (~/.config/opencode)
 │   ├── adapters-pi/         # Pi live 配置适配器 (~/.pi/agent)
+│   ├── adapters-zcode/      # ZCode live 配置适配器 (~/.zcode/v2/config.json)
+│   ├── cursor-gateway/      # Cursor 反向代理与网关服务
 │   ├── store/               # SQLite SSOT 数据存储 (~/.router-switch/app.db)
-│   ├── session/             # 业务编排层：供应商生命周期、切换与 Live 原子写入
+│   ├── session/             # 业务编排层：服务商生命周期、切换与 Live 原子写入
 │   ├── ui/                  # GPUI 视图、主题渲染、国际化与用户交互逻辑
 │   └── app/                 # 桌面应用程序入口 main.rs
 ```
@@ -107,13 +111,14 @@ router-switch/
 
 | 路径 | 说明 |
 |---|---|
-| `~/.router-switch/app.db` | 应用持久化数据库（供应商列表、当前激活项、偏好设置） |
+| `~/.router-switch/app.db` | 应用持久化数据库（服务商列表、当前激活项、偏好设置） |
 | `~/.codex/config.toml` | Codex 激活端点与模型配置 |
 | `~/.codex/auth.json` | Codex 登录凭据与 API Key |
 | `~/.claude/settings.json` | Claude Code 激活环境变量与配置 |
 | `~/.grok/config.toml` | Grok Build 激活端点与 Key |
 | `~/.config/opencode/opencode.json` | OpenCode 激活配置 |
 | `~/.pi/agent/` | Pi 激活配置与模型映射 |
+| `~/.zcode/v2/config.json` | ZCode 服务商配置与模型模态设置 |
 
 *提示：可通过设置 `ROUTER_SWITCH_HOME` 与 `CODEX_HOME` 等环境变量自定义数据与配置文件存储路径。*
 

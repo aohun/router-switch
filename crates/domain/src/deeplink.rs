@@ -1,13 +1,14 @@
-use std::collections::HashMap;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+use std::collections::HashMap;
 use url::Url;
 
 use crate::{
-    AppKind, ClaudeForm, ClaudeKind, CodexForm, CodexKind, DomainError, GrokForm,
-    GrokKind, OpenCodeForm, OpenCodeKind, PiForm, PiKind, ProviderForm,
-    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_GROK_MODEL,
+    AppKind, ClaudeForm, ClaudeKind, CodexForm, CodexKind, CursorForm, CursorKind, DomainError,
+    GrokForm, GrokKind, OpenCodeForm, OpenCodeKind, PiForm, PiKind, ProviderForm, ZCodeForm,
+    ZCodeKind, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
     DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_NPM, DEFAULT_PI_API_TYPE, DEFAULT_PI_MODEL,
+    DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -70,10 +71,7 @@ pub fn parse_deeplink_url(url_str: &str) -> Result<DeepLinkImportRequest, Domain
         )));
     }
 
-    let app = pairs
-        .get("app")
-        .or_else(|| pairs.get("targetApp"))
-        .cloned();
+    let app = pairs.get("app").or_else(|| pairs.get("targetApp")).cloned();
 
     let name = pairs
         .get("name")
@@ -201,8 +199,10 @@ impl DeepLinkImportRequest {
             "grok" | "grokbuild" | "grok_build" | "xai" => Ok(AppKind::Grok),
             "opencode" | "open_code" => Ok(AppKind::OpenCode),
             "pi" | "pi_switch" => Ok(AppKind::Pi),
+            "cursor" | "cursor_ide" | "cursorbyok" => Ok(AppKind::Cursor),
+            "zcode" | "zai" | "bigmodel" => Ok(AppKind::ZCode),
             other => Err(DomainError::Validation(format!(
-                "不支持的应用类型: '{other}', 可用应用: claude, codex, grok, opencode, pi"
+                "不支持的应用类型: '{other}', 可用应用: claude, codex, grok, opencode, pi, cursor, zcode"
             ))),
         }
     }
@@ -241,11 +241,17 @@ impl DeepLinkImportRequest {
 
                         if let Some(u) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
                             cfg_base_url = Some(u.to_string());
-                        } else if let Some(u) = env.get("OPENAI_BASE_URL").and_then(|v| v.as_str()) {
+                        } else if let Some(u) = env.get("OPENAI_BASE_URL").and_then(|v| v.as_str())
+                        {
                             cfg_base_url = Some(u.to_string());
-                        } else if let Some(u) = env.get("GEMINI_BASE_URL").and_then(|v| v.as_str()) {
+                        } else if let Some(u) = env.get("GEMINI_BASE_URL").and_then(|v| v.as_str())
+                        {
                             cfg_base_url = Some(u.to_string());
-                        } else if let Some(u) = env.get("baseUrl").or_else(|| env.get("baseURL")).and_then(|v| v.as_str()) {
+                        } else if let Some(u) = env
+                            .get("baseUrl")
+                            .or_else(|| env.get("baseURL"))
+                            .and_then(|v| v.as_str())
+                        {
                             cfg_base_url = Some(u.to_string());
                         }
 
@@ -259,13 +265,22 @@ impl DeepLinkImportRequest {
                             cfg_model = Some(m.to_string());
                         }
 
-                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL").and_then(|v| v.as_str()) {
+                        if let Some(m) = env
+                            .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+                            .and_then(|v| v.as_str())
+                        {
                             cfg_haiku = Some(m.to_string());
                         }
-                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").and_then(|v| v.as_str()) {
+                        if let Some(m) = env
+                            .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+                            .and_then(|v| v.as_str())
+                        {
                             cfg_sonnet = Some(m.to_string());
                         }
-                        if let Some(m) = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").and_then(|v| v.as_str()) {
+                        if let Some(m) = env
+                            .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+                            .and_then(|v| v.as_str())
+                        {
                             cfg_opus = Some(m.to_string());
                         }
                     }
@@ -286,7 +301,12 @@ impl DeepLinkImportRequest {
                             {
                                 cfg_base_url = Some(u.to_string());
                             }
-                            if let Some(m) = parsed_toml.get("general").or_else(|| Some(&parsed_toml)).and_then(|v| v.get("model")).and_then(|v| v.as_str()) {
+                            if let Some(m) = parsed_toml
+                                .get("general")
+                                .or_else(|| Some(&parsed_toml))
+                                .and_then(|v| v.get("model"))
+                                .and_then(|v| v.as_str())
+                            {
                                 cfg_model = Some(m.to_string());
                             }
                         }
@@ -312,11 +332,7 @@ impl DeepLinkImportRequest {
             .or(cfg_api_key)
             .unwrap_or_default();
 
-        let model = self
-            .model
-            .clone()
-            .filter(|s| !s.is_empty())
-            .or(cfg_model);
+        let model = self.model.clone().filter(|s| !s.is_empty()).or(cfg_model);
 
         let name = self
             .name
@@ -392,7 +408,10 @@ impl DeepLinkImportRequest {
             }
             AppKind::OpenCode => {
                 let m = model.unwrap_or_else(|| DEFAULT_OPENCODE_MODEL.to_string());
-                let npm = self.npm.clone().unwrap_or_else(|| DEFAULT_OPENCODE_NPM.to_string());
+                let npm = self
+                    .npm
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_OPENCODE_NPM.to_string());
                 ProviderForm::OpenCode(OpenCodeForm {
                     name,
                     website_url,
@@ -406,7 +425,10 @@ impl DeepLinkImportRequest {
             }
             AppKind::Pi => {
                 let m = model.unwrap_or_else(|| DEFAULT_PI_MODEL.to_string());
-                let api_type = self.api_type.clone().unwrap_or_else(|| DEFAULT_PI_API_TYPE.to_string());
+                let api_type = self
+                    .api_type
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_PI_API_TYPE.to_string());
                 ProviderForm::Pi(PiForm {
                     name,
                     website_url,
@@ -415,6 +437,42 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::Cursor => {
+                let m = model.unwrap_or_else(|| DEFAULT_CURSOR_MODEL.to_string());
+                let provider_type = self
+                    .api_type
+                    .clone()
+                    .unwrap_or_else(|| "openai-chat".to_string());
+                ProviderForm::Cursor(CursorForm {
+                    name,
+                    website_url,
+                    kind: CursorKind::ThirdParty,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    provider_type,
+                    model_mappings: Vec::new(),
+                })
+            }
+            AppKind::ZCode => {
+                let m = model.unwrap_or_else(|| DEFAULT_ZCODE_MODEL.to_string());
+                let provider_kind = self
+                    .api_type
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_ZCODE_PROVIDER_KIND.to_string());
+                ProviderForm::ZCode(ZCodeForm {
+                    name,
+                    website_url,
+                    kind: ZCodeKind::ThirdParty,
+                    provider_kind,
+                    api_key,
+                    base_url: primary_endpoint,
+                    model: m,
+                    modality_text: true,
+                    modality_image: true,
                     model_mappings: Vec::new(),
                 })
             }
@@ -435,7 +493,10 @@ mod tests {
         assert_eq!(req.resource, "provider");
         assert_eq!(req.app.as_deref(), Some("claude"));
         assert_eq!(req.name.as_deref(), Some("Claude Proxy"));
-        assert_eq!(req.endpoint.as_deref(), Some("https://api.anthropic.com/v1"));
+        assert_eq!(
+            req.endpoint.as_deref(),
+            Some("https://api.anthropic.com/v1")
+        );
         assert_eq!(req.api_key.as_deref(), Some("sk-ant-test-123"));
         assert_eq!(req.model.as_deref(), Some("claude-3-7-sonnet"));
         assert_eq!(req.enabled, Some(true));
@@ -468,6 +529,24 @@ mod tests {
             assert_eq!(f.model, "gpt-5.1");
         } else {
             panic!("Expected Codex form");
+        }
+    }
+
+    #[test]
+    fn test_parse_zcode_url() {
+        let url = "router-switch://v1/import?resource=provider&app=zcode&name=CCHost%20ZCode&endpoint=https%3A%2F%2Fcchost.ai&apiKey=sk-cchost-123&model=gemini-3.7-flash-high&enabled=true";
+        let req = parse_deeplink_url(url).unwrap();
+        assert_eq!(req.app.as_deref(), Some("zcode"));
+        let (app, form, enabled) = req.to_provider_form().unwrap();
+        assert_eq!(app, AppKind::ZCode);
+        assert!(enabled);
+        if let ProviderForm::ZCode(f) = form {
+            assert_eq!(f.name, "CCHost ZCode");
+            assert_eq!(f.base_url, "https://cchost.ai");
+            assert_eq!(f.api_key, "sk-cchost-123");
+            assert_eq!(f.model, "gemini-3.7-flash-high");
+        } else {
+            panic!("Expected ZCode form");
         }
     }
 

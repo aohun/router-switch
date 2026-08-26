@@ -180,7 +180,7 @@ pub fn official_opencode_provider() -> Provider {
 pub fn parse_opencode_form(form: OpenCodeForm) -> Result<OpenCodeSettings, DomainError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return Err(DomainError::Validation("供应商名称不能为空".into()));
+        return Err(DomainError::Validation("服务商名称不能为空".into()));
     }
 
     match form.kind {
@@ -188,7 +188,9 @@ pub fn parse_opencode_form(form: OpenCodeForm) -> Result<OpenCodeSettings, Domai
         OpenCodeKind::ThirdParty => {
             let base_url = form.base_url.trim();
             if base_url.is_empty() {
-                return Err(DomainError::Validation("API 端点 (Base URL) 不能为空".into()));
+                return Err(DomainError::Validation(
+                    "API 端点 (Base URL) 不能为空".into(),
+                ));
             }
             let api_key = form.api_key.trim();
             if api_key.is_empty() {

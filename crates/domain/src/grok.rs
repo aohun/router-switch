@@ -102,7 +102,7 @@ pub const GROK_PRESETS: &[GrokPreset] = &[
     },
     GrokPreset {
         id: "custom",
-        name: "自定义供应商",
+        name: "自定义服务商",
         website_url: "",
         kind: GrokKind::ThirdParty,
         base_url: "",
@@ -134,7 +134,7 @@ pub fn official_grok_provider() -> Provider {
 pub fn parse_grok_form(form: GrokForm) -> Result<GrokSettings, DomainError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return Err(DomainError::Validation("供应商名称不能为空".into()));
+        return Err(DomainError::Validation("服务商名称不能为空".into()));
     }
     match form.kind {
         GrokKind::Official => Ok(GrokSettings {
@@ -145,11 +145,15 @@ pub fn parse_grok_form(form: GrokForm) -> Result<GrokSettings, DomainError> {
         GrokKind::ThirdParty => {
             let api_key = form.api_key.trim();
             if api_key.is_empty() {
-                return Err(DomainError::Validation("第三方供应商 API 密钥不能为空".into()));
+                return Err(DomainError::Validation(
+                    "第三方服务商 API 密钥不能为空".into(),
+                ));
             }
             let base_url = form.base_url.trim();
             if base_url.is_empty() {
-                return Err(DomainError::Validation("第三方供应商 API 端点不能为空".into()));
+                return Err(DomainError::Validation(
+                    "第三方服务商 API 端点不能为空".into(),
+                ));
             }
             let model = form.model.trim();
             let model = if model.is_empty() {
@@ -167,12 +171,7 @@ pub fn parse_grok_form(form: GrokForm) -> Result<GrokSettings, DomainError> {
     }
 }
 
-pub fn generate_grok_config_toml(
-    name: &str,
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-) -> String {
+pub fn generate_grok_config_toml(name: &str, api_key: &str, base_url: &str, model: &str) -> String {
     let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_key = api_key.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_url = base_url.replace('\\', "\\\\").replace('"', "\\\"");
@@ -209,10 +208,7 @@ pub fn extract_grok_provider_name(toml: &str) -> Option<String> {
     extract_toml_value(toml, "name")
 }
 
-pub fn backfill_grok_settings(
-    stored: &GrokSettings,
-    live_toml: &str,
-) -> GrokSettings {
+pub fn backfill_grok_settings(stored: &GrokSettings, live_toml: &str) -> GrokSettings {
     if stored.kind.is_official() {
         return stored.clone();
     }
@@ -224,9 +220,15 @@ pub fn backfill_grok_settings(
         return stored.clone();
     }
 
-    let key = live_key.or_else(|| extract_grok_api_key(&stored.config_toml)).unwrap_or_default();
-    let base_url = live_base_url.or_else(|| extract_grok_base_url(&stored.config_toml)).unwrap_or_default();
-    let model = live_model.or_else(|| extract_grok_model(&stored.config_toml)).unwrap_or_else(|| DEFAULT_GROK_MODEL.to_string());
+    let key = live_key
+        .or_else(|| extract_grok_api_key(&stored.config_toml))
+        .unwrap_or_default();
+    let base_url = live_base_url
+        .or_else(|| extract_grok_base_url(&stored.config_toml))
+        .unwrap_or_default();
+    let model = live_model
+        .or_else(|| extract_grok_model(&stored.config_toml))
+        .unwrap_or_else(|| DEFAULT_GROK_MODEL.to_string());
     let name = extract_grok_provider_name(live_toml)
         .or_else(|| extract_grok_provider_name(&stored.config_toml))
         .unwrap_or_else(|| "Grok Provider".to_string());

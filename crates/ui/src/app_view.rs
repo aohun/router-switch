@@ -1,22 +1,19 @@
 use domain::{
-    extract_claude_base_url, extract_claude_model,
-    extract_codex_base_url, extract_codex_model,
-    extract_grok_base_url, extract_grok_model,
-    extract_opencode_base_url, extract_opencode_model,
-    parse_clipboard_provider_info, ClipboardProviderInfo,
-    AppKind, ClaudeForm, ClaudeKind, ClaudeModelMapping,
-    CodexForm, CodexKind, CodexModelMapping, GrokForm, GrokKind, GrokModelMapping,
-    OpenCodeForm, OpenCodeKind, OpenCodeModelMapping,
-    PiForm, PiKind, PiModelMapping,
-    Provider, ProviderForm, ProviderSettings,
-    ToolEnvironmentStatus,
-    CLAUDE_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_GROK_MODEL,
-    DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
-    GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS,
+    extract_claude_base_url, extract_claude_model, extract_codex_base_url, extract_codex_model,
+    extract_cursor_base_url, extract_cursor_model, extract_grok_base_url, extract_grok_model,
+    extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url, extract_zcode_model,
+    parse_clipboard_provider_info, AppKind, ClaudeForm, ClaudeKind, ClaudeModelMapping,
+    ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping, CursorForm, CursorKind,
+    CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm, OpenCodeKind,
+    OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm, ProviderSettings,
+    ToolEnvironmentStatus, ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS,
+    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
+    DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL, DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND,
+    GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, svg, App, AppContext, Context, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    div, prelude::FluentBuilder, px, rgb, rgba, svg, App, AppContext, Context, Entity, FontWeight,
+    Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
 };
 use gpui_component::{
@@ -27,10 +24,11 @@ use gpui_component::{
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex, ActiveTheme, Disableable as _, Icon, IconName, IconNamed, Selectable as _, Sizable as _, WindowExt,
+    v_flex, ActiveTheme, Disableable as _, Icon, IconName, IconNamed, Selectable as _,
+    Sizable as _, WindowExt,
 };
-use session::Workspace;
 use rust_i18n::t;
+use session::Workspace;
 use store::{AppLanguage, ThemePreference};
 
 use crate::assets::CustomIcon;
@@ -70,6 +68,8 @@ pub struct PresetSelectItem {
     pub model: String,
     pub is_official: bool,
     pub provider_label: String,
+    pub modality_text: bool,
+    pub modality_image: bool,
 }
 
 impl SelectItem for PresetSelectItem {
@@ -123,6 +123,8 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 model: p.model.to_string(),
                 is_official: p.kind.is_official(),
                 provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
             })
             .collect(),
         AppKind::Claude => CLAUDE_PRESETS
@@ -135,6 +137,8 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 model: p.model.to_string(),
                 is_official: p.kind.is_official(),
                 provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
             })
             .collect(),
         AppKind::Grok => GROK_PRESETS
@@ -147,6 +151,8 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 model: p.model.to_string(),
                 is_official: p.kind.is_official(),
                 provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
             })
             .collect(),
         AppKind::OpenCode => OPENCODE_PRESETS
@@ -159,6 +165,8 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 model: p.model.to_string(),
                 is_official: p.kind.is_official(),
                 provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
             })
             .collect(),
         AppKind::Pi => PI_PRESETS
@@ -171,6 +179,36 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 model: p.model.to_string(),
                 is_official: p.kind.is_official(),
                 provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
+            })
+            .collect(),
+        AppKind::Cursor => CURSOR_PRESETS
+            .iter()
+            .map(|p| PresetSelectItem {
+                id: p.id.to_string(),
+                name: p.name.to_string(),
+                website_url: p.website_url.to_string(),
+                base_url: p.base_url.to_string(),
+                model: p.model.to_string(),
+                is_official: p.kind.is_official(),
+                provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: true,
+            })
+            .collect(),
+        AppKind::ZCode => ZCODE_PRESETS
+            .iter()
+            .map(|p| PresetSelectItem {
+                id: p.id.to_string(),
+                name: p.name.to_string(),
+                website_url: p.website_url.to_string(),
+                base_url: p.base_url.to_string(),
+                model: p.model.to_string(),
+                is_official: p.kind.is_official(),
+                provider_label: p.provider_label.to_string(),
+                modality_text: p.modality_text,
+                modality_image: p.modality_image,
             })
             .collect(),
     }
@@ -305,9 +343,8 @@ impl CatalogRowDraft {
                 .iter()
                 .position(|m| m == model_val)
                 .map(|i| gpui_component::IndexPath::default().row(i));
-            let select = cx.new(|cx| {
-                SelectState::new(items, selected_model_idx, window, cx).searchable(true)
-            });
+            let select = cx
+                .new(|cx| SelectState::new(items, selected_model_idx, window, cx).searchable(true));
             let model_state = model.clone();
             let display_name_state = display_name.clone();
             let sub = window.subscribe(
@@ -316,7 +353,8 @@ impl CatalogRowDraft {
                 move |_, event: &SelectEvent<Vec<ModelSelectItem>>, window, cx| {
                     if let SelectEvent::Confirm(Some(m)) = event {
                         let val = m.clone();
-                        model_state.update(cx, |input, cx| input.set_value(val.clone(), window, cx));
+                        model_state
+                            .update(cx, |input, cx| input.set_value(val.clone(), window, cx));
                         display_name_state.update(cx, |input, cx| {
                             let curr = input.value().to_string();
                             if curr.trim().is_empty() {
@@ -362,9 +400,8 @@ impl CatalogRowDraft {
             .iter()
             .position(|m| m == &current_val)
             .map(|i| gpui_component::IndexPath::default().row(i));
-        let select = cx.new(|cx| {
-            SelectState::new(items, selected_model_idx, window, cx).searchable(true)
-        });
+        let select =
+            cx.new(|cx| SelectState::new(items, selected_model_idx, window, cx).searchable(true));
         let model_state = self.model.clone();
         let display_name_state = self.display_name.clone();
         let sub = window.subscribe(
@@ -513,6 +550,56 @@ impl CatalogRowDraft {
             context_window,
         })
     }
+
+    pub fn to_cursor_mapping(&self, cx: &App) -> Option<CursorModelMapping> {
+        let model_val = self.model.read(cx).value().to_string();
+        let model_trimmed = model_val.trim();
+        if model_trimmed.is_empty() {
+            return None;
+        }
+        let display_name_val = self.display_name.read(cx).value().to_string();
+        let context_str = self.context_window.read(cx).value().to_string();
+        let context_window = context_str.trim().parse::<u64>().ok();
+        let reasoning_effort = self
+            .reasoning_effort
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .flatten();
+
+        Some(CursorModelMapping {
+            display_name: if display_name_val.trim().is_empty() {
+                model_trimmed.to_string()
+            } else {
+                display_name_val.trim().to_string()
+            },
+            model: model_trimmed.to_string(),
+            context_window,
+            reasoning_effort,
+        })
+    }
+
+    pub fn to_zcode_mapping(&self, cx: &App) -> Option<ZCodeModelMapping> {
+        let model_val = self.model.read(cx).value().to_string();
+        let model_trimmed = model_val.trim();
+        if model_trimmed.is_empty() {
+            return None;
+        }
+        let display_name_val = self.display_name.read(cx).value().to_string();
+        let context_str = self.context_window.read(cx).value().to_string();
+        let context_limit = context_str.trim().parse::<u64>().ok();
+
+        Some(ZCodeModelMapping {
+            display_name: if display_name_val.trim().is_empty() {
+                model_trimmed.to_string()
+            } else {
+                display_name_val.trim().to_string()
+            },
+            model_id: model_trimmed.to_string(),
+            context_limit,
+            output_limit: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,6 +610,8 @@ pub enum Route {
     Grok,
     OpenCode,
     Pi,
+    Cursor,
+    ZCode,
     Notifications,
     Settings,
 }
@@ -637,6 +726,8 @@ struct FormDraft {
     api_key: Entity<InputState>,
     base_url: Entity<InputState>,
     model: Entity<InputState>,
+    zcode_modality_text: bool,
+    zcode_modality_image: bool,
     preset_select: Entity<SelectState<Vec<PresetSelectItem>>>,
     catalog_rows: Vec<CatalogRowDraft>,
     fetched_models: Vec<String>,
@@ -746,7 +837,16 @@ impl RouterApp {
             },
         );
 
-        let supported = ["codex", "claude", "claude-desktop", "grok", "opencode", "pi"];
+        let supported = [
+            "codex",
+            "claude",
+            "claude-desktop",
+            "grok",
+            "opencode",
+            "pi",
+            "cursor",
+            "zcode",
+        ];
         let mut main_apps: Vec<String> = settings
             .main_apps
             .into_iter()
@@ -843,14 +943,16 @@ impl RouterApp {
                     AppKind::Grok => Route::Grok,
                     AppKind::OpenCode => Route::OpenCode,
                     AppKind::Pi => Route::Pi,
+                    AppKind::Cursor => Route::Cursor,
+                    AppKind::ZCode => Route::ZCode,
                 };
                 self.route = target_route;
 
                 let app_name = provider.app.display_name();
                 let msg = if is_enabled {
-                    format!("成功导入并启用供应商「{}」({})", provider.name, app_name)
+                    format!("成功导入并启用服务商「{}」({})", provider.name, app_name)
                 } else {
-                    format!("成功导入供应商「{}」({})", provider.name, app_name)
+                    format!("成功导入服务商「{}」({})", provider.name, app_name)
                 };
 
                 self.logs.push(format!("DeepLink: {}", msg));
@@ -873,6 +975,8 @@ impl RouterApp {
             AppKind::Grok,
             AppKind::OpenCode,
             AppKind::Pi,
+            AppKind::Cursor,
+            AppKind::ZCode,
         ] {
             if let Ok(snapshot) = self.workspace.snapshot_for(app) {
                 all.extend(snapshot.providers);
@@ -1132,7 +1236,8 @@ impl RouterApp {
             "hermes" => ("pip install -U hermes-agent", "Hermes"),
             _ => ("npm i -g latest", tool_id),
         };
-        self.logs.push(format!("启动升级 {}: {}", tool_name, cmd_desc));
+        self.logs
+            .push(format!("启动升级 {}: {}", tool_name, cmd_desc));
         window.push_notification(
             Notification::info(format!("已触发 {} 升级指令: {}", tool_name, cmd_desc)),
             cx,
@@ -1151,7 +1256,8 @@ impl RouterApp {
             "hermes" => ("pip install hermes-agent", "Hermes"),
             _ => ("npm i -g", tool_id),
         };
-        self.logs.push(format!("触发安装 {}: {}", tool_name, cmd_desc));
+        self.logs
+            .push(format!("触发安装 {}: {}", tool_name, cmd_desc));
         window.push_notification(
             Notification::info(format!("已提供 {} 安装指令: {}", tool_name, cmd_desc)),
             cx,
@@ -1167,14 +1273,28 @@ impl RouterApp {
                 let provider_name = provider.name.clone();
                 let is_official = provider.is_official();
                 self.reload();
-                self.logs.push(format!("已切换并启用 {} 供应商: {}", provider.app.display_name(), provider_name));
+                self.logs.push(format!(
+                    "已切换并启用 {} 服务商: {}",
+                    provider.app.display_name(),
+                    provider_name
+                ));
                 if is_official {
                     let hint = match provider.app {
-                        AppKind::Codex => "已切到 Codex 官方。未登录时请在终端执行 codex login，然后重启 Codex。",
-                        AppKind::Claude => "已切到 Claude Code 官方配置。可直接在终端使用官方 Claude Code 登录。",
-                        AppKind::Grok => "已切到 Grok Build 官方配置。可直接使用官方 Grok CLI 认证。",
-                        AppKind::OpenCode => "已切到 OpenCode 官方配置。可直接使用官方 OpenCode 认证。",
+                        AppKind::Codex => {
+                            "已切到 Codex 官方。未登录时请在终端执行 codex login，然后重启 Codex。"
+                        }
+                        AppKind::Claude => {
+                            "已切到 Claude Code 官方配置。可直接在终端使用官方 Claude Code 登录。"
+                        }
+                        AppKind::Grok => {
+                            "已切到 Grok Build 官方配置。可直接使用官方 Grok CLI 认证。"
+                        }
+                        AppKind::OpenCode => {
+                            "已切到 OpenCode 官方配置。可直接使用官方 OpenCode 认证。"
+                        }
                         AppKind::Pi => "已切到 Pi 官方配置。可直接使用官方 Pi 认证。",
+                        AppKind::Cursor => "已切到 Cursor 官方配置。",
+                        AppKind::ZCode => "已切到 ZCode 官方配置。",
                     };
                     notify_success(hint, window, cx);
                 } else {
@@ -1184,6 +1304,8 @@ impl RouterApp {
                         AppKind::Grok => format!("已启用 {} 并写入 ~/.grok/config.toml，请重启 Grok Build 生效。", provider_name),
                         AppKind::OpenCode => format!("已启用 {} 并写入 ~/.config/opencode/opencode.json，请重启 OpenCode 生效。", provider_name),
                         AppKind::Pi => format!("已启用 {} 并写入 ~/.pi/agent/，请重启 Pi 生效。", provider_name),
+                        AppKind::Cursor => format!("已启用 {} 并更新 Cursor 本地网关路由配置。", provider_name),
+                        AppKind::ZCode => format!("已启用 {} 并写入 ~/.zcode/v2/config.json，请重启 ZCode 生效。", provider_name),
                     };
                     notify_success(hint, window, cx);
                 }
@@ -1194,11 +1316,21 @@ impl RouterApp {
     }
 
     fn duplicate(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let is_zcode = self
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .map(|p| p.app == AppKind::ZCode)
+            .unwrap_or(false);
         match self.workspace.duplicate(provider_id) {
             Ok(_) => {
                 self.reload();
-                self.logs.push("复制了供应商配置".into());
-                notify_success("已复制供应商配置", window, cx);
+                self.logs.push("复制了服务商配置".into());
+                if is_zcode {
+                    notify_success("已复制服务商配置并写入 ~/.zcode/v2/config.json", window, cx);
+                } else {
+                    notify_success("已复制服务商配置", window, cx);
+                }
             }
             Err(error) => self.fail(error, window, cx),
         }
@@ -1208,21 +1340,39 @@ impl RouterApp {
     fn confirm_delete(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let id = provider_id.to_string();
         let view = cx.entity();
+        let is_zcode = self
+            .providers
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.app == AppKind::ZCode)
+            .unwrap_or(false);
         window.open_dialog(cx, move |dialog, _, _cx| {
             let target = id.clone();
             let view = view.clone();
             dialog
                 .confirm()
-                .title("确认删除供应商？")
-                .child("当前启用的供应商无法删除。此操作仅移除 Router Switch 中的记录。")
+                .title("确认删除服务商？")
+                .child(if is_zcode {
+                    "此操作将从 Router Switch 以及 ~/.zcode/v2/config.json 中移除该服务商。"
+                } else {
+                    "当前启用的服务商无法删除。此操作仅移除 Router Switch 中的记录。"
+                })
                 .on_ok(move |_, window, cx| {
                     let target = target.clone();
                     view.update(cx, |this, cx| {
                         match this.workspace.delete(&target) {
                             Ok(()) => {
                                 this.reload();
-                                this.logs.push(format!("删除了供应商: {}", target));
-                                notify_success("供应商已成功删除", window, cx);
+                                this.logs.push(format!("删除了服务商: {}", target));
+                                if is_zcode {
+                                    notify_success(
+                                        "服务商已成功删除并从 ZCode 配置文件中移除",
+                                        window,
+                                        cx,
+                                    );
+                                } else {
+                                    notify_success("服务商已成功删除", window, cx);
+                                }
                             }
                             Err(error) => this.fail(error, window, cx),
                         }
@@ -1244,7 +1394,8 @@ impl RouterApp {
         }
         self.form = Some(form);
         if auto_filled {
-            self.logs.push("新建供应商：已从剪贴板自动识别并填入配置".into());
+            self.logs
+                .push("新建服务商：已从剪贴板自动识别并填入配置".into());
             window.push_notification(
                 Notification::info(t!("provider.clipboard_auto_detected").to_string()),
                 cx,
@@ -1266,7 +1417,8 @@ impl RouterApp {
         if let Some(info) = parse_clipboard_provider_info(&text) {
             if let Some(form) = self.form.as_mut() {
                 form.apply_clipboard_info(info, window, cx);
-                self.logs.push("已从剪贴板成功识别并导入 API 端点与 Key".into());
+                self.logs
+                    .push("已从剪贴板成功识别并导入 API 端点与 Key".into());
                 window.push_notification(
                     Notification::success(t!("provider.clipboard_imported_success").to_string()),
                     cx,
@@ -1307,12 +1459,20 @@ impl RouterApp {
         let app = form.app;
         let editing_id = form.editing_id.clone();
         let payload = form.to_provider_form(cx);
-        match self.workspace.save_form(app, editing_id.as_deref(), payload) {
+        match self
+            .workspace
+            .save_form(app, editing_id.as_deref(), payload)
+        {
             Ok(_) => {
                 self.form = None;
                 self.reload();
-                self.logs.push(format!("保存了 {} 供应商配置", app.display_name()));
-                notify_success("供应商配置已保存", window, cx);
+                self.logs
+                    .push(format!("保存了 {} 服务商配置", app.display_name()));
+                if app == AppKind::ZCode {
+                    notify_success("服务商配置已保存并写入 ~/.zcode/v2/config.json", window, cx);
+                } else {
+                    notify_success("服务商配置已保存", window, cx);
+                }
                 cx.notify();
                 true
             }
@@ -1339,14 +1499,28 @@ impl RouterApp {
             .update(cx, |input, cx| input.set_value(preset.base_url, window, cx));
         form.model
             .update(cx, |input, cx| input.set_value(preset.model, window, cx));
+        if form.app == AppKind::ZCode {
+            form.zcode_modality_text = preset.modality_text;
+            form.zcode_modality_image = preset.modality_image;
+        }
         cx.notify();
     }
 
-    fn fetch_models_for_form(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn toggle_zcode_modality_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.zcode_modality_text = !form.zcode_modality_text;
+            cx.notify();
+        }
+    }
+
+    fn toggle_zcode_modality_image(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.zcode_modality_image = !form.zcode_modality_image;
+            cx.notify();
+        }
+    }
+
+    fn fetch_models_for_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.form.as_mut() else {
             return;
         };
@@ -1361,7 +1535,7 @@ impl RouterApp {
         form.is_fetching_models = true;
         cx.notify();
 
-        window.push_notification(Notification::info("正在从供应商获取模型列表..."), cx);
+        window.push_notification(Notification::info("正在从服务商获取模型列表..."), cx);
 
         let view = cx.entity().downgrade();
         window
@@ -1383,9 +1557,13 @@ impl RouterApp {
                             match result {
                                 Ok(models) => {
                                     let count = models.len();
-                                    this.logs.push(format!("获取模型列表成功，共 {} 个模型", count));
+                                    this.logs
+                                        .push(format!("获取模型列表成功，共 {} 个模型", count));
                                     window.push_notification(
-                                        Notification::success(format!("获取成功！找到 {} 个可用模型", count)),
+                                        Notification::success(format!(
+                                            "获取成功！找到 {} 个可用模型",
+                                            count
+                                        )),
                                         cx,
                                     );
 
@@ -1400,11 +1578,18 @@ impl RouterApp {
                                                 || current_model == DEFAULT_CODEX_MODEL
                                                 || current_model == DEFAULT_CLAUDE_MODEL
                                                 || current_model == DEFAULT_GROK_MODEL
+                                                || current_model == DEFAULT_OPENCODE_MODEL
+                                                || current_model == DEFAULT_PI_MODEL
+                                                || current_model == DEFAULT_CURSOR_MODEL
+                                                || current_model == DEFAULT_ZCODE_MODEL
                                             {
                                                 let first = first.clone();
-                                                form.model.update(cx, |input: &mut InputState, cx| {
-                                                    input.set_value(first, window, cx);
-                                                });
+                                                form.model.update(
+                                                    cx,
+                                                    |input: &mut InputState, cx| {
+                                                        input.set_value(first, window, cx);
+                                                    },
+                                                );
                                             }
                                         }
 
@@ -1413,19 +1598,24 @@ impl RouterApp {
                                             .iter()
                                             .map(|m| ModelSelectItem { name: m.clone() })
                                             .collect();
-                                        let updated_model_val = form.model.read(cx).value().to_string();
+                                        let updated_model_val =
+                                            form.model.read(cx).value().to_string();
                                         let selected_idx = models
                                             .iter()
                                             .position(|m| m == &updated_model_val)
                                             .map(|i| gpui_component::IndexPath::default().row(i));
                                         let default_select = cx.new(|cx| {
-                                            SelectState::new(items, selected_idx, window, cx).searchable(true)
+                                            SelectState::new(items, selected_idx, window, cx)
+                                                .searchable(true)
                                         });
                                         let form_model_state = form.model.clone();
                                         let default_sub = window.subscribe(
                                             &default_select,
                                             cx,
-                                            move |_, event: &SelectEvent<Vec<ModelSelectItem>>, window, cx| {
+                                            move |_,
+                                                  event: &SelectEvent<Vec<ModelSelectItem>>,
+                                                  window,
+                                                  cx| {
                                                 if let SelectEvent::Confirm(Some(m)) = event {
                                                     let val = m.clone();
                                                     form_model_state.update(cx, |input, cx| {
@@ -1496,6 +1686,35 @@ impl RouterApp {
         cx.notify();
     }
 
+    fn toggle_cursor_gateway(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.is_cursor_gateway_running() {
+            match self.workspace.stop_cursor_gateway() {
+                Ok(()) => {
+                    self.logs.push("Cursor 本地网关已停止".into());
+                    notify_success("Cursor 本地网关已停止", window, cx);
+                }
+                Err(err) => self.fail(err, window, cx),
+            }
+        } else {
+            match self.workspace.start_cursor_gateway(None, None) {
+                Ok(_) => {
+                    self.logs.push("Cursor 本地网关已启动".into());
+                    notify_success("Cursor 本地网关已启动", window, cx);
+                }
+                Err(err) => self.fail(err, window, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    fn copy_cursor_ca_command(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cmd = self.workspace.cursor_ca_install_command();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(cmd.clone()));
+        self.logs.push(format!("已复制 CA 信任命令: {cmd}"));
+        window.push_notification(Notification::info(t!("cursor.ca_copied").to_string()), cx);
+        cx.notify();
+    }
+
     fn fail(&mut self, error: impl ToString, window: &mut Window, cx: &mut Context<Self>) {
         let message = error.to_string();
         self.last_error = Some(message.clone().into());
@@ -1520,23 +1739,43 @@ impl RouterApp {
                 }
                 match &provider.settings {
                     ProviderSettings::Codex(s) => {
-                        extract_codex_model(&s.config_toml).is_some_and(|m| m.to_lowercase().contains(&query))
-                        || extract_codex_base_url(&s.config_toml).is_some_and(|u| u.to_lowercase().contains(&query))
+                        extract_codex_model(&s.config_toml)
+                            .is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_codex_base_url(&s.config_toml)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
                     ProviderSettings::Claude(s) => {
-                        extract_claude_model(&s.env).is_some_and(|m| m.to_lowercase().contains(&query))
-                        || extract_claude_base_url(&s.env).is_some_and(|u| u.to_lowercase().contains(&query))
+                        extract_claude_model(&s.env)
+                            .is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_claude_base_url(&s.env)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
                     ProviderSettings::Grok(s) => {
-                        extract_grok_model(&s.config_toml).is_some_and(|m| m.to_lowercase().contains(&query))
-                        || extract_grok_base_url(&s.config_toml).is_some_and(|u| u.to_lowercase().contains(&query))
+                        extract_grok_model(&s.config_toml)
+                            .is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_grok_base_url(&s.config_toml)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
                     ProviderSettings::OpenCode(s) => {
-                        extract_opencode_model(&s.models).is_some_and(|m| m.to_lowercase().contains(&query))
-                        || extract_opencode_base_url(&s.options).is_some_and(|u| u.to_lowercase().contains(&query))
+                        extract_opencode_model(&s.models)
+                            .is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_opencode_base_url(&s.options)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
                     ProviderSettings::Pi(s) => {
-                        s.model.to_lowercase().contains(&query) || s.base_url.to_lowercase().contains(&query)
+                        s.model.to_lowercase().contains(&query)
+                            || s.base_url.to_lowercase().contains(&query)
+                    }
+                    ProviderSettings::Cursor(s) => {
+                        extract_cursor_model(s).is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_cursor_base_url(s)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
+                    }
+                    ProviderSettings::ZCode(s) => {
+                        extract_zcode_model(&s.models)
+                            .is_some_and(|m| m.to_lowercase().contains(&query))
+                            || extract_zcode_base_url(&s.options)
+                                .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
                     ProviderSettings::Unsupported { .. } => false,
                 }
@@ -1572,13 +1811,19 @@ impl RouterApp {
             .text_size(px(14.))
             .text_color(if disabled { fg.opacity(0.4) } else { fg })
             .cursor_pointer()
-            .when(active, |this| this.bg(accent).font_weight(FontWeight::SEMIBOLD))
+            .when(active, |this| {
+                this.bg(accent).font_weight(FontWeight::SEMIBOLD)
+            })
             .when(!disabled, |this| this.hover(|this| this.bg(accent)))
             .child(
                 Icon::new(icon)
                     .size(px(18.))
                     .flex_shrink_0()
-                    .text_color(icon_color.unwrap_or(if active { cx.theme().foreground } else { fg.opacity(0.85) })),
+                    .text_color(icon_color.unwrap_or(if active {
+                        cx.theme().foreground
+                    } else {
+                        fg.opacity(0.85)
+                    })),
             )
             .child(div().flex_1().truncate().child(label_str))
             .when_some(badge, |this, b| {
@@ -1589,7 +1834,11 @@ impl RouterApp {
                         .rounded(px(6.))
                         .bg(if active { cx.theme().primary } else { accent })
                         .text_size(px(11.))
-                        .text_color(if active { cx.theme().primary_foreground } else { fg.opacity(0.6) })
+                        .text_color(if active {
+                            cx.theme().primary_foreground
+                        } else {
+                            fg.opacity(0.6)
+                        })
                         .child(b),
                 )
             })
@@ -1627,13 +1876,19 @@ impl RouterApp {
             .text_size(px(14.))
             .text_color(if disabled { fg.opacity(0.4) } else { fg })
             .cursor_pointer()
-            .when(active, |this| this.bg(accent).font_weight(FontWeight::SEMIBOLD))
+            .when(active, |this| {
+                this.bg(accent).font_weight(FontWeight::SEMIBOLD)
+            })
             .when(!disabled, |this| this.hover(|this| this.bg(accent)))
             .child(
                 Icon::new(icon)
                     .size(px(18.))
                     .flex_shrink_0()
-                    .text_color(icon_color.unwrap_or(if active { cx.theme().foreground } else { fg.opacity(0.85) })),
+                    .text_color(icon_color.unwrap_or(if active {
+                        cx.theme().foreground
+                    } else {
+                        fg.opacity(0.85)
+                    })),
             )
             .child(div().flex_1().truncate().child(label))
             .when_some(badge, |this, b| {
@@ -1644,7 +1899,11 @@ impl RouterApp {
                         .rounded(px(6.))
                         .bg(if active { cx.theme().primary } else { accent })
                         .text_size(px(11.))
-                        .text_color(if active { cx.theme().primary_foreground } else { fg.opacity(0.6) })
+                        .text_color(if active {
+                            cx.theme().primary_foreground
+                        } else {
+                            fg.opacity(0.6)
+                        })
                         .child(b),
                 )
             })
@@ -1670,6 +1929,8 @@ impl RouterApp {
         let grok_count = self.providers_for(AppKind::Grok).len();
         let opencode_count = self.providers_for(AppKind::OpenCode).len();
         let pi_count = self.providers_for(AppKind::Pi).len();
+        let cursor_count = self.providers_for(AppKind::Cursor).len();
+        let zcode_count = self.providers_for(AppKind::ZCode).len();
 
         let mut app_nav_items = Vec::new();
         for app_id in &self.main_apps {
@@ -1718,10 +1979,10 @@ impl RouterApp {
                     "cursor",
                     CustomIcon::Cursor,
                     Some(rgb(0x6366F1).into()),
-                    "Cursor CLI",
-                    Route::Codex,
-                    Some(t!("nav.soon").to_string()),
-                    true,
+                    "Cursor",
+                    Route::Cursor,
+                    Some(format!("{cursor_count}")),
+                    false,
                     cx,
                 )),
                 "deepseek" | "gemini" => Some(self.draggable_nav_item(
@@ -1794,6 +2055,16 @@ impl RouterApp {
                     false,
                     cx,
                 )),
+                "zcode" | "zai" => Some(self.draggable_nav_item(
+                    "zcode",
+                    CustomIcon::ZCode,
+                    Some(rgb(0x10B981).into()),
+                    "ZCode",
+                    Route::ZCode,
+                    Some(format!("{zcode_count}")),
+                    false,
+                    cx,
+                )),
                 _ => None,
             };
             if let Some(i) = item {
@@ -1835,13 +2106,7 @@ impl RouterApp {
                 false,
                 cx,
             ))
-            .child(
-                div()
-                    .h(px(1.))
-                    .mx(px(8.))
-                    .my(px(4.))
-                    .bg(border),
-            )
+            .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(border))
             .child(self.nav_item(
                 "nav-settings",
                 IconName::Settings,
@@ -1886,20 +2151,16 @@ impl RouterApp {
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
             )
-            .child(
-                h_flex()
-                    .items_center()
-                    .child(self.chrome_button(
-                        "chrome-sidebar",
-                        IconName::PanelLeft,
-                        "切换侧边栏 ⌘ B",
-                        cx,
-                        |this, _, cx| {
-                            this.sidebar_open = !this.sidebar_open;
-                            cx.notify();
-                        },
-                    )),
-            )
+            .child(h_flex().items_center().child(self.chrome_button(
+                "chrome-sidebar",
+                IconName::PanelLeft,
+                "切换侧边栏 ⌘ B",
+                cx,
+                |this, _, cx| {
+                    this.sidebar_open = !this.sidebar_open;
+                    cx.notify();
+                },
+            )))
             .child(
                 div()
                     .flex_1()
@@ -1912,244 +2173,323 @@ impl RouterApp {
         let theme = cx.theme().clone();
 
         // Y-axis tick labels matching the screenshot
-        let (y_max_label, y_mid2_label, y_mid1_label, y_zero_label) = if self.usage_metric == UsageMetric::Cost {
-            ("$300.00", "$200.00", "$100.00", "0")
-        } else {
-            ("300 M", "200 M", "100 M", "0")
-        };
+        let (y_max_label, y_mid2_label, y_mid1_label, y_zero_label) =
+            if self.usage_metric == UsageMetric::Cost {
+                ("$300.00", "$200.00", "$100.00", "0")
+            } else {
+                ("300 M", "200 M", "100 M", "0")
+            };
 
         // X-axis date labels matching the screenshot
         let x_labels = vec!["7月26日", "8月10日", "8月24日"];
 
-        theme::tile(cx)
-            .w_full()
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap(px(12.))
-                    // 1. Chart Top Bar (Title + [费用 | 令牌] Switcher + Legend)
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.foreground)
-                                    .child(if self.usage_metric == UsageMetric::Cost {
-                                        t!("usage.daily_cost").to_string()
-                                    } else {
-                                        t!("usage.daily_tokens").to_string()
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(16.))
-                                    // Segmented Switcher [ 费用 | 令牌 ]
-                                    .child(
-                                        h_flex()
-                                            .p(px(2.))
-                                            .rounded(px(6.))
-                                            .bg(theme.secondary.opacity(0.5))
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .gap(px(2.))
-                                            .child(
-                                                Button::new("chart-metric-cost")
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .selected(self.usage_metric == UsageMetric::Cost)
-                                                    .label("费用")
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.usage_metric = UsageMetric::Cost;
-                                                        cx.notify();
-                                                    })),
-                                            )
-                                            .child(
-                                                Button::new("chart-metric-tokens")
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .selected(self.usage_metric == UsageMetric::Tokens)
-                                                    .label("令牌")
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.usage_metric = UsageMetric::Tokens;
-                                                        cx.notify();
-                                                    })),
-                                            ),
-                                    )
-                                    // Legend Items (Claude Code, Codex)
-                                    .child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap(px(14.))
-                                            .child(
-                                                h_flex()
-                                                    .items_center()
-                                                    .gap(px(5.))
-                                                    .child(Icon::new(CustomIcon::Claude).size(px(14.)).text_color(rgb(0xD97757)))
-                                                    .child(div().text_size(px(13.)).text_color(theme.foreground).child("Claude Code")),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .items_center()
-                                                    .gap(px(5.))
-                                                    .child(Icon::new(CustomIcon::OpenAI).size(px(14.)).text_color(rgb(0x10A37F)))
-                                                    .child(div().text_size(px(13.)).text_color(theme.foreground).child("Codex")),
-                                            ),
-                                    ),
-                            ),
-                    )
-                    // 2. Plot Area: Y-Axis Ticks + Horizontal Grid Lines + Vector Spline Curve + Tooltip
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap(px(10.))
-                            // Y-Axis Labels
-                            .child(
-                                v_flex()
-                                    .w(px(56.))
-                                    .h(px(170.))
-                                    .justify_between()
-                                    .items_end()
-                                    .text_size(px(11.5))
-                                    .text_color(theme.muted_foreground)
-                                    .child(div().child(y_max_label))
-                                    .child(div().child(y_mid2_label))
-                                    .child(div().child(y_mid1_label))
-                                    .child(div().child(y_zero_label)),
-                            )
-                            // Chart Canvas Area
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .h(px(170.))
-                                    .relative()
-                                    .overflow_hidden()
-                                    // Horizontal Grid Lines
-                                    .child(
-                                        v_flex()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .justify_between()
-                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
-                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
-                                            .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)))
-                                            .child(div().w_full().h(px(1.5)).bg(theme.foreground.opacity(0.85))), // Baseline at 0
-                                    )
-                                    // Smooth Vector Spline Area Curve SVG
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .right_0()
-                                            .bottom_0()
-                                            .child(
-                                                svg()
-                                                    .path(CustomIcon::ChartCurve.path())
-                                                    .w_full()
-                                                    .h_full(),
-                                            ),
-                                    )
-                                    // Vertical Guideline at 7月28日 (X ≈ 8%)
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(gpui::relative(0.08))
-                                            .top_0()
-                                            .bottom_0()
-                                            .w(px(1.))
-                                            .bg(theme.muted_foreground.opacity(0.55)),
-                                    )
-                                    // Floating Tooltip Card (7月28日)
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .left(gpui::relative(0.08))
-                                            .top(px(6.))
-                                            .ml(px(8.))
-                                            .w(px(170.))
-                                            .p(px(10.))
-                                            .rounded(px(8.))
-                                            .bg(theme.background)
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .shadow_lg()
-                                            .child(
-                                                v_flex()
-                                                    .w_full()
-                                                    .gap(px(6.))
-                                                    // Tooltip Date Header
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(12.))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(theme.muted_foreground)
-                                                            .child("7月28日"),
-                                                    )
-                                                    // Row 1: Claude Code
-                                                    .child(
-                                                        h_flex()
-                                                            .w_full()
-                                                            .justify_between()
-                                                            .items_center()
-                                                            .child(
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap(px(6.))
-                                                                    .child(Icon::new(CustomIcon::Claude).size(px(13.)).text_color(rgb(0xD97757)))
-                                                                    .child(div().text_size(px(12.)).text_color(theme.foreground).child("Claude Code")),
-                                                            )
-                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child("$0.00")),
-                                                    )
-                                                    // Row 2: Codex
-                                                    .child(
-                                                        h_flex()
-                                                            .w_full()
-                                                            .justify_between()
-                                                            .items_center()
-                                                            .child(
-                                                                h_flex()
-                                                                    .items_center()
-                                                                    .gap(px(6.))
-                                                                    .child(Icon::new(CustomIcon::OpenAI).size(px(13.)).text_color(rgb(0x10A37F)))
-                                                                    .child(div().text_size(px(12.)).text_color(theme.foreground).child("Codex")),
-                                                            )
-                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child("$0.00")),
-                                                    )
-                                                    // Horizontal Divider
-                                                    .child(div().w_full().h(px(1.)).bg(theme.border.opacity(0.5)))
-                                                    // Total Summary Row
-                                                    .child(
-                                                        h_flex()
-                                                            .w_full()
-                                                            .justify_between()
-                                                            .items_center()
-                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.foreground).child("总计"))
-                                                            .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.foreground).child("$0.00")),
-                                                    ),
-                                            ),
-                                    ),
-                            ),
-                    )
-                    // 3. X-Axis Date Labels
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .pl(px(66.))
-                            .pr(px(6.))
-                            .justify_between()
-                            .text_size(px(11.5))
-                            .text_color(theme.muted_foreground)
-                            .children(x_labels.into_iter().map(|lbl| div().child(lbl))),
-                    ),
-            )
+        theme::tile(cx).w_full().child(
+            v_flex()
+                .w_full()
+                .gap(px(12.))
+                // 1. Chart Top Bar (Title + [费用 | 令牌] Switcher + Legend)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(if self.usage_metric == UsageMetric::Cost {
+                                    t!("usage.daily_cost").to_string()
+                                } else {
+                                    t!("usage.daily_tokens").to_string()
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(16.))
+                                // Segmented Switcher [ 费用 | 令牌 ]
+                                .child(
+                                    h_flex()
+                                        .p(px(2.))
+                                        .rounded(px(6.))
+                                        .bg(theme.secondary.opacity(0.5))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .gap(px(2.))
+                                        .child(
+                                            Button::new("chart-metric-cost")
+                                                .ghost()
+                                                .xsmall()
+                                                .selected(self.usage_metric == UsageMetric::Cost)
+                                                .label("费用")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.usage_metric = UsageMetric::Cost;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("chart-metric-tokens")
+                                                .ghost()
+                                                .xsmall()
+                                                .selected(self.usage_metric == UsageMetric::Tokens)
+                                                .label("令牌")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.usage_metric = UsageMetric::Tokens;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                                // Legend Items (Claude Code, Codex)
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(14.))
+                                        .child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .child(
+                                                    Icon::new(CustomIcon::Claude)
+                                                        .size(px(14.))
+                                                        .text_color(rgb(0xD97757)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(theme.foreground)
+                                                        .child("Claude Code"),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap(px(5.))
+                                                .child(
+                                                    Icon::new(CustomIcon::OpenAI)
+                                                        .size(px(14.))
+                                                        .text_color(rgb(0x10A37F)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .text_color(theme.foreground)
+                                                        .child("Codex"),
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+                // 2. Plot Area: Y-Axis Ticks + Horizontal Grid Lines + Vector Spline Curve + Tooltip
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap(px(10.))
+                        // Y-Axis Labels
+                        .child(
+                            v_flex()
+                                .w(px(56.))
+                                .h(px(170.))
+                                .justify_between()
+                                .items_end()
+                                .text_size(px(11.5))
+                                .text_color(theme.muted_foreground)
+                                .child(div().child(y_max_label))
+                                .child(div().child(y_mid2_label))
+                                .child(div().child(y_mid1_label))
+                                .child(div().child(y_zero_label)),
+                        )
+                        // Chart Canvas Area
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .h(px(170.))
+                                .relative()
+                                .overflow_hidden()
+                                // Horizontal Grid Lines
+                                .child(
+                                    v_flex()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .justify_between()
+                                        .child(
+                                            div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)),
+                                        )
+                                        .child(
+                                            div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)),
+                                        )
+                                        .child(
+                                            div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)),
+                                        )
+                                        .child(
+                                            div()
+                                                .w_full()
+                                                .h(px(1.5))
+                                                .bg(theme.foreground.opacity(0.85)),
+                                        ), // Baseline at 0
+                                )
+                                // Smooth Vector Spline Area Curve SVG
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom_0()
+                                        .child(
+                                            svg()
+                                                .path(CustomIcon::ChartCurve.path())
+                                                .w_full()
+                                                .h_full(),
+                                        ),
+                                )
+                                // Vertical Guideline at 7月28日 (X ≈ 8%)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(gpui::relative(0.08))
+                                        .top_0()
+                                        .bottom_0()
+                                        .w(px(1.))
+                                        .bg(theme.muted_foreground.opacity(0.55)),
+                                )
+                                // Floating Tooltip Card (7月28日)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(gpui::relative(0.08))
+                                        .top(px(6.))
+                                        .ml(px(8.))
+                                        .w(px(170.))
+                                        .p(px(10.))
+                                        .rounded(px(8.))
+                                        .bg(theme.background)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .shadow_lg()
+                                        .child(
+                                            v_flex()
+                                                .w_full()
+                                                .gap(px(6.))
+                                                // Tooltip Date Header
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(theme.muted_foreground)
+                                                        .child("7月28日"),
+                                                )
+                                                // Row 1: Claude Code
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .justify_between()
+                                                        .items_center()
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap(px(6.))
+                                                                .child(
+                                                                    Icon::new(CustomIcon::Claude)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xD97757)),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(12.))
+                                                                        .text_color(
+                                                                            theme.foreground,
+                                                                        )
+                                                                        .child("Claude Code"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.foreground)
+                                                                .child("$0.00"),
+                                                        ),
+                                                )
+                                                // Row 2: Codex
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .justify_between()
+                                                        .items_center()
+                                                        .child(
+                                                            h_flex()
+                                                                .items_center()
+                                                                .gap(px(6.))
+                                                                .child(
+                                                                    Icon::new(CustomIcon::OpenAI)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0x10A37F)),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(12.))
+                                                                        .text_color(
+                                                                            theme.foreground,
+                                                                        )
+                                                                        .child("Codex"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .font_weight(FontWeight::MEDIUM)
+                                                                .text_color(theme.foreground)
+                                                                .child("$0.00"),
+                                                        ),
+                                                )
+                                                // Horizontal Divider
+                                                .child(
+                                                    div()
+                                                        .w_full()
+                                                        .h(px(1.))
+                                                        .bg(theme.border.opacity(0.5)),
+                                                )
+                                                // Total Summary Row
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .justify_between()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .text_color(theme.foreground)
+                                                                .child("总计"),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .text_color(theme.foreground)
+                                                                .child("$0.00"),
+                                                        ),
+                                                ),
+                                        ),
+                                ),
+                        ),
+                )
+                // 3. X-Axis Date Labels
+                .child(
+                    h_flex()
+                        .w_full()
+                        .pl(px(66.))
+                        .pr(px(6.))
+                        .justify_between()
+                        .text_size(px(11.5))
+                        .text_color(theme.muted_foreground)
+                        .children(x_labels.into_iter().map(|lbl| div().child(lbl))),
+                ),
+        )
     }
 
     fn render_dashboard_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2219,7 +2559,12 @@ impl RouterApp {
                                     .icon(CustomIcon::Claude)
                                     .label("Claude")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Claude) { None } else { Some(AppKind::Claude) };
+                                        this.dashboard_app_filter =
+                                            if this.dashboard_app_filter == Some(AppKind::Claude) {
+                                                None
+                                            } else {
+                                                Some(AppKind::Claude)
+                                            };
                                         cx.notify();
                                     })),
                             )
@@ -2232,7 +2577,12 @@ impl RouterApp {
                                     .icon(CustomIcon::OpenAI)
                                     .label("Codex")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Codex) { None } else { Some(AppKind::Codex) };
+                                        this.dashboard_app_filter =
+                                            if this.dashboard_app_filter == Some(AppKind::Codex) {
+                                                None
+                                            } else {
+                                                Some(AppKind::Codex)
+                                            };
                                         cx.notify();
                                     })),
                             )
@@ -2256,7 +2606,12 @@ impl RouterApp {
                                     .icon(CustomIcon::Grok)
                                     .label("Grok")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Grok) { None } else { Some(AppKind::Grok) };
+                                        this.dashboard_app_filter =
+                                            if this.dashboard_app_filter == Some(AppKind::Grok) {
+                                                None
+                                            } else {
+                                                Some(AppKind::Grok)
+                                            };
                                         cx.notify();
                                     })),
                             )
@@ -2269,7 +2624,13 @@ impl RouterApp {
                                     .icon(CustomIcon::OpenCode)
                                     .label("OpenCode")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::OpenCode) { None } else { Some(AppKind::OpenCode) };
+                                        this.dashboard_app_filter = if this.dashboard_app_filter
+                                            == Some(AppKind::OpenCode)
+                                        {
+                                            None
+                                        } else {
+                                            Some(AppKind::OpenCode)
+                                        };
                                         cx.notify();
                                     })),
                             )
@@ -2282,7 +2643,30 @@ impl RouterApp {
                                     .icon(CustomIcon::Pi)
                                     .label("Pi")
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter == Some(AppKind::Pi) { None } else { Some(AppKind::Pi) };
+                                        this.dashboard_app_filter =
+                                            if this.dashboard_app_filter == Some(AppKind::Pi) {
+                                                None
+                                            } else {
+                                                Some(AppKind::Pi)
+                                            };
+                                        cx.notify();
+                                    })),
+                            )
+                            // ZCode
+                            .child(
+                                Button::new("filter-app-zcode")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::ZCode))
+                                    .icon(CustomIcon::ZCode)
+                                    .label("ZCode")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter =
+                                            if this.dashboard_app_filter == Some(AppKind::ZCode) {
+                                                None
+                                            } else {
+                                                Some(AppKind::ZCode)
+                                            };
                                         cx.notify();
                                     })),
                             ),
@@ -2321,132 +2705,426 @@ impl RouterApp {
             )
             // 2. 5-Tile Metric Strip (Processed, Cached Input, Uncached Input, Output, Cache Savings)
             .child(
-                theme::tile(cx)
-                    .p(px(0.))
-                    .overflow_hidden()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            // Tile 1: Processed Tokens / Total Spend
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .p(px(12.))
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(if self.usage_metric == UsageMetric::Cost { t!("usage.total_cost").to_string() } else { t!("usage.processed_tokens").to_string() }))
-                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child(if self.usage_metric == UsageMetric::Cost { format!("${:.2}", total_cost) } else { total_tokens_display.to_string() }))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.per_active_day", count = "22.1 M").to_string())),
-                            )
-                            // Tile 2: Cached Input
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .p(px(12.))
-                                    .border_l_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.cached_input").to_string()))
-                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("258 M"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.observed_input_share", share = "99.8%").to_string())),
-                            )
-                            // Tile 3: Uncached Input
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .p(px(12.))
-                                    .border_l_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.uncached_input").to_string()))
-                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("596 K"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.cache_writes", count = "5.69M").to_string())),
-                            )
-                            // Tile 4: Output
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .p(px(12.))
-                                    .border_l_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.output_tokens").to_string()))
-                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(theme.foreground).child("969 K"))
-                                    .child(div().text_size(px(11.)).text_color(theme.muted_foreground).child(t!("usage.includes_reasoning", count = "10.5 K").to_string())),
-                            )
-                            // Tile 5: Cache Savings
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .p(px(12.))
-                                    .border_l_1()
-                                    .border_color(theme.border)
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(t!("usage.cache_savings").to_string()))
-                                    .child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(rgb(0x10B981)).child("$1,843.73"))
-                                    .child(div().text_size(px(11.)).text_color(rgb(0x10B981)).child(t!("usage.raw_cost_multiple", multiple = "6.1").to_string())),
-                            ),
-                    ),
+                theme::tile(cx).p(px(0.)).overflow_hidden().child(
+                    h_flex()
+                        .w_full()
+                        // Tile 1: Processed Tokens / Total Spend
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .p(px(12.))
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.muted_foreground)
+                                        .child(if self.usage_metric == UsageMetric::Cost {
+                                            t!("usage.total_cost").to_string()
+                                        } else {
+                                            t!("usage.processed_tokens").to_string()
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.foreground)
+                                        .child(if self.usage_metric == UsageMetric::Cost {
+                                            format!("${:.2}", total_cost)
+                                        } else {
+                                            total_tokens_display.to_string()
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            t!("usage.per_active_day", count = "22.1 M")
+                                                .to_string(),
+                                        ),
+                                ),
+                        )
+                        // Tile 2: Cached Input
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .p(px(12.))
+                                .border_l_1()
+                                .border_color(theme.border)
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("usage.cached_input").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.foreground)
+                                        .child("258 M"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            t!("usage.observed_input_share", share = "99.8%")
+                                                .to_string(),
+                                        ),
+                                ),
+                        )
+                        // Tile 3: Uncached Input
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .p(px(12.))
+                                .border_l_1()
+                                .border_color(theme.border)
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("usage.uncached_input").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.foreground)
+                                        .child("596 K"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            t!("usage.cache_writes", count = "5.69M").to_string(),
+                                        ),
+                                ),
+                        )
+                        // Tile 4: Output
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .p(px(12.))
+                                .border_l_1()
+                                .border_color(theme.border)
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("usage.output_tokens").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.foreground)
+                                        .child("969 K"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            t!("usage.includes_reasoning", count = "10.5 K")
+                                                .to_string(),
+                                        ),
+                                ),
+                        )
+                        // Tile 5: Cache Savings
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .p(px(12.))
+                                .border_l_1()
+                                .border_color(theme.border)
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("usage.cache_savings").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(0x10B981))
+                                        .child("$1,843.73"),
+                                )
+                                .child(div().text_size(px(11.)).text_color(rgb(0x10B981)).child(
+                                    t!("usage.raw_cost_multiple", multiple = "6.1").to_string(),
+                                )),
+                        ),
+                ),
             )
             // 3. Line Chart (折线图) directly below 5-Tile metric strip
             .child(self.render_usage_line_chart(cx))
             // 4. Detail Breakdown Table (Full-Width)
             .child(
-                theme::tile(cx)
-                    .w_full()
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap(px(10.))
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.foreground)
-                                            .child(t!("usage.breakdown_title").to_string()),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .p(px(2.))
-                                            .rounded(px(7.))
-                                            .bg(theme.secondary.opacity(0.5))
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .gap(px(2.))
-                                            .child(
-                                                Button::new("tab-breakdown-model")
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .selected(self.usage_breakdown_tab == UsageBreakdownTab::Model)
-                                                    .label(t!("usage.tab_model"))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.usage_breakdown_tab = UsageBreakdownTab::Model;
-                                                        cx.notify();
-                                                    })),
-                                            )
-                                            .child(
-                                                Button::new("tab-breakdown-day")
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .selected(self.usage_breakdown_tab == UsageBreakdownTab::Day)
-                                                    .label(t!("usage.tab_day"))
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.usage_breakdown_tab = UsageBreakdownTab::Day;
-                                                        cx.notify();
-                                                    })),
-                                            ),
-                                    ),
-                            )
-                            .child(match self.usage_breakdown_tab {
-                                UsageBreakdownTab::Model => self.render_usage_daily_table(cx).into_any_element(),
-                                UsageBreakdownTab::Day => self.render_usage_day_table(cx).into_any_element(),
-                            }),
-                    ),
+                theme::tile(cx).w_full().child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(10.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme.foreground)
+                                        .child(t!("usage.breakdown_title").to_string()),
+                                )
+                                .child(
+                                    h_flex()
+                                        .p(px(2.))
+                                        .rounded(px(7.))
+                                        .bg(theme.secondary.opacity(0.5))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .gap(px(2.))
+                                        .child(
+                                            Button::new("tab-breakdown-model")
+                                                .ghost()
+                                                .xsmall()
+                                                .selected(
+                                                    self.usage_breakdown_tab
+                                                        == UsageBreakdownTab::Model,
+                                                )
+                                                .label(t!("usage.tab_model"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.usage_breakdown_tab =
+                                                        UsageBreakdownTab::Model;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("tab-breakdown-day")
+                                                .ghost()
+                                                .xsmall()
+                                                .selected(
+                                                    self.usage_breakdown_tab
+                                                        == UsageBreakdownTab::Day,
+                                                )
+                                                .label(t!("usage.tab_day"))
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.usage_breakdown_tab =
+                                                        UsageBreakdownTab::Day;
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                ),
+                        )
+                        .child(match self.usage_breakdown_tab {
+                            UsageBreakdownTab::Model => {
+                                self.render_usage_daily_table(cx).into_any_element()
+                            }
+                            UsageBreakdownTab::Day => {
+                                self.render_usage_day_table(cx).into_any_element()
+                            }
+                        }),
+                ),
             )
+    }
+
+    fn render_cursor_gateway_banner(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_running = self.workspace.is_cursor_gateway_running();
+        let proxy_port = self.workspace.cursor_proxy_port();
+        let backend_port = self.workspace.cursor_backend_port();
+        let ca_installed = self.workspace.cursor_ca_state();
+        let theme = cx.theme();
+        let dark = theme.is_dark();
+
+        theme::tile(cx).child(
+            v_flex()
+                .w_full()
+                .gap(px(12.))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(
+                                    div()
+                                        .size(px(34.))
+                                        .rounded(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(if is_running {
+                                            if dark {
+                                                Hsla::from(rgba(0x10B98133))
+                                            } else {
+                                                Hsla::from(rgba(0x10B98126))
+                                            }
+                                        } else {
+                                            theme.border.opacity(0.5)
+                                        })
+                                        .child(
+                                            Icon::new(CustomIcon::Cursor).size(px(18.)).text_color(
+                                                if is_running {
+                                                    rgb(0x10B981).into()
+                                                } else {
+                                                    theme.muted_foreground
+                                                },
+                                            ),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .gap(px(2.))
+                                        .child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(15.))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(theme.foreground)
+                                                        .child(
+                                                            t!("cursor.gateway_title").to_string(),
+                                                        ),
+                                                )
+                                                .child(if is_running {
+                                                    Tag::success().small().child(
+                                                        t!("cursor.gateway_running").to_string(),
+                                                    )
+                                                } else {
+                                                    Tag::secondary().small().child(
+                                                        t!("cursor.gateway_stopped").to_string(),
+                                                    )
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(t!("cursor.gateway_desc").to_string()),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            h_flex().items_center().gap(px(8.)).child(
+                                Button::new("cursor-gateway-toggle-btn")
+                                    .small()
+                                    .when(is_running, |this| {
+                                        this.outline().label(t!("cursor.stop_gateway").to_string())
+                                    })
+                                    .when(!is_running, |this| {
+                                        this.primary().label(t!("cursor.start_gateway").to_string())
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_cursor_gateway(window, cx);
+                                    })),
+                            ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .p(px(10.))
+                        .rounded(px(8.))
+                        .bg(theme.secondary.opacity(0.35))
+                        .border_1()
+                        .border_color(theme.border)
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(16.))
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(format!("{}:", t!("cursor.proxy_port"))),
+                                        )
+                                        .child(
+                                            div()
+                                                .px(px(6.))
+                                                .py(px(1.))
+                                                .rounded(px(4.))
+                                                .bg(theme.border)
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_size(px(11.))
+                                                .text_color(theme.foreground)
+                                                .child(format!("127.0.0.1:{proxy_port}")),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(format!("{}:", t!("cursor.backend_port"))),
+                                        )
+                                        .child(
+                                            div()
+                                                .px(px(6.))
+                                                .py(px(1.))
+                                                .rounded(px(4.))
+                                                .bg(theme.border)
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_size(px(11.))
+                                                .text_color(theme.foreground)
+                                                .child(format!("127.0.0.1:{backend_port}")),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(format!("{}:", t!("cursor.ca_title"))),
+                                        )
+                                        .child(if ca_installed {
+                                            Tag::success()
+                                                .small()
+                                                .child(t!("cursor.ca_installed").to_string())
+                                        } else {
+                                            Tag::warning()
+                                                .small()
+                                                .child(t!("cursor.ca_not_installed").to_string())
+                                        }),
+                                ),
+                        )
+                        .child(
+                            Button::new("copy-ca-cmd-btn")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Copy)
+                                .label(t!("cursor.ca_install_copy").to_string())
+                                .tooltip(t!("cursor.ca_install_tip").to_string())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.copy_cursor_ca_command(window, cx);
+                                })),
+                        ),
+                ),
+        )
     }
 
     fn render_app_providers_page(&self, app: AppKind, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2456,6 +3134,9 @@ impl RouterApp {
         v_flex()
             .w_full()
             .gap(px(14.))
+            .when(app == AppKind::Cursor, |this| {
+                this.child(self.render_cursor_gateway_banner(cx))
+            })
             .child(
                 h_flex()
                     .w_full()
@@ -2479,48 +3160,92 @@ impl RouterApp {
                             })),
                     ),
             )
-            .child(
-                if filtered.is_empty() {
-                    let has_query = !self.search_input.read(cx).value().trim().is_empty();
-                    if has_query {
-                        empty_search_state(cx).into_any_element()
-                    } else {
-                        empty_state(app_name, cx).into_any_element()
-                    }
+            .child(if filtered.is_empty() {
+                let has_query = !self.search_input.read(cx).value().trim().is_empty();
+                if has_query {
+                    empty_search_state(cx).into_any_element()
                 } else {
-                    v_flex()
-                        .w_full()
-                        .gap(px(10.))
-                        .children(filtered.into_iter().map(|provider| {
-                            self.render_provider_card(&provider, cx)
-                        }))
-                        .into_any_element()
-                },
-            )
+                    empty_state(app_name, cx).into_any_element()
+                }
+            } else {
+                v_flex()
+                    .w_full()
+                    .gap(px(10.))
+                    .children(
+                        filtered
+                            .into_iter()
+                            .map(|provider| self.render_provider_card(&provider, cx)),
+                    )
+                    .into_any_element()
+            })
     }
 
-    fn render_provider_card(&self, provider: &Provider, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_provider_card(
+        &self,
+        provider: &Provider,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_zcode = provider.app == AppKind::ZCode;
         let current_id = self.current_id_for(provider.app);
-        let is_current = current_id.as_deref() == Some(&provider.id);
+        let is_current = !is_zcode && current_id.as_deref() == Some(&provider.id);
         let is_official = provider.is_official();
         let id = provider.id.clone();
         let website_url = provider.website_url.clone();
 
         let model = match &provider.settings {
-            ProviderSettings::Codex(s) => extract_codex_model(&s.config_toml).unwrap_or_else(|| "默认模型".into()),
-            ProviderSettings::Claude(s) => extract_claude_model(&s.env).unwrap_or_else(|| "默认模型".into()),
-            ProviderSettings::Grok(s) => extract_grok_model(&s.config_toml).unwrap_or_else(|| "默认模型".into()),
-            ProviderSettings::OpenCode(s) => extract_opencode_model(&s.models).unwrap_or_else(|| "默认模型".into()),
-            ProviderSettings::Pi(s) => if !s.model.is_empty() { s.model.clone() } else { "默认模型".into() },
+            ProviderSettings::Codex(s) => {
+                extract_codex_model(&s.config_toml).unwrap_or_else(|| "默认模型".into())
+            }
+            ProviderSettings::Claude(s) => {
+                extract_claude_model(&s.env).unwrap_or_else(|| "默认模型".into())
+            }
+            ProviderSettings::Grok(s) => {
+                extract_grok_model(&s.config_toml).unwrap_or_else(|| "默认模型".into())
+            }
+            ProviderSettings::OpenCode(s) => {
+                extract_opencode_model(&s.models).unwrap_or_else(|| "默认模型".into())
+            }
+            ProviderSettings::Pi(s) => {
+                if !s.model.is_empty() {
+                    s.model.clone()
+                } else {
+                    "默认模型".into()
+                }
+            }
+            ProviderSettings::Cursor(s) => {
+                extract_cursor_model(s).unwrap_or_else(|| "默认模型".into())
+            }
+            ProviderSettings::ZCode(s) => {
+                extract_zcode_model(&s.models).unwrap_or_else(|| "默认模型".into())
+            }
             ProviderSettings::Unsupported { .. } => "-".into(),
         };
 
         let endpoint = match &provider.settings {
-            ProviderSettings::Codex(s) => extract_codex_base_url(&s.config_toml).unwrap_or_else(|| "官方端点 (OpenAI)".into()),
-            ProviderSettings::Claude(s) => extract_claude_base_url(&s.env).unwrap_or_else(|| "官方端点 (Anthropic)".into()),
-            ProviderSettings::Grok(s) => extract_grok_base_url(&s.config_toml).unwrap_or_else(|| "官方端点 (xAI)".into()),
-            ProviderSettings::OpenCode(s) => extract_opencode_base_url(&s.options).unwrap_or_else(|| "官方端点 (OpenCode)".into()),
-            ProviderSettings::Pi(s) => if !s.base_url.is_empty() { s.base_url.clone() } else { "官方端点 (Pi)".into() },
+            ProviderSettings::Codex(s) => {
+                extract_codex_base_url(&s.config_toml).unwrap_or_else(|| "官方端点 (OpenAI)".into())
+            }
+            ProviderSettings::Claude(s) => {
+                extract_claude_base_url(&s.env).unwrap_or_else(|| "官方端点 (Anthropic)".into())
+            }
+            ProviderSettings::Grok(s) => {
+                extract_grok_base_url(&s.config_toml).unwrap_or_else(|| "官方端点 (xAI)".into())
+            }
+            ProviderSettings::OpenCode(s) => extract_opencode_base_url(&s.options)
+                .unwrap_or_else(|| "官方端点 (OpenCode)".into()),
+            ProviderSettings::Pi(s) => {
+                if !s.base_url.is_empty() {
+                    s.base_url.clone()
+                } else {
+                    "官方端点 (Pi)".into()
+                }
+            }
+            ProviderSettings::Cursor(s) => {
+                extract_cursor_base_url(s).unwrap_or_else(|| "官方端点 (Cursor)".into())
+            }
+            ProviderSettings::ZCode(s) => {
+                extract_zcode_base_url(&s.options).unwrap_or_else(|| "官方端点 (ZCode)".into())
+            }
             ProviderSettings::Unsupported { .. } => "-".into(),
         };
 
@@ -2533,8 +3258,7 @@ impl RouterApp {
         let dark = cx.theme().is_dark();
         let card = theme::tile(cx);
         let card = if is_current {
-            card
-                .border_1()
+            card.border_1()
                 .border_color(if dark { rgb(0x3B82F6) } else { rgb(0x2563EB) })
                 .bg(if dark {
                     rgba(0x1E3A8A26)
@@ -2546,133 +3270,151 @@ impl RouterApp {
             card
         };
 
-        card
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap(px(6.))
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(
-                                        div()
-                                            .size(px(28.))
-                                            .rounded(px(8.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .bg(if is_current {
-                                                if dark { rgb(0x3B82F6).into() } else { rgb(0x2563EB).into() }
+        card.child(
+            h_flex()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(6.))
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .size(px(28.))
+                                        .rounded(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .bg(if is_current {
+                                            if dark {
+                                                rgb(0x3B82F6).into()
                                             } else {
-                                                cx.theme().border
-                                            })
-                                            .text_color(if is_current {
-                                                rgb(0xFFFFFF).into()
-                                            } else {
-                                                cx.theme().foreground
-                                            })
-                                            .child(if is_official {
-                                                IconName::Bot
-                                            } else {
-                                                IconName::SquareTerminal
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(15.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(cx.theme().foreground)
-                                            .child(provider.name.clone()),
-                                    )
-                                    .when(is_current, |this| {
-                                        this.child(
-                                            div()
-                                                .px(px(6.))
-                                                .py(px(1.))
-                                                .rounded(px(6.))
-                                                .bg(if dark { rgb(0x3B82F6) } else { rgb(0x2563EB) })
-                                                .text_size(px(11.))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(rgb(0xFFFFFF))
-                                                .child(t!("provider.in_use").to_string()),
-                                        )
-                                    })
-                                    .child(
-                                        if is_official {
-                                            Tag::secondary().small().child(t!("provider.official_tag").to_string())
+                                                rgb(0x2563EB).into()
+                                            }
                                         } else {
-                                            Tag::info().small().child(t!("provider.third_party_tag").to_string())
-                                        },
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .child(Icon::new(IconName::Globe).size(px(14.)).text_color(cx.theme().muted_foreground))
-                                    .child(
+                                            cx.theme().border
+                                        })
+                                        .text_color(if is_current {
+                                            rgb(0xFFFFFF).into()
+                                        } else {
+                                            cx.theme().foreground
+                                        })
+                                        .child(if is_official {
+                                            IconName::Bot
+                                        } else {
+                                            IconName::SquareTerminal
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(15.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(cx.theme().foreground)
+                                        .child(provider.name.clone()),
+                                )
+                                .when(is_current, |this| {
+                                    this.child(
                                         div()
-                                            .text_size(px(12.))
-                                            .text_color(cx.theme().foreground)
-                                            .child(endpoint),
+                                            .px(px(6.))
+                                            .py(px(1.))
+                                            .rounded(px(6.))
+                                            .bg(if dark { rgb(0x3B82F6) } else { rgb(0x2563EB) })
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child(t!("provider.in_use").to_string()),
                                     )
-                                    .when_some(website_url.filter(|s| !s.trim().is_empty()), |this, url| {
+                                })
+                                .child(if is_official {
+                                    Tag::secondary()
+                                        .small()
+                                        .child(t!("provider.official_tag").to_string())
+                                } else {
+                                    Tag::info()
+                                        .small()
+                                        .child(t!("provider.third_party_tag").to_string())
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(
+                                    Icon::new(IconName::Globe)
+                                        .size(px(14.))
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(cx.theme().foreground)
+                                        .child(endpoint),
+                                )
+                                .when_some(
+                                    website_url.filter(|s| !s.trim().is_empty()),
+                                    |this, url| {
                                         let target = url.clone();
                                         this.child(
-                                            Button::new(SharedString::from(format!("web-{}", provider.id)))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::ExternalLink)
-                                                .tooltip(format!("官网：{}", target))
-                                                .on_click(move |_, _, cx| {
-                                                    cx.open_url(&target);
-                                                }),
+                                            Button::new(SharedString::from(format!(
+                                                "web-{}",
+                                                provider.id
+                                            )))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::ExternalLink)
+                                            .tooltip(format!("官网：{}", target))
+                                            .on_click(move |_, _, cx| {
+                                                cx.open_url(&target);
+                                            }),
                                         )
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap(px(2.))
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("模型:"),
-                                            )
-                                            .child(Tag::secondary().small().child(model)),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .items_center()
-                                            .gap(px(2.))
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("凭证:"),
-                                            )
-                                            .child(Tag::secondary().small().outline().child(login_type)),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
+                                    },
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("模型:"),
+                                        )
+                                        .child(Tag::secondary().small().child(model)),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("凭证:"),
+                                        )
+                                        .child(
+                                            Tag::secondary().small().outline().child(login_type),
+                                        ),
+                                ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .when(!is_zcode, |this| {
+                            this.child(
                                 Button::new(SharedString::from(format!("enable-{}", provider.id)))
                                     .outline()
                                     .small()
@@ -2681,59 +3423,58 @@ impl RouterApp {
                                     } else {
                                         IconName::SquareTerminal
                                     })
-                                    .label(if is_current { t!("provider.in_use").to_string() } else { t!("provider.enable").to_string() })
+                                    .label(if is_current {
+                                        t!("provider.in_use").to_string()
+                                    } else {
+                                        t!("provider.enable").to_string()
+                                    })
                                     .disabled(is_current)
                                     .on_click(cx.listener({
                                         let id = id.clone();
                                         move |this, _, window, cx| this.enable(&id, window, cx)
                                     })),
                             )
-                            .child(
-                                Button::new(SharedString::from(format!("edit-{}", provider.id)))
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Settings2)
-                                    .label(t!("provider.edit").to_string())
-                                    .on_click(cx.listener({
-                                        let id = id.clone();
-                                        move |this, _, window, cx| {
-                                            this.open_edit_form(&id, window, cx)
-                                        }
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("copy-{}", provider.id)))
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Copy)
-                                    .label(t!("provider.copy").to_string())
-                                    .on_click(cx.listener({
-                                        let id = id.clone();
-                                        move |this, _, window, cx| this.duplicate(&id, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("delete-{}", provider.id)))
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Delete)
-                                    .label(t!("provider.delete").to_string())
-                                    .disabled(is_current)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.confirm_delete(&id, window, cx)
-                                    })),
-                            ),
-                    ),
-            )
+                        })
+                        .child(
+                            Button::new(SharedString::from(format!("edit-{}", provider.id)))
+                                .outline()
+                                .small()
+                                .icon(IconName::Settings2)
+                                .label(t!("provider.edit").to_string())
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| this.open_edit_form(&id, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("copy-{}", provider.id)))
+                                .outline()
+                                .small()
+                                .icon(IconName::Copy)
+                                .label(t!("provider.copy").to_string())
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| this.duplicate(&id, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("delete-{}", provider.id)))
+                                .outline()
+                                .small()
+                                .icon(IconName::Delete)
+                                .label(t!("provider.delete").to_string())
+                                .disabled(if is_zcode { false } else { is_current })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_delete(&id, window, cx)
+                                })),
+                        ),
+                ),
+        )
     }
 
     fn render_switch(&self, checked: bool, cx: &Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let bg_color = if checked {
-            theme.primary
-        } else {
-            theme.border
-        };
+        let bg_color = if checked { theme.primary } else { theme.border };
 
         div()
             .w(px(38.))
@@ -2761,7 +3502,7 @@ impl RouterApp {
         let query = query.trim().to_lowercase();
 
         let general_matches = query.is_empty()
-            || "通用 general 界面 语言 简体中文 english language 外观 主题 浅色 深色 跟随系统 theme light dark system 主页面 显示 claude codex gemini grok opencode openclaw hermes pi amp cursor deepseek fx kimi ohmypi 窗口行为 开机自启 startup 托盘 minimize tray"
+            || "通用 general 界面 语言 简体中文 english language 外观 主题 浅色 深色 跟随系统 theme light dark system 主页面 显示 claude codex gemini grok opencode openclaw hermes pi amp cursor deepseek zcode fx kimi ohmypi 窗口行为 开机自启 startup 托盘 minimize tray"
                 .contains(&query);
 
         let about_matches = query.is_empty()
@@ -2789,7 +3530,11 @@ impl RouterApp {
                     .text_size(px(13.))
                     .text_color(cx.theme().muted_foreground)
                     .hover(move |element| element.bg(accent))
-                    .child(Icon::new(CustomIcon::ArrowLeft).size(px(15.)).text_color(cx.theme().muted_foreground))
+                    .child(
+                        Icon::new(CustomIcon::ArrowLeft)
+                            .size(px(15.))
+                            .text_color(cx.theme().muted_foreground),
+                    )
                     .child(t!("settings.back").to_string())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.route = this.previous_route;
@@ -2801,13 +3546,7 @@ impl RouterApp {
                     .small()
                     .cleanable(true),
             )
-            .child(
-                div()
-                    .h(px(1.))
-                    .mx(px(4.))
-                    .my(px(2.))
-                    .bg(border),
-            )
+            .child(div().h(px(1.)).mx(px(4.)).my(px(2.)).bg(border))
             .child(
                 v_flex()
                     .w_full()
@@ -2865,18 +3604,27 @@ impl RouterApp {
             .text_size(px(13.))
             .text_color(fg)
             .cursor_pointer()
-            .when(active, |this| this.bg(accent).font_weight(FontWeight::SEMIBOLD))
-            .when(!active, |this| this.hover(|this| this.bg(accent.opacity(0.5))))
+            .when(active, |this| {
+                this.bg(accent).font_weight(FontWeight::SEMIBOLD)
+            })
+            .when(!active, |this| {
+                this.hover(|this| this.bg(accent.opacity(0.5)))
+            })
             .child(
                 Icon::new(icon)
                     .size(px(16.))
                     .flex_shrink_0()
-                    .text_color(if active { cx.theme().foreground } else { fg.opacity(0.7) }),
+                    .text_color(if active {
+                        cx.theme().foreground
+                    } else {
+                        fg.opacity(0.7)
+                    }),
             )
             .child(div().flex_1().truncate().child(label_str))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.settings_tab = tab;
-                if tab == SettingsTab::About && this.env_tools.is_empty() && !this.is_inspecting_env {
+                if tab == SettingsTab::About && this.env_tools.is_empty() && !this.is_inspecting_env
+                {
                     this.refresh_env(window, cx);
                 }
                 cx.notify();
@@ -2906,9 +3654,7 @@ impl RouterApp {
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .when(is_active, |this| {
-                this.bg(rgb(0x2563EB))
-                    .text_color(rgb(0xFFFFFF))
-                    .shadow_xs()
+                this.bg(rgb(0x2563EB)).text_color(rgb(0xFFFFFF)).shadow_xs()
             })
             .when(!is_active, |this| {
                 this.bg(theme.secondary.opacity(0.5))
@@ -2917,11 +3663,11 @@ impl RouterApp {
                     .border_color(theme.border)
                     .hover(|this| this.bg(theme.secondary))
             })
-            .child(
-                Icon::new(icon)
-                    .size(px(14.))
-                    .text_color(if is_active { rgb(0xFFFFFF).into() } else { icon_color }),
-            )
+            .child(Icon::new(icon).size(px(14.)).text_color(if is_active {
+                rgb(0xFFFFFF).into()
+            } else {
+                icon_color
+            }))
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_main_app(id, window, cx);
@@ -2936,11 +3682,13 @@ impl RouterApp {
         let lang_match = query.is_empty()
             || "界面语言 interface language 简体中文 英文 english 语言".contains(&query);
         let theme_match = query.is_empty()
-            || "外观主题 appearance theme 浅色 深色 跟随系统 light dark system 主题".contains(&query);
+            || "外观主题 appearance theme 浅色 深色 跟随系统 light dark system 主题"
+                .contains(&query);
         let apps_match = query.is_empty()
             || "主页面显示 main page apps claude codex grok 侧边栏 导航".contains(&query);
         let window_match = query.is_empty()
-            || "窗口行为 window behavior 开机自启 startup 关闭时最小化到托盘 minimize tray 托盘".contains(&query);
+            || "窗口行为 window behavior 开机自启 startup 关闭时最小化到托盘 minimize tray 托盘"
+                .contains(&query);
 
         let none_match = !lang_match && !theme_match && !apps_match && !window_match;
 
@@ -3110,7 +3858,8 @@ impl RouterApp {
                                     .child(self.render_app_toggle_chip("grok", "Grok Build", CustomIcon::Grok, rgb(0x8B5CF6).into(), cx))
                                     .child(self.render_app_toggle_chip("kimi", "Kimi Code", CustomIcon::Kimi, rgb(0x2563EB).into(), cx))
                                     .child(self.render_app_toggle_chip("ohmypi", "Oh My Pi", CustomIcon::OhMyPi, rgb(0xEC4899).into(), cx))
-                                    .child(self.render_app_toggle_chip("pi", "Pi", CustomIcon::Pi, rgb(0x3B82F6).into(), cx)),
+                                    .child(self.render_app_toggle_chip("pi", "Pi", CustomIcon::Pi, rgb(0x3B82F6).into(), cx))
+                                    .child(self.render_app_toggle_chip("zcode", "ZCode", CustomIcon::ZCode, rgb(0x10B981).into(), cx)),
                             ),
                     ),
                 )
@@ -3244,14 +3993,70 @@ impl RouterApp {
         let theme = cx.theme().clone();
 
         let models = [
-            ("claude-3-7-sonnet", CustomIcon::Claude, rgb(0xD97757), "$220.51", "73.3%", "156 M"),
-            ("claude-3-5-sonnet", CustomIcon::Claude, rgb(0xD97757), "$77.06", "25.6%", "107 M"),
-            ("gpt-4o", CustomIcon::OpenAI, rgb(0x10A37F), "$2.41", "0.8%", "1.37 M"),
-            ("grok-2", CustomIcon::Grok, rgb(0x8B5CF6), "$0.25", "0.1%", "162 K"),
-            ("o3-mini", CustomIcon::OpenAI, rgb(0x10A37F), "$0.15", "0.1%", "127 K"),
-            ("grok-beta", CustomIcon::Grok, rgb(0x8B5CF6), "$0.15", "0.0%", "134 K"),
-            ("gpt-4o-mini", CustomIcon::OpenAI, rgb(0x10A37F), "$0.12", "0.0%", "35.7 K"),
-            ("claude-3-haiku", CustomIcon::Claude, rgb(0xD97757), "$0.08", "0.0%", "345 K"),
+            (
+                "claude-3-7-sonnet",
+                CustomIcon::Claude,
+                rgb(0xD97757),
+                "$220.51",
+                "73.3%",
+                "156 M",
+            ),
+            (
+                "claude-3-5-sonnet",
+                CustomIcon::Claude,
+                rgb(0xD97757),
+                "$77.06",
+                "25.6%",
+                "107 M",
+            ),
+            (
+                "gpt-4o",
+                CustomIcon::OpenAI,
+                rgb(0x10A37F),
+                "$2.41",
+                "0.8%",
+                "1.37 M",
+            ),
+            (
+                "grok-2",
+                CustomIcon::Grok,
+                rgb(0x8B5CF6),
+                "$0.25",
+                "0.1%",
+                "162 K",
+            ),
+            (
+                "o3-mini",
+                CustomIcon::OpenAI,
+                rgb(0x10A37F),
+                "$0.15",
+                "0.1%",
+                "127 K",
+            ),
+            (
+                "grok-beta",
+                CustomIcon::Grok,
+                rgb(0x8B5CF6),
+                "$0.15",
+                "0.0%",
+                "134 K",
+            ),
+            (
+                "gpt-4o-mini",
+                CustomIcon::OpenAI,
+                rgb(0x10A37F),
+                "$0.12",
+                "0.0%",
+                "35.7 K",
+            ),
+            (
+                "claude-3-haiku",
+                CustomIcon::Claude,
+                rgb(0xD97757),
+                "$0.08",
+                "0.0%",
+                "345 K",
+            ),
         ];
 
         v_flex()
@@ -3264,38 +4069,93 @@ impl RouterApp {
                     .border_b_1()
                     .border_color(theme.border)
                     .text_color(theme.muted_foreground)
-                    .child(div().flex_1().min_w_0().child(t!("usage.col_model").to_string()))
-                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().child(t!("usage.col_cost").to_string())))
-                    .child(div().w(px(64.)).child(h_flex().justify_end().w_full().child(t!("usage.col_share").to_string())))
-                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().child(t!("usage.col_tokens").to_string()))),
-            )
-            .children(models.iter().map(|(name, icon, color, cost, share, tokens)| {
-                h_flex()
-                    .w_full()
-                    .py(px(7.))
-                    .border_b_1()
-                    .border_color(theme.border.opacity(0.4))
-                    .items_center()
                     .child(
-                        h_flex()
+                        div()
                             .flex_1()
                             .min_w_0()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(Icon::new(*icon).size(px(13.)).text_color(*color))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.foreground)
-                                    .child(*name),
-                            ),
+                            .child(t!("usage.col_model").to_string()),
                     )
-                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child(*cost)))
-                    .child(div().w(px(64.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*share)))
-                    .child(div().w(px(84.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*tokens)))
-            }))
+                    .child(
+                        div().w(px(84.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_cost").to_string()),
+                        ),
+                    )
+                    .child(
+                        div().w(px(64.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_share").to_string()),
+                        ),
+                    )
+                    .child(
+                        div().w(px(84.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_tokens").to_string()),
+                        ),
+                    ),
+            )
+            .children(
+                models
+                    .iter()
+                    .map(|(name, icon, color, cost, share, tokens)| {
+                        h_flex()
+                            .w_full()
+                            .py(px(7.))
+                            .border_b_1()
+                            .border_color(theme.border.opacity(0.4))
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(Icon::new(*icon).size(px(13.)).text_color(*color))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child(*name),
+                                    ),
+                            )
+                            .child(
+                                div().w(px(84.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme.foreground)
+                                        .child(*cost),
+                                ),
+                            )
+                            .child(
+                                div().w(px(64.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .text_color(theme.muted_foreground)
+                                        .child(*share),
+                                ),
+                            )
+                            .child(
+                                div().w(px(84.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .text_color(theme.muted_foreground)
+                                        .child(*tokens),
+                                ),
+                            )
+                    }),
+            )
     }
 
     fn render_usage_day_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3321,11 +4181,38 @@ impl RouterApp {
                     .border_b_1()
                     .border_color(theme.border)
                     .text_color(theme.muted_foreground)
-                    .child(div().flex_1().min_w_0().child(t!("usage.col_date").to_string()))
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child("Codex")))
-                    .child(div().w(px(90.)).child(h_flex().justify_end().w_full().child("Claude Code")))
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child(t!("usage.col_cost").to_string())))
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().child(t!("usage.col_tokens").to_string()))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(t!("usage.col_date").to_string()),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .child(h_flex().justify_end().w_full().child("Codex")),
+                    )
+                    .child(
+                        div()
+                            .w(px(90.))
+                            .child(h_flex().justify_end().w_full().child("Claude Code")),
+                    )
+                    .child(
+                        div().w(px(80.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_cost").to_string()),
+                        ),
+                    )
+                    .child(
+                        div().w(px(80.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_tokens").to_string()),
+                        ),
+                    ),
             )
             .children(days.iter().map(|(day, codex, claude, total, tokens)| {
                 h_flex()
@@ -3342,10 +4229,43 @@ impl RouterApp {
                             .text_color(theme.foreground)
                             .child(*day),
                     )
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*codex)))
-                    .child(div().w(px(90.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*claude)))
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().font_weight(FontWeight::MEDIUM).text_color(theme.foreground).child(*total)))
-                    .child(div().w(px(80.)).child(h_flex().justify_end().w_full().text_color(theme.muted_foreground).child(*tokens)))
+                    .child(
+                        div().w(px(80.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .text_color(theme.muted_foreground)
+                                .child(*codex),
+                        ),
+                    )
+                    .child(
+                        div().w(px(90.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .text_color(theme.muted_foreground)
+                                .child(*claude),
+                        ),
+                    )
+                    .child(
+                        div().w(px(80.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(*total),
+                        ),
+                    )
+                    .child(
+                        div().w(px(80.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .text_color(theme.muted_foreground)
+                                .child(*tokens),
+                        ),
+                    )
             }))
     }
 
@@ -3850,12 +4770,10 @@ impl RouterApp {
     }
 
     fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(match self.settings_tab {
-                SettingsTab::General => self.render_general_settings(cx).into_any_element(),
-                SettingsTab::About => self.render_about_settings(cx).into_any_element(),
-            })
+        div().size_full().child(match self.settings_tab {
+            SettingsTab::General => self.render_general_settings(cx).into_any_element(),
+            SettingsTab::About => self.render_about_settings(cx).into_any_element(),
+        })
     }
 
     fn render_notifications_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3881,12 +4799,7 @@ impl RouterApp {
                                 .items_center()
                                 .gap(px(8.))
                                 .py(px(4.))
-                                .child(
-                                    div()
-                                        .size(px(6.))
-                                        .rounded_full()
-                                        .bg(cx.theme().primary),
-                                )
+                                .child(div().size(px(6.)).rounded_full().bg(cx.theme().primary))
                                 .child(
                                     div()
                                         .text_size(px(13.))
@@ -3906,14 +4819,14 @@ impl RouterApp {
         let app_name = form.app.display_name();
         let is_editing = form.editing_id.is_some();
         let title = if is_editing {
-            format!("编辑 {} 供应商", app_name)
+            format!("编辑 {} 服务商", app_name)
         } else {
-            format!("新建 {} 供应商", app_name)
+            format!("新建 {} 服务商", app_name)
         };
         let subtitle = if is_editing {
-            "修改供应商的接口端点、模型名称与模型映射配置"
+            "修改服务商的接口端点、模型名称与模型映射配置"
         } else {
-            "从预设模版快速创建或手动填写第三方 API 供应商"
+            "从预设模版快速创建或手动填写第三方 API 服务商"
         };
         let theme = cx.theme();
 
@@ -3952,7 +4865,7 @@ impl RouterApp {
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("{} 供应商", app_name)),
+                                    .child(format!("{} 服务商", app_name)),
                             )
                             .child(
                                 div()
@@ -4067,7 +4980,7 @@ impl RouterApp {
                                         })),
                                 ),
                         )
-                        .child(form_field("供应商名称", Input::new(&form.name)))
+                        .child(form_field("服务商名称", Input::new(&form.name)))
                         .child(form_field(
                             "API Key / 凭据",
                             Input::new(&form.api_key).mask_toggle(),
@@ -4114,6 +5027,94 @@ impl RouterApp {
                                         ),
                                 ),
                         )
+                        .when(form.app == AppKind::ZCode, |this| {
+                            let text_checked = form.zcode_modality_text;
+                            let image_checked = form.zcode_modality_image;
+                            this.child(
+                                v_flex()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child(t!("provider.modalities").to_string()),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap(px(16.))
+                                            .items_center()
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-modality-text")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_zcode_modality_text(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if text_checked { theme.primary } else { theme.border })
+                                                            .bg(if text_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(text_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child(t!("provider.modality_text").to_string()),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-modality-image")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_zcode_modality_image(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if image_checked { theme.primary } else { theme.border })
+                                                            .bg(if image_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(image_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child(t!("provider.modality_image").to_string()),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                        })
                         .child(
                             div()
                                 .text_size(px(12.))
@@ -4194,7 +5195,7 @@ impl RouterApp {
                                             .child(if form.has_fetched_models {
                                                 "已成功获取可用模型列表，点击右上角「新增映射」添加映射规则"
                                             } else {
-                                                "点击「拉取模型」获取供应商可用模型，或点击上方「新增映射」直接添加"
+                                                "点击「拉取模型」获取服务商可用模型，或点击上方「新增映射」直接添加"
                                             }),
                                     )
                                     .into_any_element()
@@ -4368,11 +5369,27 @@ impl Render for RouterApp {
         } else {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
-                Route::Codex => self.render_app_providers_page(AppKind::Codex, cx).into_any_element(),
-                Route::Claude => self.render_app_providers_page(AppKind::Claude, cx).into_any_element(),
-                Route::Grok => self.render_app_providers_page(AppKind::Grok, cx).into_any_element(),
-                Route::OpenCode => self.render_app_providers_page(AppKind::OpenCode, cx).into_any_element(),
-                Route::Pi => self.render_app_providers_page(AppKind::Pi, cx).into_any_element(),
+                Route::Codex => self
+                    .render_app_providers_page(AppKind::Codex, cx)
+                    .into_any_element(),
+                Route::Claude => self
+                    .render_app_providers_page(AppKind::Claude, cx)
+                    .into_any_element(),
+                Route::Grok => self
+                    .render_app_providers_page(AppKind::Grok, cx)
+                    .into_any_element(),
+                Route::OpenCode => self
+                    .render_app_providers_page(AppKind::OpenCode, cx)
+                    .into_any_element(),
+                Route::Pi => self
+                    .render_app_providers_page(AppKind::Pi, cx)
+                    .into_any_element(),
+                Route::Cursor => self
+                    .render_app_providers_page(AppKind::Cursor, cx)
+                    .into_any_element(),
+                Route::ZCode => self
+                    .render_app_providers_page(AppKind::ZCode, cx)
+                    .into_any_element(),
                 Route::Notifications => self.render_notifications_page(cx).into_any_element(),
                 Route::Settings => self.render_settings_page(cx).into_any_element(),
             }
@@ -4389,12 +5406,17 @@ impl Render for RouterApp {
                     .text_color(cx.theme().foreground)
                     .font_family(".SystemUIFont")
                     .key_context("RouterApp")
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
-                        if (event.keystroke.modifiers.platform || event.keystroke.modifiers.control) && event.keystroke.key == "b" {
-                            this.sidebar_open = !this.sidebar_open;
-                            cx.notify();
-                        }
-                    }))
+                    .on_key_down(
+                        cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                            if (event.keystroke.modifiers.platform
+                                || event.keystroke.modifiers.control)
+                                && event.keystroke.key == "b"
+                            {
+                                this.sidebar_open = !this.sidebar_open;
+                                cx.notify();
+                            }
+                        }),
+                    )
                     .when(self.sidebar_open, |this| {
                         if self.route == Route::Settings {
                             this.child(self.render_settings_sidebar(cx))
@@ -4488,6 +5510,28 @@ impl FormDraft {
                 model: DEFAULT_PI_MODEL.to_string(),
                 model_mappings: Vec::new(),
             }),
+            AppKind::Cursor => ProviderForm::Cursor(CursorForm {
+                name: String::new(),
+                website_url: String::new(),
+                kind: CursorKind::ThirdParty,
+                provider_type: domain::DEFAULT_CURSOR_PROVIDER_TYPE.to_string(),
+                api_key: String::new(),
+                base_url: String::new(),
+                model: DEFAULT_CURSOR_MODEL.to_string(),
+                model_mappings: Vec::new(),
+            }),
+            AppKind::ZCode => ProviderForm::ZCode(ZCodeForm {
+                name: String::new(),
+                website_url: String::new(),
+                kind: ZCodeKind::ThirdParty,
+                provider_kind: DEFAULT_ZCODE_PROVIDER_KIND.to_string(),
+                api_key: String::new(),
+                base_url: String::new(),
+                model: DEFAULT_ZCODE_MODEL.to_string(),
+                modality_text: true,
+                modality_image: true,
+                model_mappings: Vec::new(),
+            }),
         };
 
         Self::from_provider_form(app, None, default_form, window, cx)
@@ -4518,7 +5562,14 @@ impl FormDraft {
                 f.kind.is_official(),
                 f.model_mappings
                     .iter()
-                    .map(|m| (m.display_name.clone(), m.model.clone(), m.context_window, m.reasoning_effort.clone()))
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model.clone(),
+                            m.context_window,
+                            m.reasoning_effort.clone(),
+                        )
+                    })
                     .collect(),
             ),
             ProviderForm::Claude(f) => (
@@ -4529,7 +5580,14 @@ impl FormDraft {
                 f.kind.is_official(),
                 f.model_mappings
                     .iter()
-                    .map(|m| (m.display_name.clone(), m.model.clone(), m.context_window, m.reasoning_effort.clone()))
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model.clone(),
+                            m.context_window,
+                            m.reasoning_effort.clone(),
+                        )
+                    })
                     .collect(),
             ),
             ProviderForm::Grok(f) => (
@@ -4540,7 +5598,14 @@ impl FormDraft {
                 f.kind.is_official(),
                 f.model_mappings
                     .iter()
-                    .map(|m| (m.display_name.clone(), m.model.clone(), m.context_window, m.reasoning_effort.clone()))
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model.clone(),
+                            m.context_window,
+                            m.reasoning_effort.clone(),
+                        )
+                    })
                     .collect(),
             ),
             ProviderForm::OpenCode(f) => (
@@ -4551,7 +5616,14 @@ impl FormDraft {
                 f.kind.is_official(),
                 f.model_mappings
                     .iter()
-                    .map(|m| (m.display_name.clone(), m.model_id.clone(), m.context_limit, None))
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model_id.clone(),
+                            m.context_limit,
+                            None,
+                        )
+                    })
                     .collect(),
             ),
             ProviderForm::Pi(f) => (
@@ -4562,7 +5634,50 @@ impl FormDraft {
                 f.kind.is_official(),
                 f.model_mappings
                     .iter()
-                    .map(|m| (m.display_name.clone(), m.model_id.clone(), m.context_window, None))
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model_id.clone(),
+                            m.context_window,
+                            None,
+                        )
+                    })
+                    .collect(),
+            ),
+            ProviderForm::Cursor(f) => (
+                f.name.clone(),
+                f.api_key.clone(),
+                f.base_url.clone(),
+                f.model.clone(),
+                f.kind.is_official(),
+                f.model_mappings
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model.clone(),
+                            m.context_window,
+                            m.reasoning_effort.clone(),
+                        )
+                    })
+                    .collect(),
+            ),
+            ProviderForm::ZCode(f) => (
+                f.name.clone(),
+                f.api_key.clone(),
+                f.base_url.clone(),
+                f.model.clone(),
+                f.kind.is_official(),
+                f.model_mappings
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.display_name.clone(),
+                            m.model_id.clone(),
+                            m.context_limit,
+                            None,
+                        )
+                    })
                     .collect(),
             ),
         };
@@ -4582,9 +5697,8 @@ impl FormDraft {
         };
 
         let presets_for_sub = presets.clone();
-        let preset_select = cx.new(|cx| {
-            SelectState::new(presets, selected_index, window, cx).searchable(true)
-        });
+        let preset_select =
+            cx.new(|cx| SelectState::new(presets, selected_index, window, cx).searchable(true));
 
         let view = cx.entity();
         let _preset_sub = window.subscribe(
@@ -4605,23 +5719,20 @@ impl FormDraft {
         let catalog_rows = catalog_rows_data
             .into_iter()
             .map(|(dn, m, cw, re)| {
-                CatalogRowDraft::new(
-                    &dn,
-                    &m,
-                    cw,
-                    re.as_deref(),
-                    &[],
-                    window,
-                    cx,
-                )
+                CatalogRowDraft::new(&dn, &m, cw, re.as_deref(), &[], window, cx)
             })
             .collect();
+
+        let (zcode_modality_text, zcode_modality_image) = match &form {
+            ProviderForm::ZCode(f) => (f.modality_text, f.modality_image),
+            _ => (true, true),
+        };
 
         Self {
             app,
             editing_id,
             is_official,
-            name: field(window, cx, &name, "输入供应商名称，如 PackyCode"),
+            name: field(window, cx, &name, "输入服务商名称，如 PackyCode"),
             api_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("sk-...")
@@ -4630,6 +5741,8 @@ impl FormDraft {
             }),
             base_url: field(window, cx, &base_url, "https://api.example.com/v1"),
             model: field(window, cx, &model, "例如: gpt-5.6-sol / claude-3-7-sonnet"),
+            zcode_modality_text,
+            zcode_modality_image,
             preset_select,
             catalog_rows,
             fetched_models: Vec::new(),
@@ -4650,13 +5763,17 @@ impl FormDraft {
         if let Some(name) = info.name {
             let cur_name = self.name.read(cx).value().to_string();
             if cur_name.trim().is_empty() || cur_name == "PackyCode" || cur_name == "Custom" {
-                self.name.update(cx, |input, cx| input.set_value(name, window, cx));
+                self.name
+                    .update(cx, |input, cx| input.set_value(name, window, cx));
             }
         }
-        self.api_key.update(cx, |input, cx| input.set_value(info.api_key, window, cx));
-        self.base_url.update(cx, |input, cx| input.set_value(info.base_url, window, cx));
+        self.api_key
+            .update(cx, |input, cx| input.set_value(info.api_key, window, cx));
+        self.base_url
+            .update(cx, |input, cx| input.set_value(info.base_url, window, cx));
         if let Some(model) = info.model {
-            self.model.update(cx, |input, cx| input.set_value(model, window, cx));
+            self.model
+                .update(cx, |input, cx| input.set_value(model, window, cx));
         }
         if !info.models.is_empty() {
             self.fetched_models = info.models.clone();
@@ -4672,9 +5789,8 @@ impl FormDraft {
                 .iter()
                 .position(|m| m == &current_model)
                 .map(|i| gpui_component::IndexPath::default().row(i));
-            let default_select = cx.new(|cx| {
-                SelectState::new(items, selected_idx, window, cx).searchable(true)
-            });
+            let default_select =
+                cx.new(|cx| SelectState::new(items, selected_idx, window, cx).searchable(true));
             let form_model_state = self.model.clone();
             let default_sub = window.subscribe(
                 &default_select,
@@ -4712,7 +5828,11 @@ impl FormDraft {
                 ProviderForm::Codex(CodexForm {
                     name,
                     website_url: String::new(),
-                    kind: if self.is_official { CodexKind::Official } else { CodexKind::ResponsesThirdParty },
+                    kind: if self.is_official {
+                        CodexKind::Official
+                    } else {
+                        CodexKind::ResponsesThirdParty
+                    },
                     api_key,
                     base_url,
                     model,
@@ -4728,7 +5848,11 @@ impl FormDraft {
                 ProviderForm::Claude(ClaudeForm {
                     name,
                     website_url: String::new(),
-                    kind: if self.is_official { ClaudeKind::Official } else { ClaudeKind::ThirdParty },
+                    kind: if self.is_official {
+                        ClaudeKind::Official
+                    } else {
+                        ClaudeKind::ThirdParty
+                    },
                     api_key,
                     base_url,
                     model,
@@ -4744,7 +5868,11 @@ impl FormDraft {
                 ProviderForm::Grok(GrokForm {
                     name,
                     website_url: String::new(),
-                    kind: if self.is_official { GrokKind::Official } else { GrokKind::ThirdParty },
+                    kind: if self.is_official {
+                        GrokKind::Official
+                    } else {
+                        GrokKind::ThirdParty
+                    },
                     api_key,
                     base_url,
                     model,
@@ -4760,7 +5888,11 @@ impl FormDraft {
                 ProviderForm::OpenCode(OpenCodeForm {
                     name,
                     website_url: String::new(),
-                    kind: if self.is_official { OpenCodeKind::Official } else { OpenCodeKind::ThirdParty },
+                    kind: if self.is_official {
+                        OpenCodeKind::Official
+                    } else {
+                        OpenCodeKind::ThirdParty
+                    },
                     npm: domain::DEFAULT_OPENCODE_NPM.to_string(),
                     api_key,
                     base_url,
@@ -4777,11 +5909,59 @@ impl FormDraft {
                 ProviderForm::Pi(PiForm {
                     name,
                     website_url: String::new(),
-                    kind: if self.is_official { PiKind::Official } else { PiKind::ThirdParty },
+                    kind: if self.is_official {
+                        PiKind::Official
+                    } else {
+                        PiKind::ThirdParty
+                    },
                     api_type: domain::DEFAULT_PI_API_TYPE.to_string(),
                     api_key,
                     base_url,
                     model,
+                    model_mappings,
+                })
+            }
+            AppKind::Cursor => {
+                let model_mappings = self
+                    .catalog_rows
+                    .iter()
+                    .filter_map(|row| row.to_cursor_mapping(cx))
+                    .collect();
+                ProviderForm::Cursor(CursorForm {
+                    name,
+                    website_url: String::new(),
+                    kind: if self.is_official {
+                        CursorKind::Official
+                    } else {
+                        CursorKind::ThirdParty
+                    },
+                    provider_type: domain::DEFAULT_CURSOR_PROVIDER_TYPE.to_string(),
+                    api_key,
+                    base_url,
+                    model,
+                    model_mappings,
+                })
+            }
+            AppKind::ZCode => {
+                let model_mappings = self
+                    .catalog_rows
+                    .iter()
+                    .filter_map(|row| row.to_zcode_mapping(cx))
+                    .collect();
+                ProviderForm::ZCode(ZCodeForm {
+                    name,
+                    website_url: String::new(),
+                    kind: if self.is_official {
+                        ZCodeKind::Official
+                    } else {
+                        ZCodeKind::ThirdParty
+                    },
+                    provider_kind: DEFAULT_ZCODE_PROVIDER_KIND.to_string(),
+                    api_key,
+                    base_url,
+                    model,
+                    modality_text: self.zcode_modality_text,
+                    modality_image: self.zcode_modality_image,
                     model_mappings,
                 })
             }
@@ -4840,13 +6020,13 @@ fn empty_state(app_name: &str, cx: &App) -> impl IntoElement {
                 .text_size(px(16.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.foreground)
-                .child(format!("还没有配置 {} 供应商", app_name)),
+                .child(format!("还没有配置 {} 服务商", app_name)),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(theme.muted_foreground)
-                .child("你可以点击右上角的「新建供应商」，快速添加并管理服务商。"),
+                .child("你可以点击右上角的「新建服务商」，快速添加并管理服务商。"),
         )
 }
 
@@ -4878,13 +6058,13 @@ fn empty_search_state(cx: &App) -> impl IntoElement {
                 .text_size(px(14.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.foreground)
-                .child("未找到匹配的供应商"),
+                .child("未找到匹配的服务商"),
         )
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(theme.muted_foreground)
-                .child("请尝试修改搜索词，或清空搜索栏查看所有供应商。"),
+                .child("请尝试修改搜索词，或清空搜索栏查看所有服务商。"),
         )
 }
 

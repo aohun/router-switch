@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppKind, ClaudeSettings, CodexSettings, GrokSettings, OpenCodeSettings, PiSettings,
+    AppKind, ClaudeSettings, CodexSettings, CursorSettings, GrokSettings, OpenCodeSettings,
+    PiSettings, ZCodeSettings,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub enum ProviderSettings {
     Grok(GrokSettings),
     OpenCode(OpenCodeSettings),
     Pi(PiSettings),
+    Cursor(CursorSettings),
+    ZCode(ZCodeSettings),
     Unsupported { app: AppKind },
 }
 
@@ -62,6 +65,20 @@ impl Provider {
         }
     }
 
+    pub fn cursor_settings(&self) -> Option<&CursorSettings> {
+        match &self.settings {
+            ProviderSettings::Cursor(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn zcode_settings(&self) -> Option<&ZCodeSettings> {
+        match &self.settings {
+            ProviderSettings::ZCode(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
     pub fn is_official(&self) -> bool {
         match &self.settings {
             ProviderSettings::Codex(s) => s.kind.is_official(),
@@ -69,6 +86,8 @@ impl Provider {
             ProviderSettings::Grok(s) => s.kind.is_official(),
             ProviderSettings::OpenCode(s) => s.kind.is_official(),
             ProviderSettings::Pi(s) => s.kind.is_official(),
+            ProviderSettings::Cursor(s) => s.kind.is_official(),
+            ProviderSettings::ZCode(s) => s.kind.is_official(),
             ProviderSettings::Unsupported { .. } => false,
         }
     }

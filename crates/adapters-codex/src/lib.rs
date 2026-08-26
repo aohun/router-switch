@@ -4,9 +4,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
-use domain::{
-    generate_catalog_json, has_login_material, CodexKind, CodexSettings,
-};
+use domain::{generate_catalog_json, has_login_material, CodexKind, CodexSettings};
 use serde_json::Value;
 use thiserror::Error;
 

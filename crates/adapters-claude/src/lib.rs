@@ -41,7 +41,9 @@ pub struct LiveClaude {
     pub settings: Value,
 }
 
-pub fn resolve_claude_paths(override_home: Option<&Path>) -> Result<ClaudePaths, ClaudeAdapterError> {
+pub fn resolve_claude_paths(
+    override_home: Option<&Path>,
+) -> Result<ClaudePaths, ClaudeAdapterError> {
     if let Some(home) = override_home {
         return Ok(ClaudePaths::from_home(home));
     }
@@ -120,9 +122,7 @@ pub fn write_live_for_provider(
     fs::create_dir_all(&paths.home)?;
 
     match settings.kind {
-        ClaudeKind::Official => {
-            restore_official(paths)
-        }
+        ClaudeKind::Official => restore_official(paths),
         ClaudeKind::ThirdParty => {
             let _ = backup_official_if_needed(paths);
 

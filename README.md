@@ -35,6 +35,8 @@ Powered by a native GPU-accelerated rendering engine, Router Switch delivers mil
   - **xAI Grok Build** (`~/.grok/config.toml`)
   - **OpenCode** (`~/.config/opencode/opencode.json`)
   - **Pi Coding Agent** (`~/.pi/agent/`)
+  - **ZCode** (`~/.zcode/v2/config.json`)
+  - **Cursor** (Local Gateway Proxy)
 - **One-Click Atomic Switching**: Seamlessly toggle between official accounts and third-party API providers with dual-file atomic writes and automatic rollback protection.
 
 ### 2. Smart Clipboard Monitoring & 1-Click Import
@@ -95,6 +97,8 @@ router-switch/
 │   ├── adapters-grok/       # Grok Build live config adapter (~/.grok)
 │   ├── adapters-opencode/   # OpenCode live config adapter (~/.config/opencode)
 │   ├── adapters-pi/         # Pi live config adapter (~/.pi/agent)
+│   ├── adapters-zcode/      # ZCode live config adapter (~/.zcode/v2/config.json)
+│   ├── cursor-gateway/      # Cursor reverse proxy & gateway
 │   ├── store/               # SQLite SSOT database storage (~/.router-switch/app.db)
 │   ├── session/             # Workspace orchestration: provider lifecycle & live atomic updates
 │   ├── ui/                  # GPUI views, themes, i18n, and interactive UI components
@@ -114,6 +118,7 @@ router-switch/
 | `~/.grok/config.toml` | Live Grok Build endpoint and API key |
 | `~/.config/opencode/opencode.json` | Live OpenCode configuration |
 | `~/.pi/agent/` | Live Pi configuration and model mappings |
+| `~/.zcode/v2/config.json` | Live ZCode configuration and providers |
 
 *Note: You can override storage paths using environment variables such as `ROUTER_SWITCH_HOME` and `CODEX_HOME`.*
 

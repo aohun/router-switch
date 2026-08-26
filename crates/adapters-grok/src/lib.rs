@@ -65,8 +65,8 @@ pub fn read_live(paths: &GrokPaths) -> Result<LiveGrok, GrokAdapterError> {
 pub fn backup_official_if_needed(paths: &GrokPaths) -> Result<(), GrokAdapterError> {
     fs::create_dir_all(&paths.home)?;
     let live = read_live(paths)?;
-    let is_official = !live.config_toml.contains("api_backend")
-        && !live.config_toml.contains("base_url");
+    let is_official =
+        !live.config_toml.contains("api_backend") && !live.config_toml.contains("base_url");
 
     if is_official && paths.config.exists() {
         let _ = fs::copy(&paths.config, &paths.config_official_bak);
@@ -156,11 +156,7 @@ mod tests {
     fn grok_third_party_and_restore_cycle() {
         let (_dir, paths) = temp_paths();
         fs::create_dir_all(&paths.home).unwrap();
-        fs::write(
-            &paths.config,
-            "# Official Grok config\ntheme = \"dark\"\n",
-        )
-        .unwrap();
+        fs::write(&paths.config, "# Official Grok config\ntheme = \"dark\"\n").unwrap();
 
         let form = GrokForm {
             name: "Packy Grok".into(),
@@ -178,12 +174,17 @@ mod tests {
         assert!(paths.config_official_bak.exists());
 
         let live = read_live(&paths).unwrap();
-        assert!(live.config_toml.contains("base_url = \"https://api.packy.ai/v1\""));
+        assert!(live
+            .config_toml
+            .contains("base_url = \"https://api.packy.ai/v1\""));
         assert!(live.config_toml.contains("api_key = \"xai-12345\""));
 
         // Switch back to official -> should restore official backup
         write_live_for_provider(&paths, &official_grok_settings()).unwrap();
         let live_off = read_live(&paths).unwrap();
-        assert_eq!(live_off.config_toml, "# Official Grok config\ntheme = \"dark\"\n");
+        assert_eq!(
+            live_off.config_toml,
+            "# Official Grok config\ntheme = \"dark\"\n"
+        );
     }
 }

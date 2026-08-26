@@ -167,7 +167,7 @@ pub fn official_pi_provider() -> Provider {
 pub fn parse_pi_form(form: PiForm) -> Result<PiSettings, DomainError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return Err(DomainError::Validation("供应商名称不能为空".into()));
+        return Err(DomainError::Validation("服务商名称不能为空".into()));
     }
 
     match form.kind {
@@ -175,7 +175,9 @@ pub fn parse_pi_form(form: PiForm) -> Result<PiSettings, DomainError> {
         PiKind::ThirdParty => {
             let base_url = form.base_url.trim();
             if base_url.is_empty() {
-                return Err(DomainError::Validation("API 端点 (Base URL) 不能为空".into()));
+                return Err(DomainError::Validation(
+                    "API 端点 (Base URL) 不能为空".into(),
+                ));
             }
             let api_key = form.api_key.trim();
             if api_key.is_empty() {

@@ -214,7 +214,10 @@ mod tests {
         assert_eq!(live.settings["defaultProvider"], "s2a");
         assert_eq!(live.settings["defaultModel"], "grok-4.6");
         assert_eq!(live.settings["theme"], "dark");
-        assert_eq!(live.models["providers"]["s2a"]["baseUrl"], "https://s2a.ii.sb/v1");
+        assert_eq!(
+            live.models["providers"]["s2a"]["baseUrl"],
+            "https://s2a.ii.sb/v1"
+        );
 
         // Restore official
         restore_official(&paths).unwrap();

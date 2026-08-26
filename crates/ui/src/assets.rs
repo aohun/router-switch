@@ -1,6 +1,10 @@
-use std::borrow::Cow;
+const ZCODE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="currentColor" d="M4 4h16v3.6L10.2 16.4H20V20H4v-3.6L13.8 7.6H4V4Z"/>
+</svg>"#;
+
 use gpui::{AssetSource, SharedString};
 use gpui_component::IconNamed;
+use std::borrow::Cow;
 
 pub struct AppAssets;
 
@@ -96,6 +100,7 @@ pub enum CustomIcon {
     Pi,
     Amp,
     Cursor,
+    ZCode,
     DeepSeek,
     Fx,
     OhMyPi,
@@ -116,6 +121,7 @@ impl IconNamed for CustomIcon {
             Self::Pi => "icons/custom/pi.svg",
             Self::Amp => "icons/custom/amp.svg",
             Self::Cursor => "icons/custom/cursor.svg",
+            Self::ZCode => "icons/custom/zcode.svg",
             Self::DeepSeek => "icons/custom/deepseek.svg",
             Self::Fx => "icons/custom/fx.svg",
             Self::OhMyPi => "icons/custom/ohmypi.svg",
@@ -139,6 +145,7 @@ impl AssetSource for AppAssets {
             "icons/custom/pi.svg" => Ok(Some(Cow::Borrowed(PI_SVG.as_bytes()))),
             "icons/custom/amp.svg" => Ok(Some(Cow::Borrowed(AMP_SVG.as_bytes()))),
             "icons/custom/cursor.svg" => Ok(Some(Cow::Borrowed(CURSOR_SVG.as_bytes()))),
+            "icons/custom/zcode.svg" => Ok(Some(Cow::Borrowed(ZCODE_SVG.as_bytes()))),
             "icons/custom/deepseek.svg" => Ok(Some(Cow::Borrowed(DEEPSEEK_SVG.as_bytes()))),
             "icons/custom/fx.svg" => Ok(Some(Cow::Borrowed(FX_SVG.as_bytes()))),
             "icons/custom/ohmypi.svg" => Ok(Some(Cow::Borrowed(OHMYPI_SVG.as_bytes()))),
@@ -161,6 +168,7 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/pi.svg".into());
             list.push("icons/custom/amp.svg".into());
             list.push("icons/custom/cursor.svg".into());
+            list.push("icons/custom/zcode.svg".into());
             list.push("icons/custom/deepseek.svg".into());
             list.push("icons/custom/fx.svg".into());
             list.push("icons/custom/ohmypi.svg".into());

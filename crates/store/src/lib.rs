@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use domain::{
-    official_claude_provider, official_codex_provider, official_grok_provider,
-    official_opencode_provider, official_pi_provider, AppKind, Provider, OFFICIAL_CLAUDE_ID,
-    OFFICIAL_CODEX_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
+    official_claude_provider, official_codex_provider, official_cursor_provider,
+    official_grok_provider, official_opencode_provider, official_pi_provider,
+    official_zcode_provider, AppKind, Provider, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
+    OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_ZCODE_ID,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ pub enum StoreError {
     HomeDir,
     #[error("数据库错误: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("供应商数据损坏: {0}")]
+    #[error("服务商数据损坏: {0}")]
     Corrupt(String),
     #[error("{0}")]
     Conflict(String),
@@ -47,6 +48,8 @@ pub struct AppSettings {
     pub grok_home: Option<PathBuf>,
     pub opencode_home: Option<PathBuf>,
     pub pi_home: Option<PathBuf>,
+    pub cursor_home: Option<PathBuf>,
+    pub zcode_home: Option<PathBuf>,
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
@@ -66,6 +69,8 @@ fn default_main_apps() -> Vec<String> {
         "grok".into(),
         "opencode".into(),
         "pi".into(),
+        "cursor".into(),
+        "zcode".into(),
     ]
 }
 
@@ -89,6 +94,8 @@ impl Default for AppSettings {
             grok_home: None,
             opencode_home: None,
             pi_home: None,
+            cursor_home: None,
+            zcode_home: None,
             theme: ThemePreference::System,
             language: AppLanguage::ZhCn,
             main_apps: default_main_apps(),
@@ -221,7 +228,7 @@ impl Store {
 
     pub fn delete_provider(&self, id: &str) -> Result<(), StoreError> {
         if self.is_current(id)? {
-            return Err(StoreError::Conflict("当前启用的供应商不能删除".into()));
+            return Err(StoreError::Conflict("当前启用的服务商不能删除".into()));
         }
         self.conn
             .execute("DELETE FROM providers WHERE id = ?1", params![id])?;
@@ -249,7 +256,7 @@ impl Store {
             )
             .optional()?;
         if exists.is_none() {
-            return Err(StoreError::Conflict("供应商不存在".into()));
+            return Err(StoreError::Conflict("服务商不存在".into()));
         }
         self.conn.execute(
             "INSERT INTO current_providers (app, provider_id) VALUES (?1, ?2)
@@ -262,11 +269,9 @@ impl Store {
     pub fn settings(&self) -> Result<AppSettings, StoreError> {
         let raw: Option<String> = self
             .conn
-            .query_row(
-                "SELECT value FROM kv WHERE key = 'settings'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |row| {
+                row.get(0)
+            })
             .optional()?;
         match raw {
             Some(text) => serde_json::from_str(&text)
@@ -276,8 +281,8 @@ impl Store {
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<(), StoreError> {
-        let value = serde_json::to_string(settings)
-            .map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        let value =
+            serde_json::to_string(settings).map_err(|err| StoreError::Corrupt(err.to_string()))?;
         self.conn.execute(
             "INSERT INTO kv (key, value) VALUES ('settings', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -323,6 +328,18 @@ impl Store {
         // Seed Pi
         if self.get_provider(OFFICIAL_PI_ID)?.is_none() {
             let mut official = official_pi_provider();
+            official.created_at = now_secs();
+            self.upsert_provider(&official)?;
+        }
+        // Seed Cursor
+        if self.get_provider(OFFICIAL_CURSOR_ID)?.is_none() {
+            let mut official = official_cursor_provider();
+            official.created_at = now_secs();
+            self.upsert_provider(&official)?;
+        }
+        // Seed ZCode
+        if self.get_provider(OFFICIAL_ZCODE_ID)?.is_none() {
+            let mut official = official_zcode_provider();
             official.created_at = now_secs();
             self.upsert_provider(&official)?;
         }
@@ -409,7 +426,21 @@ mod tests {
         assert_eq!(grok_list.len(), 1);
         assert_eq!(grok_list[0].id, OFFICIAL_GROK_ID);
 
-        store.set_current(AppKind::Codex, OFFICIAL_CODEX_ID).unwrap();
+        let pi_list = store.list_providers(AppKind::Pi).unwrap();
+        assert_eq!(pi_list.len(), 1);
+        assert_eq!(pi_list[0].id, OFFICIAL_PI_ID);
+
+        let cursor_list = store.list_providers(AppKind::Cursor).unwrap();
+        assert_eq!(cursor_list.len(), 1);
+        assert_eq!(cursor_list[0].id, OFFICIAL_CURSOR_ID);
+
+        let zcode_list = store.list_providers(AppKind::ZCode).unwrap();
+        assert_eq!(zcode_list.len(), 1);
+        assert_eq!(zcode_list[0].id, OFFICIAL_ZCODE_ID);
+
+        store
+            .set_current(AppKind::Codex, OFFICIAL_CODEX_ID)
+            .unwrap();
         let err = store.delete_provider(OFFICIAL_CODEX_ID).unwrap_err();
         assert!(matches!(err, StoreError::Conflict(_)));
     }

@@ -1,4 +1,6 @@
-use gpui::{hsla, px, rgb, rgba, App, Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, Window};
+use gpui::{
+    hsla, px, rgb, rgba, App, Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, Window,
+};
 use gpui_component::theme::{Theme, ThemeMode};
 use store::ThemePreference;
 
