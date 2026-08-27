@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use domain::{
     official_claude_provider, official_codex_provider, official_cursor_provider,
     official_grok_provider, official_opencode_provider, official_pi_provider,
-    official_zcode_provider, AppKind, Provider, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
-    OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_ZCODE_ID,
+    official_workbuddy_provider, official_zcode_provider, AppKind, Provider, OFFICIAL_CLAUDE_ID,
+    OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
+    OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,72 @@ impl AppLanguage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_log_level")]
+    pub level: LogLevel,
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_log_level() -> LogLevel {
+    LogLevel::Info
+}
+
+fn default_retention_days() -> u32 {
+    7
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            level: LogLevel::Info,
+            retention_days: 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+
+    pub fn priority(&self) -> u8 {
+        match self {
+            Self::Error => 1,
+            Self::Warn => 2,
+            Self::Info => 3,
+            Self::Debug => 4,
+            Self::Trace => 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub codex_home: Option<PathBuf>,
@@ -50,6 +117,7 @@ pub struct AppSettings {
     pub pi_home: Option<PathBuf>,
     pub cursor_home: Option<PathBuf>,
     pub zcode_home: Option<PathBuf>,
+    pub workbuddy_home: Option<PathBuf>,
     pub theme: ThemePreference,
     #[serde(default)]
     pub language: AppLanguage,
@@ -59,6 +127,8 @@ pub struct AppSettings {
     pub launch_on_startup: bool,
     #[serde(default = "default_minimize_to_tray")]
     pub minimize_to_tray: bool,
+    #[serde(default)]
+    pub log_config: LogConfig,
 }
 
 fn default_main_apps() -> Vec<String> {
@@ -71,6 +141,7 @@ fn default_main_apps() -> Vec<String> {
         "pi".into(),
         "cursor".into(),
         "zcode".into(),
+        "workbuddy".into(),
     ]
 }
 
@@ -96,11 +167,13 @@ impl Default for AppSettings {
             pi_home: None,
             cursor_home: None,
             zcode_home: None,
+            workbuddy_home: None,
             theme: ThemePreference::System,
             language: AppLanguage::ZhCn,
             main_apps: default_main_apps(),
             launch_on_startup: false,
             minimize_to_tray: true,
+            log_config: LogConfig::default(),
         }
     }
 }
@@ -343,6 +416,12 @@ impl Store {
             official.created_at = now_secs();
             self.upsert_provider(&official)?;
         }
+        // Seed WorkBuddy
+        if self.get_provider(OFFICIAL_WORKBUDDY_ID)?.is_none() {
+            let mut official = official_workbuddy_provider();
+            official.created_at = now_secs();
+            self.upsert_provider(&official)?;
+        }
         Ok(())
     }
 }
@@ -437,6 +516,10 @@ mod tests {
         let zcode_list = store.list_providers(AppKind::ZCode).unwrap();
         assert_eq!(zcode_list.len(), 1);
         assert_eq!(zcode_list[0].id, OFFICIAL_ZCODE_ID);
+
+        let workbuddy_list = store.list_providers(AppKind::WorkBuddy).unwrap();
+        assert_eq!(workbuddy_list.len(), 1);
+        assert_eq!(workbuddy_list[0].id, OFFICIAL_WORKBUDDY_ID);
 
         store
             .set_current(AppKind::Codex, OFFICIAL_CODEX_ID)

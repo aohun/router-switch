@@ -31,6 +31,27 @@ pub fn send_deeplink(url: String) {
     let _ = tx.send(url);
 }
 
+#[cfg(target_os = "macos")]
+fn setup_dock_icon() {
+    use cocoa::appkit::{NSApp, NSApplication, NSImage};
+    use cocoa::base::nil;
+    use cocoa::foundation::NSData;
+
+    unsafe {
+        let icon_bytes: &[u8] = include_bytes!("../../../assets/icon.icns");
+        let data = NSData::dataWithBytes_length_(
+            nil,
+            icon_bytes.as_ptr() as *const std::ffi::c_void,
+            icon_bytes.len() as u64,
+        );
+        let image = NSImage::initWithData_(NSImage::alloc(nil), data);
+        if image != nil {
+            let app = NSApp();
+            app.setApplicationIconImage_(image);
+        }
+    }
+}
+
 pub fn run() {
     let (tx, _) = get_deeplink_channel();
     let tx_clone = tx.clone();
@@ -53,6 +74,9 @@ pub fn run() {
     });
 
     app.run(|cx: &mut App| {
+        #[cfg(target_os = "macos")]
+        setup_dock_icon();
+
         gpui_component::init(cx);
         theme::apply_palette(cx);
         cx.activate(true);

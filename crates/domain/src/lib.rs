@@ -1,10 +1,11 @@
-//! Pure domain crate for AI provider management across Codex, Claude Code, Grok Build, OpenCode, Pi, Cursor, and ZCode.
+//! Pure domain crate for AI provider management across Codex, Claude Code, Grok Build, OpenCode, Pi, Cursor, ZCode, and WorkBuddy.
 //! No filesystem or SQLite dependencies here.
 
 mod app_kind;
 mod claude;
 mod clipboard;
 mod codex;
+mod connectivity;
 mod cursor;
 mod deeplink;
 mod env_checker;
@@ -13,6 +14,7 @@ mod grok;
 mod opencode;
 mod pi;
 mod provider;
+mod workbuddy;
 mod zcode;
 
 pub use app_kind::AppKind;
@@ -31,6 +33,10 @@ pub use codex::{
     generate_third_party_config_with_catalog, has_login_material, official_codex_provider,
     official_codex_settings, parse_codex_form, CodexForm, CodexKind, CodexModelMapping,
     CodexPreset, CodexSettings, DEFAULT_CODEX_MODEL, OFFICIAL_CODEX_ID, RESPONSES_PRESETS,
+};
+pub use connectivity::{
+    check_reachability, check_reachability_with_retry, extract_provider_probe_target,
+    test_provider_connectivity, ConnectivityCheckConfig, ConnectivityCheckResult, HealthStatus,
 };
 pub use cursor::{
     backfill_cursor_settings, extract_cursor_api_key, extract_cursor_base_url,
@@ -65,6 +71,12 @@ pub use pi::{
     DEFAULT_PI_MODEL, OFFICIAL_PI_ID, PI_PRESETS,
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
+pub use workbuddy::{
+    official_workbuddy_provider, official_workbuddy_settings, parse_workbuddy_form, WorkBuddyForm,
+    WorkBuddyKind, WorkBuddyModelItem, WorkBuddyPreset, WorkBuddyReasoningConfig,
+    WorkBuddySettings, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR, OFFICIAL_WORKBUDDY_ID,
+    WORKBUDDY_PRESETS,
+};
 pub use zcode::{
     extract_zcode_api_key, extract_zcode_base_url, extract_zcode_modalities, extract_zcode_model,
     extract_zcode_options, generate_zcode_provider_json, official_zcode_provider,
@@ -82,6 +94,7 @@ pub enum ProviderForm {
     Pi(PiForm),
     Cursor(CursorForm),
     ZCode(ZCodeForm),
+    WorkBuddy(WorkBuddyForm),
 }
 
 #[cfg(test)]
@@ -344,5 +357,72 @@ mod tests {
         let (t_only, i_only) = extract_zcode_modalities(&settings_text_only.models);
         assert!(t_only);
         assert!(!i_only);
+    }
+
+    #[test]
+    fn workbuddy_form_and_item_conversion_works() {
+        let form = WorkBuddyForm {
+            name: "Gemini Flash".into(),
+            website_url: "https://cchost.ai".into(),
+            kind: WorkBuddyKind::ThirdParty,
+            model_id: "gemini-3.7-flash-high".into(),
+            vendor: "Custom".into(),
+            base_url: "https://cchost.ai/v1".into(),
+            api_key: "sk-mock-key-12345".into(),
+            supports_tool_call: true,
+            supports_images: true,
+            supports_reasoning: true,
+            reasoning_only: false,
+            can_disable_reasoning: true,
+            use_custom_protocol: false,
+            max_input_tokens: Some(262144),
+            max_output_tokens: Some(65536),
+            reasoning_effort: "high".into(),
+            supported_reasoning_efforts: vec!["medium".into(), "high".into()],
+        };
+        let settings = parse_workbuddy_form(form).unwrap();
+        assert_eq!(settings.kind, WorkBuddyKind::ThirdParty);
+        assert_eq!(settings.model_id, "gemini-3.7-flash-high");
+        assert_eq!(settings.vendor, "Custom");
+        assert_eq!(settings.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(settings.supported_reasoning_efforts, vec!["medium", "high"]);
+        assert!(!settings.reasoning_only);
+        assert!(settings.can_disable_reasoning);
+
+        let item = settings.to_model_item("Gemini Flash");
+        assert_eq!(item.id, "gemini-3.7-flash-high");
+        assert_eq!(item.name, "Gemini Flash");
+        assert_eq!(item.vendor, "Custom");
+        assert_eq!(item.url, "https://cchost.ai/v1");
+        assert_eq!(item.api_key, "sk-mock-key-12345");
+        assert!(item.supports_tool_call);
+        assert!(item.supports_images);
+        assert!(item.supports_reasoning);
+        assert!(!item.reasoning_only);
+        assert!(item.can_disable_reasoning);
+        assert!(!item.use_custom_protocol);
+        assert_eq!(item.max_input_tokens, Some(262144));
+        assert_eq!(item.max_output_tokens, Some(65536));
+        assert_eq!(
+            item.reasoning.as_ref().unwrap().default_effort.as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            item.reasoning
+                .as_ref()
+                .unwrap()
+                .supported_efforts
+                .as_deref(),
+            Some(&["medium".to_string(), "high".to_string()][..])
+        );
+
+        let (from_item_settings, from_name) = WorkBuddySettings::from_model_item(&item);
+        assert_eq!(from_name, "Gemini Flash");
+        assert_eq!(from_item_settings.model_id, "gemini-3.7-flash-high");
+        assert_eq!(from_item_settings.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            from_item_settings.supported_reasoning_efforts,
+            vec!["medium", "high"]
+        );
     }
 }

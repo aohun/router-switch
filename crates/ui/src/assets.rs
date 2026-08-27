@@ -1,5 +1,17 @@
+const WORKBUDDY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="11" width="18" height="10" rx="2"/>
+  <circle cx="12" cy="5" r="2"/>
+  <path d="M12 7v4"/>
+  <line x1="8" y1="16" x2="8.01" y2="16"/>
+  <line x1="16" y1="16" x2="16.01" y2="16"/>
+</svg>"#;
+
 const ZCODE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <path fill="currentColor" d="M4 4h16v3.6L10.2 16.4H20V20H4v-3.6L13.8 7.6H4V4Z"/>
+</svg>"#;
+
+const ACTIVITY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
 </svg>"#;
 
 use gpui::{AssetSource, SharedString};
@@ -101,6 +113,7 @@ pub enum CustomIcon {
     Amp,
     Cursor,
     ZCode,
+    WorkBuddy,
     DeepSeek,
     Fx,
     OhMyPi,
@@ -108,6 +121,7 @@ pub enum CustomIcon {
     ArrowLeft,
     Monitor,
     ChartCurve,
+    Activity,
 }
 
 impl IconNamed for CustomIcon {
@@ -122,6 +136,7 @@ impl IconNamed for CustomIcon {
             Self::Amp => "icons/custom/amp.svg",
             Self::Cursor => "icons/custom/cursor.svg",
             Self::ZCode => "icons/custom/zcode.svg",
+            Self::WorkBuddy => "icons/custom/workbuddy.svg",
             Self::DeepSeek => "icons/custom/deepseek.svg",
             Self::Fx => "icons/custom/fx.svg",
             Self::OhMyPi => "icons/custom/ohmypi.svg",
@@ -129,6 +144,7 @@ impl IconNamed for CustomIcon {
             Self::ArrowLeft => "icons/custom/arrow-left.svg",
             Self::Monitor => "icons/custom/monitor.svg",
             Self::ChartCurve => "icons/custom/chart-curve.svg",
+            Self::Activity => "icons/custom/activity.svg",
         }
         .into()
     }
@@ -146,6 +162,7 @@ impl AssetSource for AppAssets {
             "icons/custom/amp.svg" => Ok(Some(Cow::Borrowed(AMP_SVG.as_bytes()))),
             "icons/custom/cursor.svg" => Ok(Some(Cow::Borrowed(CURSOR_SVG.as_bytes()))),
             "icons/custom/zcode.svg" => Ok(Some(Cow::Borrowed(ZCODE_SVG.as_bytes()))),
+            "icons/custom/workbuddy.svg" => Ok(Some(Cow::Borrowed(WORKBUDDY_SVG.as_bytes()))),
             "icons/custom/deepseek.svg" => Ok(Some(Cow::Borrowed(DEEPSEEK_SVG.as_bytes()))),
             "icons/custom/fx.svg" => Ok(Some(Cow::Borrowed(FX_SVG.as_bytes()))),
             "icons/custom/ohmypi.svg" => Ok(Some(Cow::Borrowed(OHMYPI_SVG.as_bytes()))),
@@ -153,6 +170,7 @@ impl AssetSource for AppAssets {
             "icons/custom/arrow-left.svg" => Ok(Some(Cow::Borrowed(ARROW_LEFT_SVG.as_bytes()))),
             "icons/custom/monitor.svg" => Ok(Some(Cow::Borrowed(MONITOR_SVG.as_bytes()))),
             "icons/custom/chart-curve.svg" => Ok(Some(Cow::Borrowed(CHART_CURVE_SVG.as_bytes()))),
+            "icons/custom/activity.svg" => Ok(Some(Cow::Borrowed(ACTIVITY_SVG.as_bytes()))),
             _ => gpui_component_assets::Assets.load(path),
         }
     }
@@ -169,6 +187,7 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/amp.svg".into());
             list.push("icons/custom/cursor.svg".into());
             list.push("icons/custom/zcode.svg".into());
+            list.push("icons/custom/workbuddy.svg".into());
             list.push("icons/custom/deepseek.svg".into());
             list.push("icons/custom/fx.svg".into());
             list.push("icons/custom/ohmypi.svg".into());
@@ -176,6 +195,7 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/arrow-left.svg".into());
             list.push("icons/custom/monitor.svg".into());
             list.push("icons/custom/chart-curve.svg".into());
+            list.push("icons/custom/activity.svg".into());
         }
         Ok(list)
     }

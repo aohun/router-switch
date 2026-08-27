@@ -9,6 +9,7 @@ members = [
     "crates/adapters-opencode",
     "crates/adapters-pi",
     "crates/adapters-zcode",
+    "crates/adapters-workbuddy",
     "crates/store",
     "crates/session",
     "crates/ui",
@@ -30,6 +31,7 @@ adapters-grok = { path = "crates/adapters-grok" }
 adapters-opencode = { path = "crates/adapters-opencode" }
 adapters-pi = { path = "crates/adapters-pi" }
 adapters-zcode = { path = "crates/adapters-zcode" }
+adapters-workbuddy = { path = "crates/adapters-workbuddy" }
 store = { path = "crates/store" }
 session = { path = "crates/session" }
 ui = { path = "crates/ui" }
@@ -53,3 +55,4 @@ rust-i18n = "3.1.5"
 base64 = "0.22"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"

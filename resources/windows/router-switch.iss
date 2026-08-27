@@ -1,6 +1,6 @@
 ; Router Switch Windows Inno Setup Script
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef Arch
   #define Arch "x86_64"
@@ -30,6 +30,7 @@ AppUpdatesURL=https://github.com/aohun/router-switch/releases
 DefaultDirName={autopf}\Router Switch
 DefaultGroupName=Router Switch
 UninstallDisplayName=Router Switch
+SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\router-switch.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=Router-Switch-{#AppVersion}-{#Arch}-Setup
@@ -64,10 +65,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#StageDir}\router-switch.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Router Switch"; Filename: "{app}\router-switch.exe"
-Name: "{userdesktop}\Router Switch"; Filename: "{app}\router-switch.exe"; Tasks: desktopicon
+Name: "{group}\Router Switch"; Filename: "{app}\router-switch.exe"; IconFilename: "{app}\icon.ico"
+Name: "{userdesktop}\Router Switch"; Filename: "{app}\router-switch.exe"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked

@@ -10,6 +10,7 @@ pub enum AppKind {
     Pi,
     Cursor,
     ZCode,
+    WorkBuddy,
 }
 
 impl AppKind {
@@ -22,6 +23,7 @@ impl AppKind {
             Self::Pi => "pi",
             Self::Cursor => "cursor",
             Self::ZCode => "zcode",
+            Self::WorkBuddy => "workbuddy",
         }
     }
 
@@ -34,6 +36,7 @@ impl AppKind {
             Self::Pi => "Pi",
             Self::Cursor => "Cursor",
             Self::ZCode => "ZCode",
+            Self::WorkBuddy => "WorkBuddy",
         }
     }
 
@@ -46,6 +49,7 @@ impl AppKind {
             "pi" => Some(Self::Pi),
             "cursor" => Some(Self::Cursor),
             "zcode" => Some(Self::ZCode),
+            "workbuddy" | "work_buddy" | "codebuddy" | "code_buddy" => Some(Self::WorkBuddy),
             _ => None,
         }
     }

@@ -61,6 +61,7 @@ router-switch/
 - **测试先行**：每次增加或修改适配器、表单逻辑或网关逻辑后，必须运行全量测试：
   - `cargo test --all`
   - `cargo fmt --check`
+- **UI 开发规范**：实现 UI 界面时，优先使用 [GPUI Component](https://longbridge.github.io/gpui-component)。
 - **国际化维护**：若在 UI 中增加新文本或修改文案，必须同步更新 `crates/ui/locales/zh-CN.yml` 与 `crates/ui/locales/en.yml`。
 - **术语规范**：统一使用“**服务商**”（Provider），不再使用“供应商”。
 

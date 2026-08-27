@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppKind, ClaudeSettings, CodexSettings, CursorSettings, GrokSettings, OpenCodeSettings,
-    PiSettings, ZCodeSettings,
+    PiSettings, WorkBuddySettings, ZCodeSettings,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +26,7 @@ pub enum ProviderSettings {
     Pi(PiSettings),
     Cursor(CursorSettings),
     ZCode(ZCodeSettings),
+    WorkBuddy(WorkBuddySettings),
     Unsupported { app: AppKind },
 }
 
@@ -79,6 +80,13 @@ impl Provider {
         }
     }
 
+    pub fn workbuddy_settings(&self) -> Option<&WorkBuddySettings> {
+        match &self.settings {
+            ProviderSettings::WorkBuddy(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
     pub fn is_official(&self) -> bool {
         match &self.settings {
             ProviderSettings::Codex(s) => s.kind.is_official(),
@@ -88,6 +96,7 @@ impl Provider {
             ProviderSettings::Pi(s) => s.kind.is_official(),
             ProviderSettings::Cursor(s) => s.kind.is_official(),
             ProviderSettings::ZCode(s) => s.kind.is_official(),
+            ProviderSettings::WorkBuddy(s) => s.kind.is_official(),
             ProviderSettings::Unsupported { .. } => false,
         }
     }

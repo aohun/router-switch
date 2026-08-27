@@ -11,6 +11,7 @@ adapters-grok.workspace = true
 adapters-opencode.workspace = true
 adapters-pi.workspace = true
 adapters-zcode.workspace = true
+adapters-workbuddy.workspace = true
 cursor-gateway.workspace = true
 domain.workspace = true
 parking_lot.workspace = true
@@ -19,6 +20,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

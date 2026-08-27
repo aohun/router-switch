@@ -25,6 +25,7 @@
 .grok/
 .opencode/
 .pi/
+.workbuddy/
 config.json
 auth.json
 settings.json

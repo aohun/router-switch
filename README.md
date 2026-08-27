@@ -10,6 +10,7 @@
 Built with **pure Rust + GPUI + gpui-component**. Ultra-lightweight, native GPU hardware acceleration, zero WebView / Electron / React overhead.
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-aohun%2Frouter--switch-blue?logo=github)](https://github.com/aohun/router-switch.git)
+[![Homebrew Cask](https://img.shields.io/badge/Homebrew-aohun%2Ftap-orange?logo=homebrew)](https://github.com/aohun/homebrew-tap)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/GUI-GPUI-purple)](https://www.gpui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -64,6 +65,46 @@ Powered by a native GPU-accelerated rendering engine, Router Switch delivers mil
 
 ---
 
+## 📥 Installation
+
+### macOS (Recommended via Homebrew)
+
+Installing via Homebrew Cask enables automatic updates and a seamless installation workflow:
+
+```bash
+# Method A: Single command install (Recommended)
+brew install --cask aohun/tap/router-switch
+
+# Method B: Tap the repo first, then install
+brew tap aohun/tap
+brew install --cask router-switch
+```
+
+**Upgrade & Uninstall**:
+```bash
+# Upgrade to latest version
+brew upgrade --cask router-switch
+
+# Uninstall application
+brew uninstall --cask router-switch
+
+# Uninstall and purge all local configuration & database
+brew uninstall --zap --cask router-switch
+```
+
+> 💡 **Manual DMG Download Note**: If you downloaded `.dmg` manually from GitHub Releases and encounter macOS Gatekeeper warning ("unverified developer"), run this command in terminal to remove quarantine:
+> ```bash
+> xattr -cr "/Applications/Router Switch.app"
+> ```
+
+### Windows
+
+Download the latest release from [GitHub Releases](https://github.com/aohun/router-switch/releases):
+- **Installer**: `Router-Switch-{version}-Setup.exe`
+- **Portable**: `Router-Switch-{version}-x86_64-pc-windows-msvc.zip`
+
+---
+
 ## 🛠️ Tech Stack & Dependencies
 
 ### Core Language & Runtime
@@ -76,7 +117,7 @@ Powered by a native GPU-accelerated rendering engine, Router Switch delivers mil
 
 ### Persistence & Data Layer
 - **[rusqlite](https://github.com/rusqlite/rusqlite)** (v0.32 bundled): Embedded SQLite database as the single source of truth (`~/.router-switch/app.db`).
-- **[serde](https://serde.rs/) / serde_json / toml**: Fast, robust serialization and deserialization.
+- **[serde](https://serde.rs/) / serde_json / toml**：Fast, robust serialization and deserialization.
 
 ### System & Networking
 - **[rust-i18n](https://github.com/longbridge/rust-i18n)** (v3.1.5): Compile-time internationalization.
@@ -124,7 +165,7 @@ router-switch/
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Building From Source
 
 ### Prerequisites
 - **Rust Toolchain**: `rustc 1.85.0` or higher (recommended: `rustc 1.93+`)

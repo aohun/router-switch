@@ -10,6 +10,7 @@
 基于 **纯 Rust + GPUI + gpui-component** 构建，极致轻量，原生 GPU 硬件加速，零 WebView / Electron / React 依赖。
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-aohun%2Frouter--switch-blue?logo=github)](https://github.com/aohun/router-switch.git)
+[![Homebrew Cask](https://img.shields.io/badge/Homebrew-aohun%2Ftap-orange?logo=homebrew)](https://github.com/aohun/homebrew-tap)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/GUI-GPUI-purple)](https://www.gpui.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -61,6 +62,46 @@
 ### 7. 自定义工作区与桌面集成
 - **左侧导航栏排序与管理**：支持自定义主页面 AI 工具入口的显隐与拖拽排序。
 - **桌面行为**：支持开机自启、关闭时最小化到系统托盘等功能。
+
+---
+
+## 📥 安装指南
+
+### macOS 用户 (推荐通过 Homebrew 安装)
+
+使用 Homebrew Cask 安装可以自动管理更新，免去手动下载与门禁权限配置的繁琐步骤：
+
+```bash
+# 方式 A：单行直接安装（推荐）
+brew install --cask aohun/tap/router-switch
+
+# 方式 B：订阅 Tap 仓库后安装
+brew tap aohun/tap
+brew install --cask router-switch
+```
+
+**更新与卸载**：
+```bash
+# 升级到最新版本
+brew upgrade --cask router-switch
+
+# 卸载应用
+brew uninstall --cask router-switch
+
+# 卸载并清理所有应用数据配置
+brew uninstall --zap --cask router-switch
+```
+
+> 💡 **手动下载 DMG 提示**：若直接从 GitHub Releases 下载 `.dmg` 文件安装，首次打开如遇到 macOS 提示“无法验证开发者/身份不明”，可在终端执行以下命令解除隔离属性：
+> ```bash
+> xattr -cr "/Applications/Router Switch.app"
+> ```
+
+### Windows 用户
+
+前往 [GitHub Releases](https://github.com/aohun/router-switch/releases) 页面下载最新的安装包：
+- **安装版**：`Router-Switch-{version}-Setup.exe`
+- **便携版**：`Router-Switch-{version}-x86_64-pc-windows-msvc.zip`（解压即用）
 
 ---
 
@@ -124,7 +165,7 @@ router-switch/
 
 ---
 
-## 🚀 快速开始
+## 🚀 从源码构建
 
 ### 环境要求
 - **Rust 工具链**：`rustc 1.85.0` 或更高版本（推荐 `rustc 1.93+`）

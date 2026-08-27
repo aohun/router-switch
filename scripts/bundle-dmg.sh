@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Bundle macOS .app and create styled .dmg matching drag-and-drop layout
 TARGET="${1:-aarch64-apple-darwin}"
-VERSION="${2:-0.1.0}"
+VERSION="${2:-0.1.2}"
 APP_NAME="Router Switch"
 OUTPUT_DIR="dist"
 
@@ -36,6 +36,13 @@ if [ -f "assets/Info.plist" ]; then
     cp "assets/Info.plist" "$CONTENTS/Info.plist"
 elif [ -f "resources/Info.plist" ]; then
     cp "resources/Info.plist" "$CONTENTS/Info.plist"
+fi
+
+# Copy icon
+if [ -f "assets/icon.icns" ]; then
+    cp "assets/icon.icns" "$CONTENTS/Resources/icon.icns"
+elif [ -f "resources/icon.icns" ]; then
+    cp "resources/icon.icns" "$CONTENTS/Resources/icon.icns"
 fi
 
 # Ad-hoc codesign the .app bundle

@@ -5,9 +5,10 @@ use url::Url;
 
 use crate::{
     AppKind, ClaudeForm, ClaudeKind, CodexForm, CodexKind, CursorForm, CursorKind, DomainError,
-    GrokForm, GrokKind, OpenCodeForm, OpenCodeKind, PiForm, PiKind, ProviderForm, ZCodeForm,
-    ZCodeKind, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
-    DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_NPM, DEFAULT_PI_API_TYPE, DEFAULT_PI_MODEL,
+    GrokForm, GrokKind, OpenCodeForm, OpenCodeKind, PiForm, PiKind, ProviderForm, WorkBuddyForm,
+    WorkBuddyKind, ZCodeForm, ZCodeKind, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
+    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_NPM,
+    DEFAULT_PI_API_TYPE, DEFAULT_PI_MODEL, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
     DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND,
 };
 
@@ -201,8 +202,9 @@ impl DeepLinkImportRequest {
             "pi" | "pi_switch" => Ok(AppKind::Pi),
             "cursor" | "cursor_ide" | "cursorbyok" => Ok(AppKind::Cursor),
             "zcode" | "zai" | "bigmodel" => Ok(AppKind::ZCode),
+            "workbuddy" | "work_buddy" | "codebuddy" | "code_buddy" => Ok(AppKind::WorkBuddy),
             other => Err(DomainError::Validation(format!(
-                "不支持的应用类型: '{other}', 可用应用: claude, codex, grok, opencode, pi, cursor, zcode"
+                "不支持的应用类型: '{other}', 可用应用: claude, codex, grok, opencode, pi, cursor, zcode, workbuddy"
             ))),
         }
     }
@@ -476,6 +478,28 @@ impl DeepLinkImportRequest {
                     model_mappings: Vec::new(),
                 })
             }
+            AppKind::WorkBuddy => {
+                let m = model.unwrap_or_else(|| DEFAULT_WORKBUDDY_MODEL.to_string());
+                ProviderForm::WorkBuddy(WorkBuddyForm {
+                    name,
+                    website_url,
+                    kind: WorkBuddyKind::ThirdParty,
+                    model_id: m,
+                    vendor: DEFAULT_WORKBUDDY_VENDOR.to_string(),
+                    base_url: primary_endpoint,
+                    api_key,
+                    supports_tool_call: true,
+                    supports_images: true,
+                    supports_reasoning: false,
+                    reasoning_only: false,
+                    can_disable_reasoning: true,
+                    use_custom_protocol: false,
+                    max_input_tokens: Some(262144),
+                    max_output_tokens: Some(65536),
+                    reasoning_effort: "medium".to_string(),
+                    supported_reasoning_efforts: vec!["medium".to_string()],
+                })
+            }
         };
 
         Ok((app_kind, form, is_enabled))
@@ -547,6 +571,23 @@ mod tests {
             assert_eq!(f.model, "gemini-3.7-flash-high");
         } else {
             panic!("Expected ZCode form");
+        }
+    }
+
+    #[test]
+    fn test_parse_workbuddy_url() {
+        let url = "router-switch://v1/import?resource=provider&app=workbuddy&name=CCHost%20Gemini&endpoint=https%3A%2F%2Fcchost.ai%2Fv1&apiKey=sk-wb-mock-123&model=gemini-3.7-flash-high&enabled=true";
+        let req = parse_deeplink_url(url).unwrap();
+        assert_eq!(req.app.as_deref(), Some("workbuddy"));
+        let (app, form, _) = req.to_provider_form().unwrap();
+        assert_eq!(app, AppKind::WorkBuddy);
+        if let ProviderForm::WorkBuddy(f) = form {
+            assert_eq!(f.name, "CCHost Gemini");
+            assert_eq!(f.base_url, "https://cchost.ai/v1");
+            assert_eq!(f.api_key, "sk-wb-mock-123");
+            assert_eq!(f.model_id, "gemini-3.7-flash-high");
+        } else {
+            panic!("Expected WorkBuddy form");
         }
     }
 

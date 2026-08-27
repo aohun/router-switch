@@ -62,6 +62,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "adapters-workbuddy"
+version = "0.1.2"
+dependencies = [
+ "dirs 6.0.0",
+ "domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "adapters-zcode"
 version = "0.1.2"
 dependencies = [
@@ -6024,7 +6036,9 @@ dependencies = [
  "adapters-grok",
  "adapters-opencode",
  "adapters-pi",
+ "adapters-workbuddy",
  "adapters-zcode",
+ "chrono",
  "cursor-gateway",
  "domain",
  "parking_lot",
@@ -7257,10 +7271,12 @@ dependencies = [
 name = "ui"
 version = "0.1.2"
 dependencies = [
+ "cocoa 0.26.0",
  "domain",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "objc",
  "rust-i18n",
  "session",
  "store",

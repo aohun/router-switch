@@ -6,10 +6,12 @@ use domain::{
     ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping, CursorForm, CursorKind,
     CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm, OpenCodeKind,
     OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm, ProviderSettings,
-    ToolEnvironmentStatus, ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS,
-    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
-    DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL, DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND,
-    GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS, ZCODE_PRESETS,
+    ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping,
+    CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
+    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
+    DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR, DEFAULT_ZCODE_MODEL,
+    DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS,
+    WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
     div, prelude::FluentBuilder, px, rgb, rgba, svg, App, AppContext, Context, Entity, FontWeight,
@@ -211,6 +213,20 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 modality_image: p.modality_image,
             })
             .collect(),
+        AppKind::WorkBuddy => WORKBUDDY_PRESETS
+            .iter()
+            .map(|p| PresetSelectItem {
+                id: p.id.to_string(),
+                name: p.name.to_string(),
+                website_url: p.website_url.to_string(),
+                base_url: p.base_url.to_string(),
+                model: p.model_id.to_string(),
+                is_official: p.kind.is_official(),
+                provider_label: p.provider_label.to_string(),
+                modality_text: true,
+                modality_image: p.supports_images,
+            })
+            .collect(),
     }
 }
 
@@ -262,6 +278,31 @@ impl SelectItem for ReasoningOptionItem {
     fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         div()
             .text_size(px(12.))
+            .text_color(cx.theme().foreground)
+            .child(self.label.clone())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkBuddyReasoningEffortItem {
+    pub label: SharedString,
+    pub value: String,
+}
+
+impl SelectItem for WorkBuddyReasoningEffortItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+
+    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .text_size(px(13.))
             .text_color(cx.theme().foreground)
             .child(self.label.clone())
     }
@@ -612,6 +653,7 @@ pub enum Route {
     Pi,
     Cursor,
     ZCode,
+    WorkBuddy,
     Notifications,
     Settings,
 }
@@ -620,6 +662,7 @@ pub enum Route {
 pub enum SettingsTab {
     #[default]
     General,
+    Advanced,
     About,
 }
 
@@ -687,6 +730,108 @@ impl SelectItem for UsageRefreshSelectItem {
         &self.interval
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLevelSelectItem {
+    pub level: store::LogLevel,
+    pub label: String,
+}
+
+impl SelectItem for LogLevelSelectItem {
+    type Value = store::LogLevel;
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.level
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRetentionSelectItem {
+    pub days: u32,
+    pub label: String,
+}
+
+impl SelectItem for LogRetentionSelectItem {
+    type Value = u32;
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.days
+    }
+}
+
+fn log_level_items() -> Vec<LogLevelSelectItem> {
+    vec![
+        LogLevelSelectItem {
+            level: store::LogLevel::Error,
+            label: t!("advanced.log_config.levels.error").to_string(),
+        },
+        LogLevelSelectItem {
+            level: store::LogLevel::Warn,
+            label: t!("advanced.log_config.levels.warn").to_string(),
+        },
+        LogLevelSelectItem {
+            level: store::LogLevel::Info,
+            label: t!("advanced.log_config.levels.info").to_string(),
+        },
+        LogLevelSelectItem {
+            level: store::LogLevel::Debug,
+            label: t!("advanced.log_config.levels.debug").to_string(),
+        },
+        LogLevelSelectItem {
+            level: store::LogLevel::Trace,
+            label: t!("advanced.log_config.levels.trace").to_string(),
+        },
+    ]
+}
+
+fn log_retention_items() -> Vec<LogRetentionSelectItem> {
+    vec![
+        LogRetentionSelectItem {
+            days: 3,
+            label: t!("advanced.log_config.retention_days_3").to_string(),
+        },
+        LogRetentionSelectItem {
+            days: 7,
+            label: t!("advanced.log_config.retention_days_7").to_string(),
+        },
+        LogRetentionSelectItem {
+            days: 14,
+            label: t!("advanced.log_config.retention_days_14").to_string(),
+        },
+        LogRetentionSelectItem {
+            days: 30,
+            label: t!("advanced.log_config.retention_days_30").to_string(),
+        },
+        LogRetentionSelectItem {
+            days: 0,
+            label: t!("advanced.log_config.retention_days_forever").to_string(),
+        },
+    ]
+}
+
+fn log_level_to_row(level: store::LogLevel) -> usize {
+    match level {
+        store::LogLevel::Error => 0,
+        store::LogLevel::Warn => 1,
+        store::LogLevel::Info => 2,
+        store::LogLevel::Debug => 3,
+        store::LogLevel::Trace => 4,
+    }
+}
+
+fn log_retention_to_row(days: u32) -> usize {
+    match days {
+        3 => 0,
+        7 => 1,
+        14 => 2,
+        30 => 3,
+        0 => 4,
+        _ => 1,
+    }
+}
 
 pub struct RouterApp {
     workspace: Workspace,
@@ -709,6 +854,11 @@ pub struct RouterApp {
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_window_sub: Option<Subscription>,
     _usage_refresh_sub: Option<Subscription>,
+    log_config: store::LogConfig,
+    log_level_select: Entity<SelectState<Vec<LogLevelSelectItem>>>,
+    log_retention_select: Entity<SelectState<Vec<LogRetentionSelectItem>>>,
+    _log_level_sub: Option<Subscription>,
+    _log_retention_sub: Option<Subscription>,
     search_input: Entity<InputState>,
     settings_search_input: Entity<InputState>,
     last_error: Option<SharedString>,
@@ -716,6 +866,8 @@ pub struct RouterApp {
     logs: Vec<String>,
     env_tools: Vec<ToolEnvironmentStatus>,
     is_inspecting_env: bool,
+    testing_provider_ids: std::collections::HashSet<String>,
+    provider_health: std::collections::HashMap<String, domain::ConnectivityCheckResult>,
 }
 
 struct FormDraft {
@@ -728,14 +880,33 @@ struct FormDraft {
     model: Entity<InputState>,
     zcode_modality_text: bool,
     zcode_modality_image: bool,
+    workbuddy_supports_tool_call: bool,
+    workbuddy_supports_images: bool,
+    workbuddy_supports_reasoning: bool,
+    workbuddy_reasoning_only: bool,
+    workbuddy_can_disable_reasoning: bool,
+    workbuddy_use_custom_protocol: bool,
+    workbuddy_max_input_tokens: Entity<InputState>,
+    workbuddy_max_output_tokens: Entity<InputState>,
+    workbuddy_reasoning_effort: String,
+    workbuddy_reasoning_effort_select:
+        Option<Entity<SelectState<Vec<WorkBuddyReasoningEffortItem>>>>,
+    workbuddy_supported_effort_low: bool,
+    workbuddy_supported_effort_medium: bool,
+    workbuddy_supported_effort_high: bool,
+    workbuddy_supported_effort_xhigh: bool,
+    workbuddy_supported_effort_max: bool,
     preset_select: Entity<SelectState<Vec<PresetSelectItem>>>,
     catalog_rows: Vec<CatalogRowDraft>,
     fetched_models: Vec<String>,
     has_fetched_models: bool,
     default_model_select: Option<Entity<SelectState<Vec<ModelSelectItem>>>>,
     is_fetching_models: bool,
+    is_testing_connectivity: bool,
+    connectivity_result: Option<domain::ConnectivityCheckResult>,
     _preset_sub: Option<Subscription>,
     _default_model_sub: Option<Subscription>,
+    _workbuddy_reasoning_effort_sub: Option<Subscription>,
 }
 
 impl RouterApp {
@@ -837,6 +1008,52 @@ impl RouterApp {
             },
         );
 
+        let log_config = settings.log_config;
+        let log_level_select = cx.new(|cx| {
+            SelectState::new(
+                log_level_items(),
+                Some(gpui_component::IndexPath::default().row(log_level_to_row(log_config.level))),
+                window,
+                cx,
+            )
+        });
+
+        let log_level_sub = cx.subscribe(
+            &log_level_select,
+            |this: &mut RouterApp,
+             _emitter: Entity<SelectState<Vec<LogLevelSelectItem>>>,
+             event: &SelectEvent<Vec<LogLevelSelectItem>>,
+             cx: &mut Context<Self>| {
+                if let SelectEvent::Confirm(Some(level)) = event {
+                    this.set_log_level(*level, cx);
+                }
+            },
+        );
+
+        let log_retention_select = cx.new(|cx| {
+            SelectState::new(
+                log_retention_items(),
+                Some(
+                    gpui_component::IndexPath::default()
+                        .row(log_retention_to_row(log_config.retention_days)),
+                ),
+                window,
+                cx,
+            )
+        });
+
+        let log_retention_sub = cx.subscribe(
+            &log_retention_select,
+            |this: &mut RouterApp,
+             _emitter: Entity<SelectState<Vec<LogRetentionSelectItem>>>,
+             event: &SelectEvent<Vec<LogRetentionSelectItem>>,
+             cx: &mut Context<Self>| {
+                if let SelectEvent::Confirm(Some(days)) = event {
+                    this.set_log_retention(*days, cx);
+                }
+            },
+        );
+
         let supported = [
             "codex",
             "claude",
@@ -884,6 +1101,11 @@ impl RouterApp {
             usage_refresh_select,
             _usage_window_sub: Some(usage_window_sub),
             _usage_refresh_sub: Some(usage_refresh_sub),
+            log_config,
+            log_level_select,
+            log_retention_select,
+            _log_level_sub: Some(log_level_sub),
+            _log_retention_sub: Some(log_retention_sub),
             search_input,
             settings_search_input,
             last_error: None,
@@ -891,6 +1113,8 @@ impl RouterApp {
             logs: vec!["应用已启动并加载工作区".into()],
             env_tools: Vec::new(),
             is_inspecting_env: false,
+            testing_provider_ids: std::collections::HashSet::new(),
+            provider_health: std::collections::HashMap::new(),
         };
         app.reload();
 
@@ -945,6 +1169,7 @@ impl RouterApp {
                     AppKind::Pi => Route::Pi,
                     AppKind::Cursor => Route::Cursor,
                     AppKind::ZCode => Route::ZCode,
+                    AppKind::WorkBuddy => Route::WorkBuddy,
                 };
                 self.route = target_route;
 
@@ -977,6 +1202,7 @@ impl RouterApp {
             AppKind::Pi,
             AppKind::Cursor,
             AppKind::ZCode,
+            AppKind::WorkBuddy,
         ] {
             if let Ok(snapshot) = self.workspace.snapshot_for(app) {
                 all.extend(snapshot.providers);
@@ -1062,6 +1288,12 @@ impl RouterApp {
         self.usage_refresh_select.update(cx, |this, cx| {
             this.set_items(refresh_items, window, cx);
         });
+        self.log_level_select.update(cx, |this, cx| {
+            this.set_items(log_level_items(), window, cx);
+        });
+        self.log_retention_select.update(cx, |this, cx| {
+            this.set_items(log_retention_items(), window, cx);
+        });
         self.search_input.update(cx, |this, cx| {
             this.set_placeholder(t!("provider.search_placeholder").to_string(), window, cx);
         });
@@ -1075,6 +1307,96 @@ impl RouterApp {
         };
         self.logs.push(msg.into());
         notify_success(msg, window, cx);
+        cx.notify();
+    }
+
+    fn toggle_log_enabled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut config = self.log_config.clone();
+        config.enabled = !config.enabled;
+        if let Err(err) = self.workspace.set_log_config(config.clone()) {
+            self.fail(err, window, cx);
+            return;
+        }
+        self.log_config = config;
+        let msg = if self.log_config.enabled {
+            "已启用应用诊断日志"
+        } else {
+            "已禁用应用诊断日志"
+        };
+        self.logs.push(msg.into());
+        notify_info(msg, window, cx);
+        cx.notify();
+    }
+
+    fn set_log_level(&mut self, level: store::LogLevel, cx: &mut Context<Self>) {
+        if self.log_config.level == level {
+            return;
+        }
+        let mut config = self.log_config.clone();
+        config.level = level;
+        if let Err(err) = self.workspace.set_log_config(config.clone()) {
+            self.last_error = Some(err.to_string().into());
+            cx.notify();
+            return;
+        }
+        self.log_config = config;
+        cx.notify();
+    }
+
+    fn set_log_retention(&mut self, days: u32, cx: &mut Context<Self>) {
+        if self.log_config.retention_days == days {
+            return;
+        }
+        let mut config = self.log_config.clone();
+        config.retention_days = days;
+        if let Err(err) = self.workspace.set_log_config(config.clone()) {
+            self.last_error = Some(err.to_string().into());
+            cx.notify();
+            return;
+        }
+        self.log_config = config;
+        cx.notify();
+    }
+
+    fn open_diagnostic_log_dir(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let log_dir = self.workspace.log_dir();
+        let _ = std::fs::create_dir_all(&log_dir);
+        if let Err(err) = session::reveal_path_in_explorer(&log_dir) {
+            window.push_notification(
+                Notification::error(format!(
+                    "{}: {}",
+                    t!("advanced.log_config.open_failed"),
+                    err
+                )),
+                cx,
+            );
+        } else {
+            window.push_notification(
+                Notification::success(t!("advanced.log_config.opened").to_string()),
+                cx,
+            );
+        }
+    }
+
+    fn clear_diagnostic_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.workspace.clear_logs() {
+            Ok(_) => {
+                window.push_notification(
+                    Notification::success(t!("advanced.log_config.cleared").to_string()),
+                    cx,
+                );
+            }
+            Err(err) => {
+                window.push_notification(
+                    Notification::error(format!(
+                        "{}: {}",
+                        t!("advanced.log_config.clear_failed"),
+                        err
+                    )),
+                    cx,
+                );
+            }
+        }
         cx.notify();
     }
 
@@ -1295,6 +1617,7 @@ impl RouterApp {
                         AppKind::Pi => "已切到 Pi 官方配置。可直接使用官方 Pi 认证。",
                         AppKind::Cursor => "已切到 Cursor 官方配置。",
                         AppKind::ZCode => "已切到 ZCode 官方配置。",
+                        AppKind::WorkBuddy => "已切到 WorkBuddy 官方配置。",
                     };
                     notify_success(hint, window, cx);
                 } else {
@@ -1306,6 +1629,7 @@ impl RouterApp {
                         AppKind::Pi => format!("已启用 {} 并写入 ~/.pi/agent/，请重启 Pi 生效。", provider_name),
                         AppKind::Cursor => format!("已启用 {} 并更新 Cursor 本地网关路由配置。", provider_name),
                         AppKind::ZCode => format!("已启用 {} 并写入 ~/.zcode/v2/config.json，请重启 ZCode 生效。", provider_name),
+                        AppKind::WorkBuddy => format!("已启用 {} 并写入 ~/.workbuddy/models.json，请重启 WorkBuddy 生效。", provider_name),
                     };
                     notify_success(hint, window, cx);
                 }
@@ -1316,18 +1640,23 @@ impl RouterApp {
     }
 
     fn duplicate(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let is_zcode = self
+        let app = self
             .providers
             .iter()
             .find(|p| p.id == provider_id)
-            .map(|p| p.app == AppKind::ZCode)
-            .unwrap_or(false);
+            .map(|p| p.app);
         match self.workspace.duplicate(provider_id) {
             Ok(_) => {
                 self.reload();
                 self.logs.push("复制了服务商配置".into());
-                if is_zcode {
+                if app == Some(AppKind::ZCode) {
                     notify_success("已复制服务商配置并写入 ~/.zcode/v2/config.json", window, cx);
+                } else if app == Some(AppKind::WorkBuddy) {
+                    notify_success(
+                        "已复制服务商配置并写入 ~/.workbuddy/models.json",
+                        window,
+                        cx,
+                    );
                 } else {
                     notify_success("已复制服务商配置", window, cx);
                 }
@@ -1340,20 +1669,17 @@ impl RouterApp {
     fn confirm_delete(&mut self, provider_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let id = provider_id.to_string();
         let view = cx.entity();
-        let is_zcode = self
-            .providers
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.app == AppKind::ZCode)
-            .unwrap_or(false);
+        let app = self.providers.iter().find(|p| p.id == id).map(|p| p.app);
         window.open_dialog(cx, move |dialog, _, _cx| {
             let target = id.clone();
             let view = view.clone();
             dialog
                 .confirm()
                 .title("确认删除服务商？")
-                .child(if is_zcode {
+                .child(if app == Some(AppKind::ZCode) {
                     "此操作将从 Router Switch 以及 ~/.zcode/v2/config.json 中移除该服务商。"
+                } else if app == Some(AppKind::WorkBuddy) {
+                    "此操作将从 Router Switch 以及 ~/.workbuddy/models.json 中移除该服务商。"
                 } else {
                     "当前启用的服务商无法删除。此操作仅移除 Router Switch 中的记录。"
                 })
@@ -1364,9 +1690,15 @@ impl RouterApp {
                             Ok(()) => {
                                 this.reload();
                                 this.logs.push(format!("删除了服务商: {}", target));
-                                if is_zcode {
+                                if app == Some(AppKind::ZCode) {
                                     notify_success(
                                         "服务商已成功删除并从 ZCode 配置文件中移除",
+                                        window,
+                                        cx,
+                                    );
+                                } else if app == Some(AppKind::WorkBuddy) {
+                                    notify_success(
+                                        "服务商已成功删除并从 WorkBuddy 配置文件中移除",
                                         window,
                                         cx,
                                     );
@@ -1381,6 +1713,192 @@ impl RouterApp {
                     true
                 })
         });
+    }
+
+    fn test_provider_connectivity(
+        &mut self,
+        provider_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.testing_provider_ids.contains(provider_id) {
+            return;
+        }
+
+        let Some(provider) = self.providers.iter().find(|p| p.id == provider_id).cloned() else {
+            return;
+        };
+
+        let target_id = provider_id.to_string();
+        let target_name = provider.name.clone();
+        self.testing_provider_ids.insert(target_id.clone());
+        cx.notify();
+
+        let view = cx.entity().downgrade();
+
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                let provider = provider.clone();
+                let target_id = target_id.clone();
+                let target_name = target_name.clone();
+                async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { domain::test_provider_connectivity(&provider) })
+                        .await;
+
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.testing_provider_ids.remove(&target_id);
+                            this.provider_health
+                                .insert(target_id.clone(), result.clone());
+
+                            match result.status {
+                                domain::HealthStatus::Operational => {
+                                    let latency = result.latency_ms.unwrap_or(0);
+                                    let msg = t!(
+                                        "provider.reachable",
+                                        name = target_name.as_str(),
+                                        latency = latency
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!("[连通性测试] {}", msg));
+                                    window.push_notification(Notification::success(msg), cx);
+                                }
+                                domain::HealthStatus::Degraded => {
+                                    let latency = result.latency_ms.unwrap_or(0);
+                                    let msg = t!(
+                                        "provider.reachable_slow",
+                                        name = target_name.as_str(),
+                                        latency = latency
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!("[连通性测试] {}", msg));
+                                    window.push_notification(Notification::warning(msg), cx);
+                                }
+                                domain::HealthStatus::Failed => {
+                                    let msg = t!(
+                                        "provider.unreachable",
+                                        name = target_name.as_str(),
+                                        error = result.message.as_str()
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!(
+                                        "[连通性测试] {} ({})",
+                                        msg,
+                                        t!("provider.unreachable_hint")
+                                    ));
+                                    window.push_notification(Notification::error(msg), cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
+    }
+
+    fn test_form_connectivity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        let base_url = form.base_url.read(cx).value().to_string();
+        let api_key = form.api_key.read(cx).value().to_string();
+        let provider_name = form.name.read(cx).value().to_string();
+        let display_name = if provider_name.trim().is_empty() {
+            "当前服务商".to_string()
+        } else {
+            provider_name.trim().to_string()
+        };
+
+        if base_url.trim().is_empty() {
+            window.push_notification(Notification::warning("请先填写 API 端点 (Base URL)"), cx);
+            return;
+        }
+
+        form.is_testing_connectivity = true;
+        form.connectivity_result = None;
+        cx.notify();
+
+        let view = cx.entity().downgrade();
+        let target_name = display_name;
+
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                let base_url = base_url.clone();
+                let api_key = if api_key.trim().is_empty() {
+                    None
+                } else {
+                    Some(api_key.trim().to_string())
+                };
+
+                async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let config = domain::ConnectivityCheckConfig::default();
+                            domain::check_reachability_with_retry(
+                                &base_url,
+                                api_key.as_deref(),
+                                &config,
+                            )
+                        })
+                        .await;
+
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            if let Some(form) = this.form.as_mut() {
+                                form.is_testing_connectivity = false;
+                                form.connectivity_result = Some(result.clone());
+                            }
+
+                            match result.status {
+                                domain::HealthStatus::Operational => {
+                                    let latency = result.latency_ms.unwrap_or(0);
+                                    let msg = t!(
+                                        "provider.reachable",
+                                        name = target_name.as_str(),
+                                        latency = latency
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!("[连通性测试] {}", msg));
+                                    window.push_notification(Notification::success(msg), cx);
+                                }
+                                domain::HealthStatus::Degraded => {
+                                    let latency = result.latency_ms.unwrap_or(0);
+                                    let msg = t!(
+                                        "provider.reachable_slow",
+                                        name = target_name.as_str(),
+                                        latency = latency
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!("[连通性测试] {}", msg));
+                                    window.push_notification(Notification::warning(msg), cx);
+                                }
+                                domain::HealthStatus::Failed => {
+                                    let msg = t!(
+                                        "provider.unreachable",
+                                        name = target_name.as_str(),
+                                        error = result.message.as_str()
+                                    )
+                                    .to_string();
+                                    this.logs.push(format!(
+                                        "[连通性测试] {} ({})",
+                                        msg,
+                                        t!("provider.unreachable_hint")
+                                    ));
+                                    window.push_notification(Notification::error(msg), cx);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
     }
 
     fn open_create_form(&mut self, app: AppKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -1470,6 +1988,12 @@ impl RouterApp {
                     .push(format!("保存了 {} 服务商配置", app.display_name()));
                 if app == AppKind::ZCode {
                     notify_success("服务商配置已保存并写入 ~/.zcode/v2/config.json", window, cx);
+                } else if app == AppKind::WorkBuddy {
+                    notify_success(
+                        "服务商配置已保存并写入 ~/.workbuddy/models.json",
+                        window,
+                        cx,
+                    );
                 } else {
                     notify_success("服务商配置已保存", window, cx);
                 }
@@ -1503,7 +2027,113 @@ impl RouterApp {
             form.zcode_modality_text = preset.modality_text;
             form.zcode_modality_image = preset.modality_image;
         }
+        if form.app == AppKind::WorkBuddy {
+            if let Some(p) = WORKBUDDY_PRESETS.iter().find(|p| p.id == preset.id) {
+                form.workbuddy_supports_tool_call = p.supports_tool_call;
+                form.workbuddy_supports_images = p.supports_images;
+                form.workbuddy_supports_reasoning = p.supports_reasoning;
+                form.workbuddy_reasoning_only = p.reasoning_only;
+                form.workbuddy_can_disable_reasoning = p.can_disable_reasoning;
+                form.workbuddy_use_custom_protocol = p.use_custom_protocol;
+                form.workbuddy_max_input_tokens.update(cx, |input, cx| {
+                    input.set_value(
+                        p.max_input_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                        window,
+                        cx,
+                    )
+                });
+                form.workbuddy_max_output_tokens.update(cx, |input, cx| {
+                    input.set_value(
+                        p.max_output_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                        window,
+                        cx,
+                    )
+                });
+                form.workbuddy_reasoning_effort = p.reasoning_effort.to_string();
+                if let Some(ref effort_select) = form.workbuddy_reasoning_effort_select {
+                    let options = ["low", "medium", "high", "xhigh", "max"];
+                    let idx = options
+                        .iter()
+                        .position(|o| *o == p.reasoning_effort)
+                        .map(|i| gpui_component::IndexPath::default().row(i));
+                    effort_select.update(cx, |select, cx| {
+                        select.set_selected_index(idx, window, cx);
+                    });
+                }
+                form.workbuddy_supported_effort_low = p.reasoning_effort == "low";
+                form.workbuddy_supported_effort_medium = true;
+                form.workbuddy_supported_effort_high = p.reasoning_effort == "high";
+                form.workbuddy_supported_effort_xhigh = false;
+                form.workbuddy_supported_effort_max = false;
+            }
+        }
         cx.notify();
+    }
+
+    fn toggle_workbuddy_supports_tool_call(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_supports_tool_call = !form.workbuddy_supports_tool_call;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_supports_images(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_supports_images = !form.workbuddy_supports_images;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_supports_reasoning(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_supports_reasoning = !form.workbuddy_supports_reasoning;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_reasoning_only(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_reasoning_only = !form.workbuddy_reasoning_only;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_can_disable_reasoning(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_can_disable_reasoning = !form.workbuddy_can_disable_reasoning;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_use_custom_protocol(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            form.workbuddy_use_custom_protocol = !form.workbuddy_use_custom_protocol;
+            cx.notify();
+        }
+    }
+
+    fn toggle_workbuddy_supported_effort(&mut self, effort: &str, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            match effort {
+                "low" => form.workbuddy_supported_effort_low = !form.workbuddy_supported_effort_low,
+                "medium" => {
+                    form.workbuddy_supported_effort_medium = !form.workbuddy_supported_effort_medium
+                }
+                "high" => {
+                    form.workbuddy_supported_effort_high = !form.workbuddy_supported_effort_high
+                }
+                "xhigh" => {
+                    form.workbuddy_supported_effort_xhigh = !form.workbuddy_supported_effort_xhigh
+                }
+                "max" => form.workbuddy_supported_effort_max = !form.workbuddy_supported_effort_max,
+                _ => {}
+            }
+            cx.notify();
+        }
     }
 
     fn toggle_zcode_modality_text(&mut self, cx: &mut Context<Self>) {
@@ -1777,6 +2407,11 @@ impl RouterApp {
                             || extract_zcode_base_url(&s.options)
                                 .is_some_and(|u| u.to_lowercase().contains(&query))
                     }
+                    ProviderSettings::WorkBuddy(s) => {
+                        s.model_id.to_lowercase().contains(&query)
+                            || s.url.to_lowercase().contains(&query)
+                            || s.vendor.to_lowercase().contains(&query)
+                    }
                     ProviderSettings::Unsupported { .. } => false,
                 }
             })
@@ -1931,6 +2566,7 @@ impl RouterApp {
         let pi_count = self.providers_for(AppKind::Pi).len();
         let cursor_count = self.providers_for(AppKind::Cursor).len();
         let zcode_count = self.providers_for(AppKind::ZCode).len();
+        let workbuddy_count = self.providers_for(AppKind::WorkBuddy).len();
 
         let mut app_nav_items = Vec::new();
         for app_id in &self.main_apps {
@@ -2062,6 +2698,16 @@ impl RouterApp {
                     "ZCode",
                     Route::ZCode,
                     Some(format!("{zcode_count}")),
+                    false,
+                    cx,
+                )),
+                "workbuddy" => Some(self.draggable_nav_item(
+                    "workbuddy",
+                    CustomIcon::WorkBuddy,
+                    Some(rgb(0x06B6D4).into()),
+                    "WorkBuddy",
+                    Route::WorkBuddy,
+                    Some(format!("{workbuddy_count}")),
                     false,
                     cx,
                 )),
@@ -2669,6 +3315,25 @@ impl RouterApp {
                                             };
                                         cx.notify();
                                     })),
+                            )
+                            // WorkBuddy
+                            .child(
+                                Button::new("filter-app-workbuddy")
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.dashboard_app_filter == Some(AppKind::WorkBuddy))
+                                    .icon(CustomIcon::WorkBuddy)
+                                    .label("WorkBuddy")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.dashboard_app_filter = if this.dashboard_app_filter
+                                            == Some(AppKind::WorkBuddy)
+                                        {
+                                            None
+                                        } else {
+                                            Some(AppKind::WorkBuddy)
+                                        };
+                                        cx.notify();
+                                    })),
                             ),
                     )
                     .child(
@@ -3185,9 +3850,10 @@ impl RouterApp {
         provider: &Provider,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_zcode = provider.app == AppKind::ZCode;
+        let is_direct_write_app =
+            provider.app == AppKind::ZCode || provider.app == AppKind::WorkBuddy;
         let current_id = self.current_id_for(provider.app);
-        let is_current = !is_zcode && current_id.as_deref() == Some(&provider.id);
+        let is_current = !is_direct_write_app && current_id.as_deref() == Some(&provider.id);
         let is_official = provider.is_official();
         let id = provider.id.clone();
         let website_url = provider.website_url.clone();
@@ -3218,6 +3884,13 @@ impl RouterApp {
             ProviderSettings::ZCode(s) => {
                 extract_zcode_model(&s.models).unwrap_or_else(|| "默认模型".into())
             }
+            ProviderSettings::WorkBuddy(s) => {
+                if !s.model_id.is_empty() {
+                    s.model_id.clone()
+                } else {
+                    "默认模型".into()
+                }
+            }
             ProviderSettings::Unsupported { .. } => "-".into(),
         };
 
@@ -3245,6 +3918,13 @@ impl RouterApp {
             }
             ProviderSettings::ZCode(s) => {
                 extract_zcode_base_url(&s.options).unwrap_or_else(|| "官方端点 (ZCode)".into())
+            }
+            ProviderSettings::WorkBuddy(s) => {
+                if !s.url.is_empty() {
+                    s.url.clone()
+                } else {
+                    "官方端点 (WorkBuddy)".into()
+                }
             }
             ProviderSettings::Unsupported { .. } => "-".into(),
         };
@@ -3340,7 +4020,29 @@ impl RouterApp {
                                     Tag::info()
                                         .small()
                                         .child(t!("provider.third_party_tag").to_string())
-                                }),
+                                })
+                                .when_some(
+                                    self.provider_health.get(&provider.id),
+                                    |this, health| match health.status {
+                                        domain::HealthStatus::Operational => {
+                                            this.child(Tag::success().small().child(format!(
+                                                "{}ms",
+                                                health.latency_ms.unwrap_or(0)
+                                            )))
+                                        }
+                                        domain::HealthStatus::Degraded => {
+                                            this.child(Tag::warning().small().child(format!(
+                                                "{}ms 较慢",
+                                                health.latency_ms.unwrap_or(0)
+                                            )))
+                                        }
+                                        domain::HealthStatus::Failed => {
+                                            this.child(Tag::danger().small().child(
+                                                t!("provider.connectivity_failed").to_string(),
+                                            ))
+                                        }
+                                    },
+                                ),
                         )
                         .child(
                             h_flex()
@@ -3413,7 +4115,7 @@ impl RouterApp {
                     h_flex()
                         .items_center()
                         .gap(px(6.))
-                        .when(!is_zcode, |this| {
+                        .when(!is_direct_write_app, |this| {
                             this.child(
                                 Button::new(SharedString::from(format!("enable-{}", provider.id)))
                                     .outline()
@@ -3457,13 +4159,35 @@ impl RouterApp {
                                     move |this, _, window, cx| this.duplicate(&id, window, cx)
                                 })),
                         )
+                        .child({
+                            let is_testing = self.testing_provider_ids.contains(&provider.id);
+                            let id = id.clone();
+                            Button::new(SharedString::from(format!("test-{}", provider.id)))
+                                .outline()
+                                .small()
+                                .icon(CustomIcon::Activity)
+                                .label(if is_testing {
+                                    t!("provider.testing_connectivity").to_string()
+                                } else {
+                                    t!("provider.test_connectivity").to_string()
+                                })
+                                .tooltip("测试服务商 API 端点连通性")
+                                .disabled(is_testing)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.test_provider_connectivity(&id, window, cx);
+                                }))
+                        })
                         .child(
                             Button::new(SharedString::from(format!("delete-{}", provider.id)))
                                 .outline()
                                 .small()
                                 .icon(IconName::Delete)
                                 .label(t!("provider.delete").to_string())
-                                .disabled(if is_zcode { false } else { is_current })
+                                .disabled(if is_direct_write_app {
+                                    false
+                                } else {
+                                    is_current
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_delete(&id, window, cx)
                                 })),
@@ -3503,6 +4227,10 @@ impl RouterApp {
 
         let general_matches = query.is_empty()
             || "通用 general 界面 语言 简体中文 english language 外观 主题 浅色 深色 跟随系统 theme light dark system 主页面 显示 claude codex gemini grok opencode openclaw hermes pi amp cursor deepseek zcode fx kimi ohmypi 窗口行为 开机自启 startup 托盘 minimize tray"
+                .contains(&query);
+
+        let advanced_matches = query.is_empty()
+            || "高级 advanced 诊断 日志 diagnostic log 级别 level 留存 retention 目录 清理 调试 debug trace info warn error"
                 .contains(&query);
 
         let about_matches = query.is_empty()
@@ -3559,6 +4287,14 @@ impl RouterApp {
                             cx,
                         ))
                     })
+                    .when(advanced_matches, |this| {
+                        this.child(self.render_settings_sidebar_item(
+                            SettingsTab::Advanced,
+                            IconName::Settings2,
+                            t!("settings.advanced").to_string(),
+                            cx,
+                        ))
+                    })
                     .when(about_matches, |this| {
                         this.child(self.render_settings_sidebar_item(
                             SettingsTab::About,
@@ -3567,16 +4303,19 @@ impl RouterApp {
                             cx,
                         ))
                     })
-                    .when(!general_matches && !about_matches, |this| {
-                        this.child(
-                            div()
-                                .px(px(10.))
-                                .py(px(16.))
-                                .text_size(px(12.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t!("settings.no_matching").to_string()),
-                        )
-                    }),
+                    .when(
+                        !general_matches && !advanced_matches && !about_matches,
+                        |this| {
+                            this.child(
+                                div()
+                                    .px(px(10.))
+                                    .py(px(16.))
+                                    .text_size(px(12.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("settings.no_matching").to_string()),
+                            )
+                        },
+                    ),
             )
     }
 
@@ -3859,7 +4598,8 @@ impl RouterApp {
                                     .child(self.render_app_toggle_chip("kimi", "Kimi Code", CustomIcon::Kimi, rgb(0x2563EB).into(), cx))
                                     .child(self.render_app_toggle_chip("ohmypi", "Oh My Pi", CustomIcon::OhMyPi, rgb(0xEC4899).into(), cx))
                                     .child(self.render_app_toggle_chip("pi", "Pi", CustomIcon::Pi, rgb(0x3B82F6).into(), cx))
-                                    .child(self.render_app_toggle_chip("zcode", "ZCode", CustomIcon::ZCode, rgb(0x10B981).into(), cx)),
+                                    .child(self.render_app_toggle_chip("zcode", "ZCode", CustomIcon::ZCode, rgb(0x10B981).into(), cx))
+                                    .child(self.render_app_toggle_chip("workbuddy", "WorkBuddy", CustomIcon::WorkBuddy, rgb(0x06B6D4).into(), cx)),
                             ),
                     ),
                 )
@@ -4267,6 +5007,440 @@ impl RouterApp {
                         ),
                     )
             }))
+    }
+
+    fn render_advanced_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let query = self.settings_search_input.read(cx).value().to_string();
+        let query = query.trim().to_lowercase();
+
+        let log_match = query.is_empty()
+            || "高级 advanced 诊断 日志 diagnostic log 级别 level 留存 retention 目录 清理 调试 debug trace info warn error"
+                .contains(&query);
+
+        v_flex()
+            .w_full()
+            .gap(px(16.))
+            .child(
+                div()
+                    .text_size(px(24.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(theme.foreground)
+                    .child(t!("advanced.title").to_string()),
+            )
+            .when(!log_match, |this| {
+                this.child(
+                    theme::tile(cx).child(
+                        v_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_center()
+                            .py(px(32.))
+                            .gap(px(8.))
+                            .child(
+                                Icon::new(IconName::Search)
+                                    .size(px(20.))
+                                    .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("advanced.no_matching_advanced").to_string()),
+                            ),
+                    ),
+                )
+            })
+            .when(log_match, |this| {
+                this.child(
+                    theme::tile(cx).child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(12.))
+                            .child(
+                                v_flex()
+                                    .gap(px(2.))
+                                    .child(theme::tile_label(
+                                        t!("advanced.log_config.title").to_string(),
+                                        cx,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(
+                                                t!("advanced.log_config.description").to_string(),
+                                            ),
+                                    ),
+                            )
+                            // 1. 开关: 启用应用诊断日志
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .p(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.4))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .size(px(32.))
+                                                    .rounded(px(8.))
+                                                    .bg(theme.border)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        Icon::new(IconName::Settings2)
+                                                            .size(px(16.)),
+                                                    ),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.enabled")
+                                                                    .to_string(),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.enabled_desc")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("switch-diagnostic-log")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.toggle_log_enabled(window, cx);
+                                            }))
+                                            .child(self.render_switch(self.log_config.enabled, cx)),
+                                    ),
+                            )
+                            // 2. 日志级别
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .p(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.4))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .size(px(32.))
+                                                    .rounded(px(8.))
+                                                    .bg(theme.border)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        Icon::new(IconName::Settings)
+                                                            .size(px(16.)),
+                                                    ),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.level")
+                                                                    .to_string(),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.level_desc")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(160.))
+                                            .child(
+                                                Select::new(&self.log_level_select)
+                                                    .disabled(!self.log_config.enabled),
+                                            ),
+                                    ),
+                            )
+                            // 3. 留存天数
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .p(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.4))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .size(px(32.))
+                                                    .rounded(px(8.))
+                                                    .bg(theme.border)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(
+                                                        Icon::new(IconName::SquareTerminal)
+                                                            .size(px(16.)),
+                                                    ),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.retention")
+                                                                    .to_string(),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.retention_desc")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(160.))
+                                            .child(
+                                                Select::new(&self.log_retention_select)
+                                                    .disabled(!self.log_config.enabled),
+                                            ),
+                                    ),
+                            )
+                            // 4. 日志级别说明卡片
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .p(px(12.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.5))
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme.foreground)
+                                            .child(
+                                                t!("advanced.log_config.level_hint").to_string(),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap(px(4.))
+                                            .text_size(px(11.))
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(rgb(0xEF4444))
+                                                            .child("error"),
+                                                    )
+                                                    .child(div().text_color(theme.muted_foreground).child("-"))
+                                                    .child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("advanced.log_config.level_desc.error").to_string()),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(rgb(0xF59E0B))
+                                                            .child("warn"),
+                                                    )
+                                                    .child(div().text_color(theme.muted_foreground).child("-"))
+                                                    .child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("advanced.log_config.level_desc.warn").to_string()),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(rgb(0x3B82F6))
+                                                            .child("info"),
+                                                    )
+                                                    .child(div().text_color(theme.muted_foreground).child("-"))
+                                                    .child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("advanced.log_config.level_desc.info").to_string()),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(rgb(0x10B981))
+                                                            .child("debug"),
+                                                    )
+                                                    .child(div().text_color(theme.muted_foreground).child("-"))
+                                                    .child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("advanced.log_config.level_desc.debug").to_string()),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(
+                                                        div()
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(rgb(0x6B7280))
+                                                            .child("trace"),
+                                                    )
+                                                    .child(div().text_color(theme.muted_foreground).child("-"))
+                                                    .child(
+                                                        div()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("advanced.log_config.level_desc.trace").to_string()),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            // 5. 日志路径与操作按钮
+                            .child(
+                                div()
+                                    .p(px(10.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.4))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(8.))
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("advanced.log_config.path_label")
+                                                                    .to_string(),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .text_color(theme.foreground)
+                                                            .child(
+                                                                self.workspace
+                                                                    .main_log_path()
+                                                                    .to_string_lossy()
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap(px(8.))
+                                                    .child(
+                                                        Button::new("btn-open-log-dir")
+                                                            .outline()
+                                                            .small()
+                                                            .icon(IconName::ExternalLink)
+                                                            .label(
+                                                                t!("advanced.log_config.open_dir")
+                                                                    .to_string(),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.open_diagnostic_log_dir(
+                                                                        window, cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        Button::new("btn-clear-logs")
+                                                            .outline()
+                                                            .small()
+                                                            .icon(IconName::Delete)
+                                                            .label(
+                                                                t!("advanced.log_config.clear_logs")
+                                                                    .to_string(),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.clear_diagnostic_logs(
+                                                                        window, cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                    ),
+                                            ),
+                                    ),
+                            ),
+                    ),
+                )
+            })
     }
 
     fn render_about_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4772,6 +5946,7 @@ impl RouterApp {
     fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(match self.settings_tab {
             SettingsTab::General => self.render_general_settings(cx).into_any_element(),
+            SettingsTab::Advanced => self.render_advanced_settings(cx).into_any_element(),
             SettingsTab::About => self.render_about_settings(cx).into_any_element(),
         })
     }
@@ -4985,7 +6160,82 @@ impl RouterApp {
                             "API Key / 凭据",
                             Input::new(&form.api_key).mask_toggle(),
                         ))
-                        .child(form_field("API 端点 (Base URL)", Input::new(&form.base_url)))
+                                                .child(
+                            v_flex()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme.foreground)
+                                        .child("API 端点 (Base URL)"),
+                                )
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap(px(8.))
+                                        .items_center()
+                                        .child(
+                                            div().flex_1().child(Input::new(&form.base_url))
+                                        )
+                                        .child(
+                                            Button::new("test-form-connectivity-btn")
+                                                .outline()
+                                                .icon(CustomIcon::Activity)
+                                                .label(if form.is_testing_connectivity {
+                                                    t!("provider.testing_connectivity").to_string()
+                                                } else {
+                                                    t!("provider.test_connectivity").to_string()
+                                                })
+                                                .tooltip("测试当前 API 端点网络连通性")
+                                                .disabled(form.is_testing_connectivity)
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.test_form_connectivity(window, cx);
+                                                })),
+                                        ),
+                                )
+                                .when_some(form.connectivity_result.as_ref(), |this, res| {
+                                    let (tag_text, is_success, is_warn) = match res.status {
+                                        domain::HealthStatus::Operational => (
+                                            format!(
+                                                "🟢 {} ({}ms) - {}",
+                                                t!("provider.connectivity_operational"),
+                                                res.latency_ms.unwrap_or(0),
+                                                res.message
+                                            ),
+                                            true,
+                                            false,
+                                        ),
+                                        domain::HealthStatus::Degraded => (
+                                            format!(
+                                                "🟡 {} ({}ms) - {}",
+                                                t!("provider.connectivity_degraded"),
+                                                res.latency_ms.unwrap_or(0),
+                                                res.message
+                                            ),
+                                            false,
+                                            true,
+                                        ),
+                                        domain::HealthStatus::Failed => (
+                                            format!(
+                                                "🔴 {}: {}",
+                                                t!("provider.connectivity_failed"),
+                                                res.message
+                                            ),
+                                            false,
+                                            false,
+                                        ),
+                                    };
+                                    let tag = if is_success {
+                                        Tag::success().small().child(tag_text)
+                                    } else if is_warn {
+                                        Tag::warning().small().child(tag_text)
+                                    } else {
+                                        Tag::danger().small().child(tag_text)
+                                    };
+                                    this.child(div().pt(px(2.)).child(tag))
+                                }),
+                        )
                         .child(
                             v_flex()
                                 .gap(px(6.))
@@ -5027,6 +6277,486 @@ impl RouterApp {
                                         ),
                                 ),
                         )
+                        .when(form.app == AppKind::WorkBuddy, |this| {
+                            let tool_checked = form.workbuddy_supports_tool_call;
+                            let image_checked = form.workbuddy_supports_images;
+                            let reason_checked = form.workbuddy_supports_reasoning;
+                            let custom_proto_checked = form.workbuddy_use_custom_protocol;
+                            let low_checked = form.workbuddy_supported_effort_low;
+                            let med_checked = form.workbuddy_supported_effort_medium;
+                            let high_checked = form.workbuddy_supported_effort_high;
+                            let xhigh_checked = form.workbuddy_supported_effort_xhigh;
+                            let max_checked = form.workbuddy_supported_effort_max;
+                            let reasoning_only = form.workbuddy_reasoning_only;
+                            let can_disable = form.workbuddy_can_disable_reasoning;
+
+                            this.child(
+                                v_flex()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child("特性支持 (Capabilities)"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap(px(16.))
+                                            .items_center()
+                                            .flex_wrap()
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-wb-tool")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_workbuddy_supports_tool_call(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if tool_checked { theme.primary } else { theme.border })
+                                                            .bg(if tool_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(tool_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child("函数调用 (Tool Call)"),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-wb-image")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_workbuddy_supports_images(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if image_checked { theme.primary } else { theme.border })
+                                                            .bg(if image_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(image_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child("图片输入 (Images)"),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-wb-reason")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_workbuddy_supports_reasoning(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if reason_checked { theme.primary } else { theme.border })
+                                                            .bg(if reason_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(reason_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child("深度思考 (Reasoning)"),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .id("checkbox-wb-custom-proto")
+                                                    .gap(px(6.))
+                                                    .items_center()
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.toggle_workbuddy_use_custom_protocol(cx);
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .size(px(18.))
+                                                            .rounded(px(4.))
+                                                            .border_1()
+                                                            .border_color(if custom_proto_checked { theme.primary } else { theme.border })
+                                                            .bg(if custom_proto_checked { theme.primary } else { gpui::transparent_black() })
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when(custom_proto_checked, |this| {
+                                                                this.child(
+                                                                    Icon::new(IconName::Check)
+                                                                        .size(px(13.))
+                                                                        .text_color(rgb(0xFFFFFF)),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .text_color(theme.foreground)
+                                                            .child("自定义协议 (Custom Protocol)"),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            .when(reason_checked, |this| {
+                                this.child(
+                                    v_flex()
+                                        .gap(px(8.))
+                                        .p(px(12.))
+                                        .rounded(px(8.))
+                                        .bg(theme.secondary.opacity(0.3))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap(px(12.))
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .child(
+                                                            v_flex()
+                                                                .gap(px(4.))
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(12.))
+                                                                        .font_weight(FontWeight::MEDIUM)
+                                                                        .text_color(theme.foreground)
+                                                                        .child("默认思考强度 (Default Effort)"),
+                                                                )
+                                                                .when_some(form.workbuddy_reasoning_effort_select.as_ref(), |this, select| {
+                                                                    this.child(
+                                                                        Select::new(select)
+                                                                            .placeholder("选择默认思考强度..."),
+                                                                    )
+                                                                }),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .gap(px(4.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(theme.foreground)
+                                                        .child("支持的思考强度档位 (Supported Efforts)"),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap(px(12.))
+                                                        .items_center()
+                                                        .flex_wrap()
+                                                        .child(
+                                                            h_flex()
+                                                                .id("wb-effort-low")
+                                                                .gap(px(6.))
+                                                                .items_center()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_workbuddy_supported_effort("low", cx);
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .size(px(18.))
+                                                                        .rounded(px(4.))
+                                                                        .border_1()
+                                                                        .border_color(if low_checked { theme.primary } else { theme.border })
+                                                                        .bg(if low_checked { theme.primary } else { gpui::transparent_black() })
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .justify_center()
+                                                                        .when(low_checked, |this| {
+                                                                            this.child(
+                                                                                Icon::new(IconName::Check)
+                                                                                    .size(px(13.))
+                                                                                    .text_color(rgb(0xFFFFFF)),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(theme.foreground)
+                                                                        .child("Low (低)"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .id("wb-effort-medium")
+                                                                .gap(px(6.))
+                                                                .items_center()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_workbuddy_supported_effort("medium", cx);
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .size(px(18.))
+                                                                        .rounded(px(4.))
+                                                                        .border_1()
+                                                                        .border_color(if med_checked { theme.primary } else { theme.border })
+                                                                        .bg(if med_checked { theme.primary } else { gpui::transparent_black() })
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .justify_center()
+                                                                        .when(med_checked, |this| {
+                                                                            this.child(
+                                                                                Icon::new(IconName::Check)
+                                                                                    .size(px(13.))
+                                                                                    .text_color(rgb(0xFFFFFF)),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(theme.foreground)
+                                                                        .child("Medium (中)"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .id("wb-effort-high")
+                                                                .gap(px(6.))
+                                                                .items_center()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_workbuddy_supported_effort("high", cx);
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .size(px(18.))
+                                                                        .rounded(px(4.))
+                                                                        .border_1()
+                                                                        .border_color(if high_checked { theme.primary } else { theme.border })
+                                                                        .bg(if high_checked { theme.primary } else { gpui::transparent_black() })
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .justify_center()
+                                                                        .when(high_checked, |this| {
+                                                                            this.child(
+                                                                                Icon::new(IconName::Check)
+                                                                                    .size(px(13.))
+                                                                                    .text_color(rgb(0xFFFFFF)),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(theme.foreground)
+                                                                        .child("High (高)"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .id("wb-effort-xhigh")
+                                                                .gap(px(6.))
+                                                                .items_center()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_workbuddy_supported_effort("xhigh", cx);
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .size(px(18.))
+                                                                        .rounded(px(4.))
+                                                                        .border_1()
+                                                                        .border_color(if xhigh_checked { theme.primary } else { theme.border })
+                                                                        .bg(if xhigh_checked { theme.primary } else { gpui::transparent_black() })
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .justify_center()
+                                                                        .when(xhigh_checked, |this| {
+                                                                            this.child(
+                                                                                Icon::new(IconName::Check)
+                                                                                    .size(px(13.))
+                                                                                    .text_color(rgb(0xFFFFFF)),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(theme.foreground)
+                                                                        .child("Extra High (极高)"),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .id("wb-effort-max")
+                                                                .gap(px(6.))
+                                                                .items_center()
+                                                                .cursor_pointer()
+                                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                                    this.toggle_workbuddy_supported_effort("max", cx);
+                                                                }))
+                                                                .child(
+                                                                    div()
+                                                                        .size(px(18.))
+                                                                        .rounded(px(4.))
+                                                                        .border_1()
+                                                                        .border_color(if max_checked { theme.primary } else { theme.border })
+                                                                        .bg(if max_checked { theme.primary } else { gpui::transparent_black() })
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .justify_center()
+                                                                        .when(max_checked, |this| {
+                                                                            this.child(
+                                                                                Icon::new(IconName::Check)
+                                                                                    .size(px(13.))
+                                                                                    .text_color(rgb(0xFFFFFF)),
+                                                                            )
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.))
+                                                                        .text_color(theme.foreground)
+                                                                        .child("Max (最大)"),
+                                                                ),
+                                                        ),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .gap(px(16.))
+                                                .items_center()
+                                                .child(
+                                                    h_flex()
+                                                        .id("wb-reasoning-only")
+                                                        .gap(px(6.))
+                                                        .items_center()
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_workbuddy_reasoning_only(cx);
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .size(px(18.))
+                                                                .rounded(px(4.))
+                                                                .border_1()
+                                                                .border_color(if reasoning_only { theme.primary } else { theme.border })
+                                                                .bg(if reasoning_only { theme.primary } else { gpui::transparent_black() })
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .when(reasoning_only, |this| {
+                                                                    this.child(
+                                                                        Icon::new(IconName::Check)
+                                                                            .size(px(13.))
+                                                                            .text_color(rgb(0xFFFFFF)),
+                                                                    )
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.))
+                                                                .text_color(theme.foreground)
+                                                                .child("仅允许思考 (reasoning_only)"),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .id("wb-can-disable-reasoning")
+                                                        .gap(px(6.))
+                                                        .items_center()
+                                                        .cursor_pointer()
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.toggle_workbuddy_can_disable_reasoning(cx);
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .size(px(18.))
+                                                                .rounded(px(4.))
+                                                                .border_1()
+                                                                .border_color(if can_disable { theme.primary } else { theme.border })
+                                                                .bg(if can_disable { theme.primary } else { gpui::transparent_black() })
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .when(can_disable, |this| {
+                                                                    this.child(
+                                                                        Icon::new(IconName::Check)
+                                                                            .size(px(13.))
+                                                                            .text_color(rgb(0xFFFFFF)),
+                                                                    )
+                                                                }),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.))
+                                                                .text_color(theme.foreground)
+                                                                .child("允许关闭思考 (can_disable_reasoning)"),
+                                                        ),
+                                                ),
+                                        ),
+                                )
+                            })
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child(form_field("最大输入 Tokens", Input::new(&form.workbuddy_max_input_tokens))),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child(form_field("最大输出 Tokens", Input::new(&form.workbuddy_max_output_tokens))),
+                                    ),
+                            )
+                        })
                         .when(form.app == AppKind::ZCode, |this| {
                             let text_checked = form.zcode_modality_text;
                             let image_checked = form.zcode_modality_image;
@@ -5123,7 +6853,8 @@ impl RouterApp {
                         ),
                 ),
             )
-            .child(
+            .when(form.app != AppKind::WorkBuddy, |this| {
+                this.child(
                 // Model Mapping Card
                 theme::tile(cx).child(
                     v_flex()
@@ -5329,7 +7060,7 @@ impl RouterApp {
                                 .child("💡 提示：配置模型映射后，在客户端下拉菜单或设置中可直接切换已配置的模型。"),
                         ),
                 ),
-            )
+            )})
             .child(
                 // Bottom Action Buttons
                 h_flex()
@@ -5389,6 +7120,9 @@ impl Render for RouterApp {
                     .into_any_element(),
                 Route::ZCode => self
                     .render_app_providers_page(AppKind::ZCode, cx)
+                    .into_any_element(),
+                Route::WorkBuddy => self
+                    .render_app_providers_page(AppKind::WorkBuddy, cx)
                     .into_any_element(),
                 Route::Notifications => self.render_notifications_page(cx).into_any_element(),
                 Route::Settings => self.render_settings_page(cx).into_any_element(),
@@ -5531,6 +7265,25 @@ impl FormDraft {
                 modality_text: true,
                 modality_image: true,
                 model_mappings: Vec::new(),
+            }),
+            AppKind::WorkBuddy => ProviderForm::WorkBuddy(WorkBuddyForm {
+                name: String::new(),
+                website_url: String::new(),
+                kind: WorkBuddyKind::ThirdParty,
+                model_id: DEFAULT_WORKBUDDY_MODEL.to_string(),
+                vendor: DEFAULT_WORKBUDDY_VENDOR.to_string(),
+                base_url: String::new(),
+                api_key: String::new(),
+                supports_tool_call: true,
+                supports_images: true,
+                supports_reasoning: false,
+                reasoning_only: false,
+                can_disable_reasoning: true,
+                use_custom_protocol: false,
+                max_input_tokens: Some(262144),
+                max_output_tokens: Some(65536),
+                reasoning_effort: "medium".to_string(),
+                supported_reasoning_efforts: vec!["medium".to_string()],
             }),
         };
 
@@ -5680,6 +7433,14 @@ impl FormDraft {
                     })
                     .collect(),
             ),
+            ProviderForm::WorkBuddy(f) => (
+                f.name.clone(),
+                f.api_key.clone(),
+                f.base_url.clone(),
+                f.model_id.clone(),
+                f.kind.is_official(),
+                Vec::new(),
+            ),
         };
 
         let selected_index = if editing_id.is_none() {
@@ -5728,6 +7489,140 @@ impl FormDraft {
             _ => (true, true),
         };
 
+        let (
+            workbuddy_supports_tool_call,
+            workbuddy_supports_images,
+            workbuddy_supports_reasoning,
+            workbuddy_reasoning_only,
+            workbuddy_can_disable_reasoning,
+            workbuddy_use_custom_protocol,
+            workbuddy_max_input_tokens_str,
+            workbuddy_max_output_tokens_str,
+            workbuddy_reasoning_effort,
+            workbuddy_supported_effort_low,
+            workbuddy_supported_effort_medium,
+            workbuddy_supported_effort_high,
+            workbuddy_supported_effort_xhigh,
+            workbuddy_supported_effort_max,
+        ) = match &form {
+            ProviderForm::WorkBuddy(f) => {
+                let effort = if f.reasoning_effort.is_empty() {
+                    "medium".to_string()
+                } else {
+                    f.reasoning_effort.clone()
+                };
+                let has_efforts = !f.supported_reasoning_efforts.is_empty();
+                (
+                    f.supports_tool_call,
+                    f.supports_images,
+                    f.supports_reasoning,
+                    f.reasoning_only,
+                    f.can_disable_reasoning,
+                    f.use_custom_protocol,
+                    f.max_input_tokens
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    f.max_output_tokens
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    effort.clone(),
+                    if has_efforts {
+                        f.supported_reasoning_efforts.iter().any(|s| s == "low")
+                    } else {
+                        effort == "low"
+                    },
+                    if has_efforts {
+                        f.supported_reasoning_efforts.iter().any(|s| s == "medium")
+                    } else {
+                        true
+                    },
+                    if has_efforts {
+                        f.supported_reasoning_efforts.iter().any(|s| s == "high")
+                    } else {
+                        effort == "high"
+                    },
+                    if has_efforts {
+                        f.supported_reasoning_efforts.iter().any(|s| s == "xhigh")
+                    } else {
+                        effort == "xhigh"
+                    },
+                    if has_efforts {
+                        f.supported_reasoning_efforts.iter().any(|s| s == "max")
+                    } else {
+                        effort == "max"
+                    },
+                )
+            }
+            _ => (
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                "262144".to_string(),
+                "65536".to_string(),
+                "medium".to_string(),
+                false,
+                true,
+                false,
+                false,
+                false,
+            ),
+        };
+
+        let (workbuddy_reasoning_effort_select, _workbuddy_reasoning_effort_sub) = if app
+            == AppKind::WorkBuddy
+        {
+            let options = vec![
+                WorkBuddyReasoningEffortItem {
+                    label: "Low (低)".into(),
+                    value: "low".into(),
+                },
+                WorkBuddyReasoningEffortItem {
+                    label: "Medium (中)".into(),
+                    value: "medium".into(),
+                },
+                WorkBuddyReasoningEffortItem {
+                    label: "High (高)".into(),
+                    value: "high".into(),
+                },
+                WorkBuddyReasoningEffortItem {
+                    label: "Extra High (极高)".into(),
+                    value: "xhigh".into(),
+                },
+                WorkBuddyReasoningEffortItem {
+                    label: "Max (最大)".into(),
+                    value: "max".into(),
+                },
+            ];
+            let selected_idx = options
+                .iter()
+                .position(|o| o.value == workbuddy_reasoning_effort)
+                .or(Some(1))
+                .map(|i| gpui_component::IndexPath::default().row(i));
+            let select = cx.new(|cx| SelectState::new(options, selected_idx, window, cx));
+            let view = cx.entity();
+            let sub = window.subscribe(
+                &select,
+                cx,
+                move |_, event: &SelectEvent<Vec<WorkBuddyReasoningEffortItem>>, _window, cx| {
+                    if let SelectEvent::Confirm(Some(effort_val)) = event {
+                        let effort_str = effort_val.clone();
+                        view.update(cx, |this, cx| {
+                            if let Some(form) = this.form.as_mut() {
+                                form.workbuddy_reasoning_effort = effort_str;
+                                cx.notify();
+                            }
+                        });
+                    }
+                },
+            );
+            (Some(select), Some(sub))
+        } else {
+            (None, None)
+        };
+
         Self {
             app,
             editing_id,
@@ -5743,14 +7638,42 @@ impl FormDraft {
             model: field(window, cx, &model, "例如: gpt-5.6-sol / claude-3-7-sonnet"),
             zcode_modality_text,
             zcode_modality_image,
+            workbuddy_supports_tool_call,
+            workbuddy_supports_images,
+            workbuddy_supports_reasoning,
+            workbuddy_reasoning_only,
+            workbuddy_can_disable_reasoning,
+            workbuddy_use_custom_protocol,
+            workbuddy_max_input_tokens: field(
+                window,
+                cx,
+                &workbuddy_max_input_tokens_str,
+                "262144",
+            ),
+            workbuddy_max_output_tokens: field(
+                window,
+                cx,
+                &workbuddy_max_output_tokens_str,
+                "65536",
+            ),
+            workbuddy_reasoning_effort,
+            workbuddy_reasoning_effort_select,
+            workbuddy_supported_effort_low,
+            workbuddy_supported_effort_medium,
+            workbuddy_supported_effort_high,
+            workbuddy_supported_effort_xhigh,
+            workbuddy_supported_effort_max,
             preset_select,
             catalog_rows,
             fetched_models: Vec::new(),
             has_fetched_models: false,
             default_model_select: None,
             is_fetching_models: false,
+            is_testing_connectivity: false,
+            connectivity_result: None,
             _preset_sub: Some(_preset_sub),
             _default_model_sub: None,
+            _workbuddy_reasoning_effort_sub,
         }
     }
 
@@ -5963,6 +7886,69 @@ impl FormDraft {
                     modality_text: self.zcode_modality_text,
                     modality_image: self.zcode_modality_image,
                     model_mappings,
+                })
+            }
+            AppKind::WorkBuddy => {
+                let max_in = self
+                    .workbuddy_max_input_tokens
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<u64>()
+                    .ok();
+                let max_out = self
+                    .workbuddy_max_output_tokens
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<u64>()
+                    .ok();
+                let mut supported_efforts = Vec::new();
+                if self.workbuddy_supported_effort_low {
+                    supported_efforts.push("low".to_string());
+                }
+                if self.workbuddy_supported_effort_medium {
+                    supported_efforts.push("medium".to_string());
+                }
+                if self.workbuddy_supported_effort_high {
+                    supported_efforts.push("high".to_string());
+                }
+                if self.workbuddy_supported_effort_xhigh {
+                    supported_efforts.push("xhigh".to_string());
+                }
+                if self.workbuddy_supported_effort_max {
+                    supported_efforts.push("max".to_string());
+                }
+                if supported_efforts.is_empty() {
+                    supported_efforts.push("medium".to_string());
+                }
+
+                ProviderForm::WorkBuddy(WorkBuddyForm {
+                    name,
+                    website_url: String::new(),
+                    kind: if self.is_official {
+                        WorkBuddyKind::Official
+                    } else {
+                        WorkBuddyKind::ThirdParty
+                    },
+                    model_id: model,
+                    vendor: DEFAULT_WORKBUDDY_VENDOR.to_string(),
+                    base_url,
+                    api_key,
+                    supports_tool_call: self.workbuddy_supports_tool_call,
+                    supports_images: self.workbuddy_supports_images,
+                    supports_reasoning: self.workbuddy_supports_reasoning,
+                    reasoning_only: self.workbuddy_reasoning_only,
+                    can_disable_reasoning: self.workbuddy_can_disable_reasoning,
+                    use_custom_protocol: self.workbuddy_use_custom_protocol,
+                    max_input_tokens: max_in,
+                    max_output_tokens: max_out,
+                    reasoning_effort: if self.workbuddy_reasoning_effort.is_empty() {
+                        "medium".to_string()
+                    } else {
+                        self.workbuddy_reasoning_effort.clone()
+                    },
+                    supported_reasoning_efforts: supported_efforts,
                 })
             }
         }
