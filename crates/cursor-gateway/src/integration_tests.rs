@@ -5,7 +5,7 @@ use std::sync::{
 
 use async_stream::stream;
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     http::{Request, StatusCode},
     routing::post,
     Router,
@@ -233,42 +233,69 @@ async fn run_sse_rendezvous_does_not_miss_early_frames() {
         ModelEvent::TextDelta("streamed".into()),
         ModelEvent::Done(FinishReason::Stop),
     ]])));
-    let proxy = CursorProxy::default_upstream();
-    let router = build_router(registry.clone(), proxy);
 
-    // First append creates the actor and emits frames into OutputHub history.
-    let append = encode_append("rz-1", 0, run_request("ping", "mock-model"));
-    let res = router
-        .clone()
-        .oneshot(
-            Request::post("/aiserver.v1.BidiService/BidiAppend")
-                .header("content-type", "application/proto")
-                .body(Body::from(append))
-                .unwrap(),
-        )
+    // Append first so frames land in OutputHub history before any SSE subscriber.
+    let handle = registry.get_or_create("rz-1").await.unwrap();
+    handle
+        .command(crate::actor::CursorCommand::Append {
+            seqno: 0,
+            message: Box::new(run_request("ping", "mock-model")),
+        })
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
 
-    // Give the actor a moment to emit.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Drain until end-stream with a timeout — never block on an open SSE body forever.
+    let mut warm = handle.subscribe();
+    let saw_end = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(frame) = warm.recv().await {
+            if frame
+                .first()
+                .is_some_and(|flags| flags & connect::END_STREAM_FLAG != 0)
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("agent run should finish within timeout");
+    assert!(saw_end, "expected Connect end-stream after Done(Stop)");
 
-    let sse_req = pb::BidiRequestId {
-        request_id: "rz-1".into(),
-    };
-    let sse_body = connect::encode_message(&sse_req).unwrap();
-    let res = router
-        .oneshot(
-            Request::post("/agent.v1.AgentService/RunSSE")
-                .header("content-type", "application/proto")
-                .body(Body::from(sse_body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    assert!(!body.is_empty(), "RunSSE should replay buffered frames");
+    // Late subscriber must replay frames that were emitted before subscribe.
+    let mut late = handle.subscribe();
+    let mut replayed_text = false;
+    while let Ok(frame) = late.try_recv() {
+        if frame
+            .first()
+            .is_some_and(|flags| flags & connect::END_STREAM_FLAG != 0)
+        {
+            continue;
+        }
+        if let Ok(frames) = decode_frames(&frame) {
+            for (flags, payload) in frames {
+                if flags != 0 {
+                    continue;
+                }
+                if let Ok(msg) = pb::AgentServerMessage::decode(payload.as_ref()) {
+                    if let Some(pb::agent_server_message::Message::InteractionUpdate(update)) =
+                        msg.message
+                    {
+                        if let Some(pb::interaction_update::Message::TextDelta(delta)) =
+                            update.message
+                        {
+                            if delta.text.contains("streamed") {
+                                replayed_text = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        replayed_text,
+        "RunSSE-style subscribe must replay buffered frames emitted before subscribe"
+    );
 }
 
 #[tokio::test]

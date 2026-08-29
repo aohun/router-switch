@@ -1610,7 +1610,6 @@ dependencies = [
  "eventsource-stream",
  "futures-util",
  "hex",
- "http-body-util",
  "hudsucker",
  "include_dir",
  "json5",
