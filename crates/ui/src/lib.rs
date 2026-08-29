@@ -1,6 +1,8 @@
 mod app_view;
 pub mod assets;
 mod theme;
+pub mod update_dialog;
+pub mod usage_service;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;

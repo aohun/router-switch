@@ -99,6 +99,10 @@ usage:
   col_top_model: "Top Model"
   col_project: "Project Dir"
   col_last_active: "Last Active"
+  metric_cost_btn: "Cost"
+  metric_tokens_btn: "Tokens"
+  no_records: "No usage records found"
+  loading: "Calculating usage..."
 
 advanced:
   title: "Advanced Settings"
@@ -171,6 +175,24 @@ about:
   empty_inspect_tip: "Click button below to scan installed CLI tools, version statuses, and conflicts."
   inspecting_tip: "Inspecting local CLI environments and querying registry..."
   start_inspect: "Inspect Environment"
+  preview_dialog: "Preview Update Alert"
+
+update:
+  dialog_title: "A new version of %{app} is available!"
+  dialog_subtitle: "%{app} %{latest} is now available—you have %{current}. Would you like to download it now?"
+  release_notes_header_zh: "新变化"
+  release_notes_header_en: "What's new"
+  auto_update_checkbox: "Automatically download and install updates in the future"
+  skip_version: "Skip This Version"
+  remind_later: "Remind Me Later"
+  install_update: "Install Update"
+  download_update: "Download Update"
+  checking_update: "Checking for updates..."
+  uptodate_tip: "Current version (%{version}) is up to date"
+  check_failed: "Failed to check for updates: %{error}"
+  skipped_tip: "Skipped update prompt for version %{version}"
+  auto_check_settings: "Automatically Check for Updates"
+  auto_check_settings_desc: "Silently check for new releases in background on startup"
 
 provider:
   new: "New Provider"

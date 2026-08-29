@@ -14,6 +14,7 @@ mod grok;
 mod opencode;
 mod pi;
 mod provider;
+mod updater;
 mod workbuddy;
 mod zcode;
 
@@ -71,6 +72,7 @@ pub use pi::{
     DEFAULT_PI_MODEL, OFFICIAL_PI_ID, PI_PRESETS,
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
+pub use updater::{check_app_update, parse_release_notes, sample_app_release, AppRelease};
 pub use workbuddy::{
     official_workbuddy_provider, official_workbuddy_settings, parse_workbuddy_form, WorkBuddyForm,
     WorkBuddyKind, WorkBuddyModelItem, WorkBuddyPreset, WorkBuddyReasoningConfig,

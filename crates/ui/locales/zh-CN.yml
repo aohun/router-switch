@@ -99,6 +99,10 @@ usage:
   col_top_model: "主用模型"
   col_project: "项目目录"
   col_last_active: "最近调用"
+  metric_cost_btn: "费用"
+  metric_tokens_btn: "令牌"
+  no_records: "暂无用量记录"
+  loading: "正在统计用量..."
 
 advanced:
   title: "高级设置"
@@ -171,6 +175,24 @@ about:
   empty_inspect_tip: "尚未检测本地 CLI 环境。点击下方按钮开始扫描本地工具版本与安装冲突。"
   inspecting_tip: "正在后台探测本地 CLI 工具与查询版本..."
   start_inspect: "开始检测环境"
+  preview_dialog: "演示升级弹窗"
+
+update:
+  dialog_title: "新版本 %{app} 可用！"
+  dialog_subtitle: "%{app} %{latest} 现已发布——您当前使用的是 %{current}。是否立即下载更新？"
+  release_notes_header_zh: "新变化"
+  release_notes_header_en: "What's new"
+  auto_update_checkbox: "未来自动下载并安装更新"
+  skip_version: "跳过此版本"
+  remind_later: "稍后提醒"
+  install_update: "立即安装更新"
+  download_update: "下载更新"
+  checking_update: "正在检查更新..."
+  uptodate_tip: "当前已是最新版本 (%{version})"
+  check_failed: "检查更新失败: %{error}"
+  skipped_tip: "已跳过版本 %{version} 的更新提示"
+  auto_check_settings: "自动检查应用更新"
+  auto_check_settings_desc: "应用启动时在后台静默检查是否有新版本发布"
 
 provider:
   new: "新建服务商"

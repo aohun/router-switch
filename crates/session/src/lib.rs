@@ -478,6 +478,20 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn set_auto_check_update(&self, enabled: bool) -> Result<(), SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.auto_check_update = enabled;
+        self.store.save_settings(&settings)?;
+        Ok(())
+    }
+
+    pub fn set_skipped_update_version(&self, version: Option<String>) -> Result<(), SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.skipped_update_version = version;
+        self.store.save_settings(&settings)?;
+        Ok(())
+    }
+
     pub fn inspect_environment(&self, fetch_remote: bool) -> Vec<ToolEnvironmentStatus> {
         inspect_all_tools(fetch_remote)
     }

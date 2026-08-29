@@ -1,21 +1,21 @@
 use domain::{
-    extract_claude_base_url, extract_claude_model, extract_codex_base_url, extract_codex_model,
-    extract_cursor_base_url, extract_cursor_model, extract_grok_base_url, extract_grok_model,
-    extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url, extract_zcode_model,
-    parse_clipboard_provider_info, AppKind, ClaudeForm, ClaudeKind, ClaudeModelMapping,
-    ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping, CursorForm, CursorKind,
-    CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm, OpenCodeKind,
-    OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm, ProviderSettings,
-    ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping,
-    CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
-    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
-    DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR, DEFAULT_ZCODE_MODEL,
-    DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS, RESPONSES_PRESETS,
-    WORKBUDDY_PRESETS, ZCODE_PRESETS,
+    check_app_update, extract_claude_base_url, extract_claude_model, extract_codex_base_url,
+    extract_codex_model, extract_cursor_base_url, extract_cursor_model, extract_grok_base_url,
+    extract_grok_model, extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url,
+    extract_zcode_model, parse_clipboard_provider_info, sample_app_release, AppKind, AppRelease,
+    ClaudeForm, ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind,
+    CodexModelMapping, CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind,
+    GrokModelMapping, OpenCodeForm, OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind,
+    PiModelMapping, Provider, ProviderForm, ProviderSettings, ToolEnvironmentStatus, WorkBuddyForm,
+    WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS,
+    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
+    DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
+    DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS,
+    RESPONSES_PRESETS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, svg, App, AppContext, Context, Entity, FontWeight,
-    Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
 };
 use gpui_component::{
@@ -26,8 +26,8 @@ use gpui_component::{
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex, ActiveTheme, Disableable as _, Icon, IconName, IconNamed, Selectable as _,
-    Sizable as _, WindowExt,
+    v_flex, ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    WindowExt,
 };
 use rust_i18n::t;
 use session::Workspace;
@@ -35,6 +35,8 @@ use store::{AppLanguage, ThemePreference};
 
 use crate::assets::CustomIcon;
 use crate::theme;
+use crate::update_dialog::open_app_update_dialog;
+pub use crate::usage_service::*;
 
 pub const CHROME_HEIGHT: f32 = 46.;
 
@@ -666,39 +668,6 @@ pub enum SettingsTab {
     About,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageWindowChoice {
-    #[default]
-    Today,
-    Yesterday,
-    Days7,
-    Days30,
-    Month,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageRefreshInterval {
-    Off,
-    Sec10,
-    #[default]
-    Sec30,
-    Sec60,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageMetric {
-    #[default]
-    Cost,
-    Tokens,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageBreakdownTab {
-    #[default]
-    Model,
-    Day,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageWindowSelectItem {
     pub choice: UsageWindowChoice,
@@ -846,6 +815,8 @@ pub struct RouterApp {
     minimize_to_tray: bool,
     settings_tab: SettingsTab,
     dashboard_app_filter: Option<AppKind>,
+    dashboard_data: Option<DashboardUsageData>,
+    is_loading_dashboard: bool,
     usage_breakdown_tab: UsageBreakdownTab,
     usage_window: UsageWindowChoice,
     usage_metric: UsageMetric,
@@ -866,6 +837,9 @@ pub struct RouterApp {
     logs: Vec<String>,
     env_tools: Vec<ToolEnvironmentStatus>,
     is_inspecting_env: bool,
+    auto_check_update: bool,
+    skipped_update_version: Option<String>,
+    is_checking_update: bool,
     testing_provider_ids: std::collections::HashSet<String>,
     provider_health: std::collections::HashMap<String, domain::ConnectivityCheckResult>,
 }
@@ -963,7 +937,7 @@ impl RouterApp {
              cx: &mut Context<Self>| {
                 if let SelectEvent::Confirm(Some(choice)) = event {
                     this.usage_window = *choice;
-                    cx.notify();
+                    this.refresh_dashboard_data(cx);
                 }
             },
         );
@@ -1063,6 +1037,16 @@ impl RouterApp {
             "pi",
             "cursor",
             "zcode",
+            "workbuddy",
+            "amp",
+            "deepseek",
+            "gemini",
+            "fx",
+            "hermes",
+            "kimi",
+            "ohmypi",
+            "openclaw",
+            "zai",
         ];
         let mut main_apps: Vec<String> = settings
             .main_apps
@@ -1073,10 +1057,9 @@ impl RouterApp {
             main_apps = vec![
                 "codex".into(),
                 "claude".into(),
-                "claude-desktop".into(),
                 "grok".into(),
-                "opencode".into(),
-                "pi".into(),
+                "zcode".into(),
+                "workbuddy".into(),
             ];
         }
 
@@ -1093,6 +1076,8 @@ impl RouterApp {
             minimize_to_tray: settings.minimize_to_tray,
             settings_tab: SettingsTab::General,
             dashboard_app_filter: None,
+            dashboard_data: None,
+            is_loading_dashboard: false,
             usage_breakdown_tab: UsageBreakdownTab::Model,
             usage_window: UsageWindowChoice::Today,
             usage_metric: UsageMetric::Cost,
@@ -1113,20 +1098,46 @@ impl RouterApp {
             logs: vec!["应用已启动并加载工作区".into()],
             env_tools: Vec::new(),
             is_inspecting_env: false,
+            auto_check_update: settings.auto_check_update,
+            skipped_update_version: settings.skipped_update_version,
+            is_checking_update: false,
             testing_provider_ids: std::collections::HashSet::new(),
             provider_health: std::collections::HashMap::new(),
         };
         app.reload();
+        app.refresh_dashboard_data(cx);
+
+        if app.auto_check_update {
+            let view_update = cx.entity().downgrade();
+            window
+                .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                    let mut cx = cx.clone();
+                    async move {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(3))
+                            .await;
+                        let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                            let _ = view_update.update(cx, |this, cx| {
+                                this.check_for_updates(false, window, cx);
+                            });
+                        });
+                    }
+                })
+                .detach();
+        }
 
         let view = cx.entity().downgrade();
+        let view_refresh = cx.entity().downgrade();
         window
             .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
                 let mut cx = cx.clone();
                 async move {
+                    let mut tick_ms: u64 = 0;
                     loop {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(150))
                             .await;
+                        tick_ms += 150;
                         let mut pending = Vec::new();
                         if let Ok(rx) = crate::get_deeplink_channel().1.lock() {
                             while let Ok(url) = rx.try_recv() {
@@ -1142,12 +1153,67 @@ impl RouterApp {
                                 });
                             });
                         }
+
+                        // Auto-refresh timer for dashboard every whole second
+                        if tick_ms % 1000 == 0 {
+                            let sec = tick_ms / 1000;
+                            let _ = cx.update(|_window: &mut Window, cx: &mut App| {
+                                let _ = view_refresh.update(cx, |this, cx| {
+                                    if this.should_auto_refresh_dashboard(sec) {
+                                        this.refresh_dashboard_data(cx);
+                                    }
+                                });
+                            });
+                        }
                     }
                 }
             })
             .detach();
 
         app
+    }
+
+    pub fn refresh_dashboard_data(&mut self, cx: &mut Context<Self>) {
+        let app_filter = self.dashboard_app_filter;
+        let window_choice = self.usage_window;
+        let metric = self.usage_metric;
+        self.is_loading_dashboard = true;
+        cx.notify();
+
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let data = crate::usage_service::load_dashboard_usage(
+                        app_filter,
+                        window_choice,
+                        metric,
+                    )
+                    .await;
+                    let _ = this.update(
+                        &mut cx,
+                        |this: &mut RouterApp, cx: &mut Context<RouterApp>| {
+                            this.dashboard_data = Some(data);
+                            this.is_loading_dashboard = false;
+                            cx.notify();
+                        },
+                    );
+                }
+            },
+        )
+        .detach();
+    }
+
+    pub fn should_auto_refresh_dashboard(&self, tick_seconds: u64) -> bool {
+        if self.route != Route::Dashboard || self.is_loading_dashboard {
+            return false;
+        }
+        match self.usage_refresh_interval {
+            UsageRefreshInterval::Off => false,
+            UsageRefreshInterval::Sec10 => tick_seconds % 10 == 0,
+            UsageRefreshInterval::Sec30 => tick_seconds % 30 == 0,
+            UsageRefreshInterval::Sec60 => tick_seconds % 60 == 0,
+        }
     }
 
     pub fn handle_deeplink_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1473,6 +1539,153 @@ impl RouterApp {
         self.logs.push(msg.into());
         notify_success(msg, window, cx);
         cx.notify();
+    }
+
+    pub fn show_update_dialog(
+        &self,
+        release: AppRelease,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_version = env!("CARGO_PKG_VERSION").to_string();
+        let auto_check = self.auto_check_update;
+        let view_toggle = cx.entity().downgrade();
+        let view_skip = cx.entity().downgrade();
+        let view_install = cx.entity().downgrade();
+
+        open_app_update_dialog(
+            window,
+            cx,
+            release,
+            current_version,
+            auto_check,
+            move |new_val, window, cx| {
+                let _ = view_toggle.update(cx, |this, cx| {
+                    this.toggle_auto_check_update(new_val, window, cx);
+                });
+            },
+            move |version, window, cx| {
+                let _ = view_skip.update(cx, |this, cx| {
+                    this.skip_update_version(version, window, cx);
+                });
+            },
+            move |url, _window, cx| {
+                let _ = view_install.update(cx, |this, cx| {
+                    this.logs.push(format!("已启动新版本下载: {url}"));
+                    cx.notify();
+                });
+            },
+        );
+    }
+
+    pub fn toggle_auto_check_update(
+        &mut self,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.auto_check_update = enabled;
+        if let Err(err) = self.workspace.set_auto_check_update(enabled) {
+            self.fail(err, window, cx);
+            return;
+        }
+        let msg = if enabled {
+            "已开启自动检查更新"
+        } else {
+            "已关闭自动检查更新"
+        };
+        self.logs.push(msg.into());
+        cx.notify();
+    }
+
+    pub fn skip_update_version(
+        &mut self,
+        version: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.skipped_update_version = Some(version.clone());
+        if let Err(err) = self
+            .workspace
+            .set_skipped_update_version(Some(version.clone()))
+        {
+            self.fail(err, window, cx);
+            return;
+        }
+        let msg = format!("已跳过版本 v{version} 的更新提示");
+        self.logs.push(msg.clone());
+        notify_success(&msg, window, cx);
+        cx.notify();
+    }
+
+    pub fn check_for_updates(&mut self, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_checking_update {
+            return;
+        }
+        self.is_checking_update = true;
+        cx.notify();
+
+        if manual {
+            window.push_notification(
+                Notification::info(t!("update.checking_update").to_string()),
+                cx,
+            );
+        }
+
+        let curr_ver = env!("CARGO_PKG_VERSION").to_string();
+        let skipped_ver = self.skipped_update_version.clone();
+        let view = cx.entity().downgrade();
+
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let check_res = cx
+                        .background_executor()
+                        .spawn(async move { check_app_update("aohun/router-switch", &curr_ver) })
+                        .await;
+
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.is_checking_update = false;
+                            match check_res {
+                                Ok(Some(release)) => {
+                                    // If skipped and not manual check, don't popup
+                                    if !manual && skipped_ver.as_deref() == Some(&release.version) {
+                                        cx.notify();
+                                        return;
+                                    }
+                                    this.show_update_dialog(release, window, cx);
+                                }
+                                Ok(None) => {
+                                    if manual {
+                                        let msg = t!(
+                                            "update.uptodate_tip",
+                                            version = env!("CARGO_PKG_VERSION")
+                                        )
+                                        .to_string();
+                                        window.push_notification(Notification::success(msg), cx);
+                                    }
+                                }
+                                Err(err) => {
+                                    if manual {
+                                        let msg = t!("update.check_failed", error = err.as_str())
+                                            .to_string();
+                                        window.push_notification(Notification::warning(msg), cx);
+                                    }
+                                }
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
+    }
+
+    pub fn preview_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sample = sample_app_release(env!("CARGO_PKG_VERSION"));
+        self.show_update_dialog(sample, window, cx);
     }
 
     fn refresh_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2817,17 +3030,54 @@ impl RouterApp {
 
     fn render_usage_line_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let default_data = DashboardUsageData::default();
+        let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
 
-        // Y-axis tick labels matching the screenshot
+        // Y-axis tick labels computed from actual data
         let (y_max_label, y_mid2_label, y_mid1_label, y_zero_label) =
             if self.usage_metric == UsageMetric::Cost {
-                ("$300.00", "$200.00", "$100.00", "0")
+                let max_c = (data.max_daily_cost * 1.15).max(1.0);
+                (
+                    format_currency(max_c),
+                    format_currency(max_c * 0.66),
+                    format_currency(max_c * 0.33),
+                    "$0.00".to_string(),
+                )
             } else {
-                ("300 M", "200 M", "100 M", "0")
+                let max_t = ((data.max_daily_tokens as f64) * 1.15).max(1000.0) as i64;
+                (
+                    format_tokens(max_t),
+                    format_tokens((max_t as f64 * 0.66) as i64),
+                    format_tokens((max_t as f64 * 0.33) as i64),
+                    "0".to_string(),
+                )
             };
 
-        // X-axis date labels matching the screenshot
-        let x_labels = vec!["7月26日", "8月10日", "8月24日"];
+        // X-axis date labels matching the range
+        let x_labels: Vec<String> = if data.daily_points.is_empty() {
+            vec!["—".to_string()]
+        } else if data.daily_points.len() == 1 {
+            vec![data.daily_points[0].label.clone()]
+        } else if data.daily_points.len() <= 3 {
+            data.daily_points.iter().map(|p| p.label.clone()).collect()
+        } else {
+            let n = data.daily_points.len();
+            vec![
+                data.daily_points[0].label.clone(),
+                data.daily_points[n / 2].label.clone(),
+                data.daily_points[n - 1].label.clone(),
+            ]
+        };
+
+        let daily_points = data.daily_points.clone();
+        let metric = self.usage_metric;
+        let max_val = if metric == UsageMetric::Cost {
+            (data.max_daily_cost * 1.15).max(1.0)
+        } else {
+            ((data.max_daily_tokens as f64) * 1.15).max(1000.0)
+        };
+
+        let stroke_color = rgb(0x10A37F);
 
         theme::tile(cx).w_full().child(
             v_flex()
@@ -2868,10 +3118,10 @@ impl RouterApp {
                                                 .ghost()
                                                 .xsmall()
                                                 .selected(self.usage_metric == UsageMetric::Cost)
-                                                .label("费用")
+                                                .label(t!("usage.metric_cost_btn").to_string())
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.usage_metric = UsageMetric::Cost;
-                                                    cx.notify();
+                                                    this.refresh_dashboard_data(cx);
                                                 })),
                                         )
                                         .child(
@@ -2879,19 +3129,17 @@ impl RouterApp {
                                                 .ghost()
                                                 .xsmall()
                                                 .selected(self.usage_metric == UsageMetric::Tokens)
-                                                .label("令牌")
+                                                .label(t!("usage.metric_tokens_btn").to_string())
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.usage_metric = UsageMetric::Tokens;
-                                                    cx.notify();
+                                                    this.refresh_dashboard_data(cx);
                                                 })),
                                         ),
                                 )
-                                // Legend Items (Claude Code, Codex)
-                                .child(
-                                    h_flex()
-                                        .items_center()
-                                        .gap(px(14.))
-                                        .child(
+                                // Dynamic Tool Legends
+                                .child(h_flex().items_center().gap(px(12.)).children(
+                                    if data.active_clients.is_empty() {
+                                        vec![
                                             h_flex()
                                                 .items_center()
                                                 .gap(px(5.))
@@ -2902,12 +3150,11 @@ impl RouterApp {
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(13.))
-                                                        .text_color(theme.foreground)
+                                                        .text_size(px(12.))
+                                                        .text_color(theme.muted_foreground)
                                                         .child("Claude Code"),
-                                                ),
-                                        )
-                                        .child(
+                                                )
+                                                .into_any_element(),
                                             h_flex()
                                                 .items_center()
                                                 .gap(px(5.))
@@ -2918,15 +3165,95 @@ impl RouterApp {
                                                 )
                                                 .child(
                                                     div()
-                                                        .text_size(px(13.))
-                                                        .text_color(theme.foreground)
+                                                        .text_size(px(12.))
+                                                        .text_color(theme.muted_foreground)
                                                         .child("Codex"),
-                                                ),
-                                        ),
-                                ),
+                                                )
+                                                .into_any_element(),
+                                        ]
+                                    } else {
+                                        data.active_clients
+                                            .iter()
+                                            .take(4)
+                                            .map(|client| {
+                                                let (icon, color, name): (
+                                                    CustomIcon,
+                                                    Hsla,
+                                                    String,
+                                                ) = match client.as_str() {
+                                                    "claude" => (
+                                                        CustomIcon::Claude,
+                                                        rgb(0xD97757).into(),
+                                                        "Claude Code".to_string(),
+                                                    ),
+                                                    "codex" => (
+                                                        CustomIcon::OpenAI,
+                                                        rgb(0x10A37F).into(),
+                                                        "Codex".to_string(),
+                                                    ),
+                                                    "grok" => (
+                                                        CustomIcon::Grok,
+                                                        rgb(0x8B5CF6).into(),
+                                                        "Grok".to_string(),
+                                                    ),
+                                                    "opencode" => (
+                                                        CustomIcon::OpenCode,
+                                                        rgb(0x6366F1).into(),
+                                                        "OpenCode".to_string(),
+                                                    ),
+                                                    "pi" => (
+                                                        CustomIcon::Pi,
+                                                        rgb(0x10B981).into(),
+                                                        "Pi".to_string(),
+                                                    ),
+                                                    "zcode" => (
+                                                        CustomIcon::ZCode,
+                                                        rgb(0x06B6D4).into(),
+                                                        "ZCode".to_string(),
+                                                    ),
+                                                    "cursor" => (
+                                                        CustomIcon::Cursor,
+                                                        rgb(0x06B6D4).into(),
+                                                        "Cursor".to_string(),
+                                                    ),
+                                                    "workbuddy" | "codebuddy" => (
+                                                        CustomIcon::WorkBuddy,
+                                                        rgb(0xF59E0B).into(),
+                                                        "WorkBuddy".to_string(),
+                                                    ),
+                                                    "gemini" => (
+                                                        CustomIcon::DeepSeek,
+                                                        rgb(0x3B82F6).into(),
+                                                        "Gemini".to_string(),
+                                                    ),
+                                                    other => (
+                                                        CustomIcon::Activity,
+                                                        rgb(0x64748B).into(),
+                                                        other.to_string(),
+                                                    ),
+                                                };
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(5.))
+                                                    .child(
+                                                        Icon::new(icon)
+                                                            .size(px(14.))
+                                                            .text_color(color),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(name),
+                                                    )
+                                                    .into_any_element()
+                                            })
+                                            .collect()
+                                    },
+                                )),
                         ),
                 )
-                // 2. Plot Area: Y-Axis Ticks + Horizontal Grid Lines + Vector Spline Curve + Tooltip
+                // 2. Plot Area: Y-Axis Ticks + Horizontal Grid Lines + Spline Area Canvas
                 .child(
                     h_flex()
                         .w_full()
@@ -2934,7 +3261,7 @@ impl RouterApp {
                         // Y-Axis Labels
                         .child(
                             v_flex()
-                                .w(px(56.))
+                                .w(px(64.))
                                 .h(px(170.))
                                 .justify_between()
                                 .items_end()
@@ -2975,195 +3302,142 @@ impl RouterApp {
                                                 .w_full()
                                                 .h(px(1.5))
                                                 .bg(theme.foreground.opacity(0.85)),
-                                        ), // Baseline at 0
-                                )
-                                // Smooth Vector Spline Area Curve SVG
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .right_0()
-                                        .bottom_0()
-                                        .child(
-                                            svg()
-                                                .path(CustomIcon::ChartCurve.path())
-                                                .w_full()
-                                                .h_full(),
                                         ),
                                 )
-                                // Vertical Guideline at 7月28日 (X ≈ 8%)
+                                // Dynamic Vector Spline Area Curve Canvas
                                 .child(
-                                    div()
-                                        .absolute()
-                                        .left(gpui::relative(0.08))
-                                        .top_0()
-                                        .bottom_0()
-                                        .w(px(1.))
-                                        .bg(theme.muted_foreground.opacity(0.55)),
-                                )
-                                // Floating Tooltip Card (7月28日)
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left(gpui::relative(0.08))
-                                        .top(px(6.))
-                                        .ml(px(8.))
-                                        .w(px(170.))
-                                        .p(px(10.))
-                                        .rounded(px(8.))
-                                        .bg(theme.background)
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .shadow_lg()
-                                        .child(
-                                            v_flex()
-                                                .w_full()
-                                                .gap(px(6.))
-                                                // Tooltip Date Header
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .text_color(theme.muted_foreground)
-                                                        .child("7月28日"),
-                                                )
-                                                // Row 1: Claude Code
-                                                .child(
-                                                    h_flex()
-                                                        .w_full()
-                                                        .justify_between()
-                                                        .items_center()
-                                                        .child(
-                                                            h_flex()
-                                                                .items_center()
-                                                                .gap(px(6.))
-                                                                .child(
-                                                                    Icon::new(CustomIcon::Claude)
-                                                                        .size(px(13.))
-                                                                        .text_color(rgb(0xD97757)),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .text_size(px(12.))
-                                                                        .text_color(
-                                                                            theme.foreground,
-                                                                        )
-                                                                        .child("Claude Code"),
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(12.))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .text_color(theme.foreground)
-                                                                .child("$0.00"),
+                                    gpui::canvas(
+                                        |_bounds, _window, _cx| (),
+                                        move |bounds, _state, window, _cx| {
+                                            if daily_points.is_empty() {
+                                                return;
+                                            }
+
+                                            let n = daily_points.len();
+                                            let top_pad = 10.0;
+                                            let bot_pad = 10.0;
+                                            let width_f32 = f32::from(bounds.size.width);
+                                            let height_f32 = f32::from(bounds.size.height);
+                                            let draw_h = (height_f32 - top_pad - bot_pad).max(10.0);
+
+                                            let mut pts: Vec<gpui::Point<gpui::Pixels>> =
+                                                Vec::with_capacity(n);
+                                            for (i, pt) in daily_points.iter().enumerate() {
+                                                let x_norm = if n > 1 {
+                                                    i as f32 / (n - 1) as f32
+                                                } else {
+                                                    0.5
+                                                };
+                                                let x =
+                                                    bounds.origin.x + gpui::px(x_norm * width_f32);
+                                                let val = if metric == UsageMetric::Cost {
+                                                    pt.cost
+                                                } else {
+                                                    pt.tokens as f64
+                                                };
+                                                let y_norm = (val / max_val).clamp(0.0, 1.0) as f32;
+                                                let y = bounds.origin.y
+                                                    + gpui::px(top_pad + draw_h * (1.0 - y_norm));
+                                                pts.push(gpui::point(x, y));
+                                            }
+
+                                            if pts.len() == 1 {
+                                                let p = pts[0];
+                                                window.paint_quad(gpui::fill(
+                                                    gpui::Bounds::new(
+                                                        p - gpui::point(
+                                                            gpui::px(4.0),
+                                                            gpui::px(4.0),
                                                         ),
-                                                )
-                                                // Row 2: Codex
-                                                .child(
-                                                    h_flex()
-                                                        .w_full()
-                                                        .justify_between()
-                                                        .items_center()
-                                                        .child(
-                                                            h_flex()
-                                                                .items_center()
-                                                                .gap(px(6.))
-                                                                .child(
-                                                                    Icon::new(CustomIcon::OpenAI)
-                                                                        .size(px(13.))
-                                                                        .text_color(rgb(0x10A37F)),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .text_size(px(12.))
-                                                                        .text_color(
-                                                                            theme.foreground,
-                                                                        )
-                                                                        .child("Codex"),
-                                                                ),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(12.))
-                                                                .font_weight(FontWeight::MEDIUM)
-                                                                .text_color(theme.foreground)
-                                                                .child("$0.00"),
+                                                        gpui::size(gpui::px(8.0), gpui::px(8.0)),
+                                                    ),
+                                                    stroke_color,
+                                                ));
+                                                return;
+                                            }
+
+                                            // Draw Area Fill under curve
+                                            let mut fill_builder = gpui::PathBuilder::fill();
+                                            let bottom_y = bounds.origin.y + bounds.size.height;
+                                            fill_builder.move_to(gpui::point(pts[0].x, bottom_y));
+                                            fill_builder.line_to(pts[0]);
+
+                                            for i in 0..pts.len() - 1 {
+                                                let p0 = pts[i];
+                                                let p1 = pts[i + 1];
+                                                let mid = gpui::point(
+                                                    (p0.x + p1.x) / 2.0,
+                                                    (p0.y + p1.y) / 2.0,
+                                                );
+                                                fill_builder.curve_to(mid, p0);
+                                                fill_builder.curve_to(p1, mid);
+                                            }
+
+                                            fill_builder.line_to(gpui::point(
+                                                pts[pts.len() - 1].x,
+                                                bottom_y,
+                                            ));
+                                            fill_builder.line_to(gpui::point(pts[0].x, bottom_y));
+
+                                            if let Ok(fill_path) = fill_builder.build() {
+                                                window.paint_path(fill_path, rgba(0x10A37F25));
+                                            }
+
+                                            // Draw Stroke Curve
+                                            let mut stroke_builder =
+                                                gpui::PathBuilder::stroke(gpui::px(2.0));
+                                            stroke_builder.move_to(pts[0]);
+                                            for i in 0..pts.len() - 1 {
+                                                let p0 = pts[i];
+                                                let p1 = pts[i + 1];
+                                                let mid = gpui::point(
+                                                    (p0.x + p1.x) / 2.0,
+                                                    (p0.y + p1.y) / 2.0,
+                                                );
+                                                stroke_builder.curve_to(mid, p0);
+                                                stroke_builder.curve_to(p1, mid);
+                                            }
+                                            if let Ok(stroke_path) = stroke_builder.build() {
+                                                window.paint_path(stroke_path, stroke_color);
+                                            }
+
+                                            // Draw Points
+                                            for p in &pts {
+                                                window.paint_quad(gpui::fill(
+                                                    gpui::Bounds::new(
+                                                        *p - gpui::point(
+                                                            gpui::px(2.5),
+                                                            gpui::px(2.5),
                                                         ),
-                                                )
-                                                // Horizontal Divider
-                                                .child(
-                                                    div()
-                                                        .w_full()
-                                                        .h(px(1.))
-                                                        .bg(theme.border.opacity(0.5)),
-                                                )
-                                                // Total Summary Row
-                                                .child(
-                                                    h_flex()
-                                                        .w_full()
-                                                        .justify_between()
-                                                        .items_center()
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(12.))
-                                                                .font_weight(FontWeight::SEMIBOLD)
-                                                                .text_color(theme.foreground)
-                                                                .child("总计"),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(12.))
-                                                                .font_weight(FontWeight::SEMIBOLD)
-                                                                .text_color(theme.foreground)
-                                                                .child("$0.00"),
-                                                        ),
-                                                ),
-                                        ),
+                                                        gpui::size(gpui::px(5.0), gpui::px(5.0)),
+                                                    ),
+                                                    stroke_color,
+                                                ));
+                                            }
+                                        },
+                                    )
+                                    .w_full()
+                                    .h_full(),
                                 ),
                         ),
                 )
-                // 3. X-Axis Date Labels
+                // 3. X-Axis Labels below plot area
                 .child(
                     h_flex()
                         .w_full()
-                        .pl(px(66.))
-                        .pr(px(6.))
+                        .pl(px(74.))
                         .justify_between()
                         .text_size(px(11.5))
                         .text_color(theme.muted_foreground)
-                        .children(x_labels.into_iter().map(|lbl| div().child(lbl))),
+                        .children(x_labels.into_iter().map(|label| div().child(label))),
                 ),
         )
     }
 
     fn render_dashboard_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-
-        let is_claude_selected = self.dashboard_app_filter == Some(AppKind::Claude);
-        let is_codex_selected = self.dashboard_app_filter == Some(AppKind::Codex);
-        let is_grok_selected = self.dashboard_app_filter == Some(AppKind::Grok);
-
-        let total_cost = if is_claude_selected {
-            297.57
-        } else if is_codex_selected {
-            3.16
-        } else if is_grok_selected {
-            0.40
-        } else {
-            300.73
-        };
-
-        let total_tokens_display = if is_claude_selected {
-            "263 M"
-        } else if is_codex_selected {
-            "2.15 M"
-        } else if is_grok_selected {
-            "296 K"
-        } else {
-            "265 M"
-        };
+        let default_data = DashboardUsageData::default();
+        let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
 
         v_flex()
             .w_full()
@@ -3193,7 +3467,7 @@ impl RouterApp {
                                     .label(t!("usage.app_all").to_string())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.dashboard_app_filter = None;
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // Claude
@@ -3211,7 +3485,7 @@ impl RouterApp {
                                             } else {
                                                 Some(AppKind::Claude)
                                             };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // Codex
@@ -3229,7 +3503,7 @@ impl RouterApp {
                                             } else {
                                                 Some(AppKind::Codex)
                                             };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // Gemini
@@ -3258,7 +3532,7 @@ impl RouterApp {
                                             } else {
                                                 Some(AppKind::Grok)
                                             };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // OpenCode
@@ -3277,7 +3551,7 @@ impl RouterApp {
                                         } else {
                                             Some(AppKind::OpenCode)
                                         };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // Pi
@@ -3295,7 +3569,7 @@ impl RouterApp {
                                             } else {
                                                 Some(AppKind::Pi)
                                             };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // ZCode
@@ -3313,7 +3587,7 @@ impl RouterApp {
                                             } else {
                                                 Some(AppKind::ZCode)
                                             };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             )
                             // WorkBuddy
@@ -3332,7 +3606,7 @@ impl RouterApp {
                                         } else {
                                             Some(AppKind::WorkBuddy)
                                         };
-                                        cx.notify();
+                                        this.refresh_dashboard_data(cx);
                                     })),
                             ),
                     )
@@ -3358,6 +3632,7 @@ impl RouterApp {
                                     .icon(CustomIcon::RotateCw)
                                     .tooltip(t!("about.refresh").to_string())
                                     .on_click(cx.listener(|this, _, window, cx| {
+                                        this.refresh_dashboard_data(cx);
                                         let msg = if this.language == AppLanguage::En {
                                             "Dashboard stats refreshed"
                                         } else {
@@ -3395,9 +3670,9 @@ impl RouterApp {
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.foreground)
                                         .child(if self.usage_metric == UsageMetric::Cost {
-                                            format!("${:.2}", total_cost)
+                                            data.total_cost_formatted.clone()
                                         } else {
-                                            total_tokens_display.to_string()
+                                            data.total_tokens_formatted.clone()
                                         }),
                                 )
                                 .child(
@@ -3405,8 +3680,11 @@ impl RouterApp {
                                         .text_size(px(11.))
                                         .text_color(theme.muted_foreground)
                                         .child(
-                                            t!("usage.per_active_day", count = "22.1 M")
-                                                .to_string(),
+                                            t!(
+                                                "usage.per_active_day",
+                                                count = data.per_active_day_formatted.as_str()
+                                            )
+                                            .to_string(),
                                         ),
                                 ),
                         )
@@ -3429,15 +3707,19 @@ impl RouterApp {
                                         .text_size(px(17.))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.foreground)
-                                        .child("258 M"),
+                                        .child(data.cached_input_formatted.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(theme.muted_foreground)
                                         .child(
-                                            t!("usage.observed_input_share", share = "99.8%")
-                                                .to_string(),
+                                            t!(
+                                                "usage.observed_input_share",
+                                                share =
+                                                    data.observed_input_share_formatted.as_str()
+                                            )
+                                            .to_string(),
                                         ),
                                 ),
                         )
@@ -3460,14 +3742,18 @@ impl RouterApp {
                                         .text_size(px(17.))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.foreground)
-                                        .child("596 K"),
+                                        .child(data.uncached_input_formatted.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(theme.muted_foreground)
                                         .child(
-                                            t!("usage.cache_writes", count = "5.69M").to_string(),
+                                            t!(
+                                                "usage.cache_writes",
+                                                count = data.cache_write_formatted.as_str()
+                                            )
+                                            .to_string(),
                                         ),
                                 ),
                         )
@@ -3490,15 +3776,18 @@ impl RouterApp {
                                         .text_size(px(17.))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(theme.foreground)
-                                        .child("969 K"),
+                                        .child(data.output_formatted.clone()),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(theme.muted_foreground)
                                         .child(
-                                            t!("usage.includes_reasoning", count = "10.5 K")
-                                                .to_string(),
+                                            t!(
+                                                "usage.includes_reasoning",
+                                                count = data.reasoning_formatted.as_str()
+                                            )
+                                            .to_string(),
                                         ),
                                 ),
                         )
@@ -3521,11 +3810,18 @@ impl RouterApp {
                                         .text_size(px(17.))
                                         .font_weight(FontWeight::BOLD)
                                         .text_color(rgb(0x10B981))
-                                        .child("$1,843.73"),
+                                        .child(data.cache_savings_cost_formatted.clone()),
                                 )
-                                .child(div().text_size(px(11.)).text_color(rgb(0x10B981)).child(
-                                    t!("usage.raw_cost_multiple", multiple = "6.1").to_string(),
-                                )),
+                                .child(
+                                    div().text_size(px(11.)).text_color(rgb(0x10B981)).child(
+                                        t!(
+                                            "usage.raw_cost_multiple",
+                                            multiple =
+                                                data.cache_savings_multiple_formatted.as_str()
+                                        )
+                                        .to_string(),
+                                    ),
+                                ),
                         ),
                 ),
             )
@@ -4723,6 +5019,58 @@ impl RouterApp {
                                             }))
                                             .child(self.render_switch(self.minimize_to_tray, cx)),
                                     ),
+                            )
+                            .child(
+                                // 自动检查应用更新
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .p(px(8.))
+                                    .rounded(px(8.))
+                                    .bg(theme.secondary.opacity(0.4))
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .size(px(32.))
+                                                    .rounded(px(8.))
+                                                    .bg(theme.border)
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .child(Icon::new(CustomIcon::RotateCw).size(px(16.))),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.foreground)
+                                                            .child(t!("update.auto_check_settings").to_string()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("update.auto_check_settings_desc").to_string()),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("switch-auto-check-update")
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                let new_val = !this.auto_check_update;
+                                                this.toggle_auto_check_update(new_val, window, cx);
+                                            }))
+                                            .child(self.render_switch(self.auto_check_update, cx)),
+                                    ),
                             ),
                     ),
                 )
@@ -4731,73 +5079,8 @@ impl RouterApp {
 
     fn render_usage_daily_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-
-        let models = [
-            (
-                "claude-3-7-sonnet",
-                CustomIcon::Claude,
-                rgb(0xD97757),
-                "$220.51",
-                "73.3%",
-                "156 M",
-            ),
-            (
-                "claude-3-5-sonnet",
-                CustomIcon::Claude,
-                rgb(0xD97757),
-                "$77.06",
-                "25.6%",
-                "107 M",
-            ),
-            (
-                "gpt-4o",
-                CustomIcon::OpenAI,
-                rgb(0x10A37F),
-                "$2.41",
-                "0.8%",
-                "1.37 M",
-            ),
-            (
-                "grok-2",
-                CustomIcon::Grok,
-                rgb(0x8B5CF6),
-                "$0.25",
-                "0.1%",
-                "162 K",
-            ),
-            (
-                "o3-mini",
-                CustomIcon::OpenAI,
-                rgb(0x10A37F),
-                "$0.15",
-                "0.1%",
-                "127 K",
-            ),
-            (
-                "grok-beta",
-                CustomIcon::Grok,
-                rgb(0x8B5CF6),
-                "$0.15",
-                "0.0%",
-                "134 K",
-            ),
-            (
-                "gpt-4o-mini",
-                CustomIcon::OpenAI,
-                rgb(0x10A37F),
-                "$0.12",
-                "0.0%",
-                "35.7 K",
-            ),
-            (
-                "claude-3-haiku",
-                CustomIcon::Claude,
-                rgb(0xD97757),
-                "$0.08",
-                "0.0%",
-                "345 K",
-            ),
-        ];
+        let default_data = DashboardUsageData::default();
+        let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
 
         v_flex()
             .w_full()
@@ -4840,10 +5123,24 @@ impl RouterApp {
                         ),
                     ),
             )
-            .children(
-                models
-                    .iter()
-                    .map(|(name, icon, color, cost, share, tokens)| {
+            .child(if data.model_rows.is_empty() {
+                div()
+                    .w_full()
+                    .py(px(24.))
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .text_color(theme.muted_foreground)
+                    .child(if self.is_loading_dashboard {
+                        t!("usage.loading").to_string()
+                    } else {
+                        t!("usage.no_records").to_string()
+                    })
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .children(data.model_rows.iter().map(|row| {
                         h_flex()
                             .w_full()
                             .py(px(7.))
@@ -4855,15 +5152,15 @@ impl RouterApp {
                                     .flex_1()
                                     .min_w_0()
                                     .items_center()
-                                    .gap(px(8.))
-                                    .child(Icon::new(*icon).size(px(13.)).text_color(*color))
+                                    .gap(px(7.))
+                                    .child(
+                                        Icon::new(row.app_icon).size(px(14.)).text_color(row.color),
+                                    )
                                     .child(
                                         div()
-                                            .min_w_0()
                                             .truncate()
-                                            .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.foreground)
-                                            .child(*name),
+                                            .child(row.display_name.clone()),
                                     ),
                             )
                             .child(
@@ -4871,9 +5168,8 @@ impl RouterApp {
                                     h_flex()
                                         .justify_end()
                                         .w_full()
-                                        .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.foreground)
-                                        .child(*cost),
+                                        .child(row.cost_formatted.clone()),
                                 ),
                             )
                             .child(
@@ -4882,7 +5178,7 @@ impl RouterApp {
                                         .justify_end()
                                         .w_full()
                                         .text_color(theme.muted_foreground)
-                                        .child(*share),
+                                        .child(row.share_formatted.clone()),
                                 ),
                             )
                             .child(
@@ -4891,25 +5187,18 @@ impl RouterApp {
                                         .justify_end()
                                         .w_full()
                                         .text_color(theme.muted_foreground)
-                                        .child(*tokens),
+                                        .child(row.tokens_formatted.clone()),
                                 ),
                             )
-                    }),
-            )
+                    }))
+                    .into_any_element()
+            })
     }
 
     fn render_usage_day_table(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-
-        let days = [
-            ("8月24日", "$0.42", "$12.80", "$13.22", "11.8 M"),
-            ("8月23日", "$0.21", "$24.50", "$24.71", "21.3 M"),
-            ("8月22日", "$0.55", "$18.30", "$18.85", "16.4 M"),
-            ("8月21日", "$0.30", "$15.60", "$15.90", "14.2 M"),
-            ("8月20日", "$0.18", "$32.10", "$32.28", "28.6 M"),
-            ("8月19日", "$0.45", "$28.40", "$28.85", "25.1 M"),
-            ("8月18日", "$0.12", "$19.90", "$20.02", "17.5 M"),
-        ];
+        let default_data = DashboardUsageData::default();
+        let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
 
         v_flex()
             .w_full()
@@ -4928,17 +5217,7 @@ impl RouterApp {
                             .child(t!("usage.col_date").to_string()),
                     )
                     .child(
-                        div()
-                            .w(px(80.))
-                            .child(h_flex().justify_end().w_full().child("Codex")),
-                    )
-                    .child(
-                        div()
-                            .w(px(90.))
-                            .child(h_flex().justify_end().w_full().child("Claude Code")),
-                    )
-                    .child(
-                        div().w(px(80.)).child(
+                        div().w(px(84.)).child(
                             h_flex()
                                 .justify_end()
                                 .w_full()
@@ -4946,7 +5225,15 @@ impl RouterApp {
                         ),
                     )
                     .child(
-                        div().w(px(80.)).child(
+                        div().w(px(64.)).child(
+                            h_flex()
+                                .justify_end()
+                                .w_full()
+                                .child(t!("usage.col_share").to_string()),
+                        ),
+                    )
+                    .child(
+                        div().w(px(84.)).child(
                             h_flex()
                                 .justify_end()
                                 .w_full()
@@ -4954,59 +5241,67 @@ impl RouterApp {
                         ),
                     ),
             )
-            .children(days.iter().map(|(day, codex, claude, total, tokens)| {
-                h_flex()
+            .child(if data.day_rows.is_empty() {
+                div()
                     .w_full()
-                    .py(px(7.))
-                    .border_b_1()
-                    .border_color(theme.border.opacity(0.4))
+                    .py(px(24.))
+                    .flex()
+                    .justify_center()
                     .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.foreground)
-                            .child(*day),
-                    )
-                    .child(
-                        div().w(px(80.)).child(
-                            h_flex()
-                                .justify_end()
-                                .w_full()
-                                .text_color(theme.muted_foreground)
-                                .child(*codex),
-                        ),
-                    )
-                    .child(
-                        div().w(px(90.)).child(
-                            h_flex()
-                                .justify_end()
-                                .w_full()
-                                .text_color(theme.muted_foreground)
-                                .child(*claude),
-                        ),
-                    )
-                    .child(
-                        div().w(px(80.)).child(
-                            h_flex()
-                                .justify_end()
-                                .w_full()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.foreground)
-                                .child(*total),
-                        ),
-                    )
-                    .child(
-                        div().w(px(80.)).child(
-                            h_flex()
-                                .justify_end()
-                                .w_full()
-                                .text_color(theme.muted_foreground)
-                                .child(*tokens),
-                        ),
-                    )
-            }))
+                    .text_color(theme.muted_foreground)
+                    .child(if self.is_loading_dashboard {
+                        t!("usage.loading").to_string()
+                    } else {
+                        t!("usage.no_records").to_string()
+                    })
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .children(data.day_rows.iter().map(|row| {
+                        h_flex()
+                            .w_full()
+                            .py(px(7.))
+                            .border_b_1()
+                            .border_color(theme.border.opacity(0.4))
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_color(theme.foreground)
+                                    .child(row.date_display.clone()),
+                            )
+                            .child(
+                                div().w(px(84.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .text_color(theme.foreground)
+                                        .child(row.cost_formatted.clone()),
+                                ),
+                            )
+                            .child(
+                                div().w(px(64.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .text_color(theme.muted_foreground)
+                                        .child(row.share_formatted.clone()),
+                                ),
+                            )
+                            .child(
+                                div().w(px(84.)).child(
+                                    h_flex()
+                                        .justify_end()
+                                        .w_full()
+                                        .text_color(theme.muted_foreground)
+                                        .child(row.tokens_formatted.clone()),
+                                ),
+                            )
+                    }))
+                    .into_any_element()
+            })
     }
 
     fn render_advanced_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5510,7 +5805,7 @@ impl RouterApp {
                                                     .child(
                                                         Tag::primary()
                                                             .small()
-                                                            .child("版本 v0.1.0"),
+                                                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                                                     ),
                                             )
                                             .child(
@@ -5526,13 +5821,13 @@ impl RouterApp {
                                     .items_center()
                                     .gap(px(8.))
                                     .child(
-                                        Button::new("about-website")
+                                        Button::new("about-preview-update")
                                             .outline()
                                             .small()
-                                            .icon(IconName::Globe)
-                                            .label(t!("about.website"))
-                                            .on_click(cx.listener(|_, _, window, cx| {
-                                                window.push_notification(Notification::info("正在访问官方网站..."), cx);
+                                            .icon(IconName::Bell)
+                                            .label(t!("update.preview_dialog"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.preview_update_dialog(window, cx);
                                             })),
                                     )
                                     .child(
@@ -5542,6 +5837,7 @@ impl RouterApp {
                                             .icon(IconName::GitHub)
                                             .label("GitHub")
                                             .on_click(cx.listener(|_, _, window, cx| {
+                                                crate::update_dialog::open_url("https://github.com/aohun/router-switch");
                                                 window.push_notification(Notification::info("https://github.com/aohun/router-switch"), cx);
                                             })),
                                     )
@@ -5551,18 +5847,23 @@ impl RouterApp {
                                             .small()
                                             .icon(IconName::File)
                                             .label(t!("about.changelog"))
-                                            .on_click(cx.listener(|_, _, window, cx| {
-                                                window.push_notification(Notification::info("当前版本 v0.1.0：支持 Codex, Claude Code, Grok Build, OpenCode 与 Pi"), cx);
+                                            .on_click(cx.listener(|_, _, _window, _cx| {
+                                                crate::update_dialog::open_url("https://github.com/aohun/router-switch/releases");
                                             })),
                                     )
                                     .child(
                                         Button::new("about-check-update")
                                             .primary()
                                             .small()
+                                            .disabled(self.is_checking_update)
                                             .icon(CustomIcon::RotateCw)
-                                            .label(t!("about.check_update"))
-                                            .on_click(cx.listener(|_, _, window, cx| {
-                                                window.push_notification(Notification::success("当前已是最新版本 v0.1.0"), cx);
+                                            .label(if self.is_checking_update {
+                                                t!("update.checking_update")
+                                            } else {
+                                                t!("about.check_update")
+                                            })
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.check_for_updates(true, window, cx);
                                             })),
                                     ),
                             ),

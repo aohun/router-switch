@@ -127,6 +127,10 @@ pub struct AppSettings {
     pub launch_on_startup: bool,
     #[serde(default = "default_minimize_to_tray")]
     pub minimize_to_tray: bool,
+    #[serde(default = "default_auto_check_update")]
+    pub auto_check_update: bool,
+    #[serde(default)]
+    pub skipped_update_version: Option<String>,
     #[serde(default)]
     pub log_config: LogConfig,
 }
@@ -135,17 +139,17 @@ fn default_main_apps() -> Vec<String> {
     vec![
         "codex".into(),
         "claude".into(),
-        "claude-desktop".into(),
         "grok".into(),
-        "opencode".into(),
-        "pi".into(),
-        "cursor".into(),
         "zcode".into(),
         "workbuddy".into(),
     ]
 }
 
 fn default_minimize_to_tray() -> bool {
+    true
+}
+
+fn default_auto_check_update() -> bool {
     true
 }
 
@@ -173,6 +177,8 @@ impl Default for AppSettings {
             main_apps: default_main_apps(),
             launch_on_startup: false,
             minimize_to_tray: true,
+            auto_check_update: true,
+            skipped_update_version: None,
             log_config: LogConfig::default(),
         }
     }

@@ -10,6 +10,7 @@ members = [
     "crates/adapters-pi",
     "crates/adapters-zcode",
     "crates/adapters-workbuddy",
+    "crates/tokens-core",
     "crates/store",
     "crates/session",
     "crates/ui",
@@ -35,6 +36,7 @@ adapters-workbuddy = { path = "crates/adapters-workbuddy" }
 store = { path = "crates/store" }
 session = { path = "crates/session" }
 ui = { path = "crates/ui" }
+tokens-core = { path = "crates/tokens-core" }
 
 anyhow = "1"
 dirs = "6"
@@ -46,7 +48,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 toml = "0.8"
 tracing = "0.1"
 tempfile = "3"
@@ -56,3 +58,15 @@ base64 = "0.22"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
+rayon = "1.10"
+simd-json = "0.14"
+bincode = "1.3"
+walkdir = "2"
+chrono-tz = "0.10"
+reqwest = { version = "0.12", features = ["json", "native-tls-vendored"], default-features = false }
+once_cell = "1"
+zstd = "0.13"
+sha2 = "0.10"
+libc = "0.2"
+fs2 = "0.4"
+serial_test = "3"
