@@ -150,12 +150,12 @@ impl Provider for OpenAiChatProvider {
                 response = request.send() => response,
             };
             let response = response.map_err(|err| GatewayError::Provider(format!("OpenAI request failed: {err}")))?;
-            if !response.status().is_success() {
-                let status = response.status();
+            let status = response.status();
+            if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
                 Err(GatewayError::Provider(format!("OpenAI error {status}: {error_text}")))?;
+                return;
             }
-
             let mut event_stream = response.bytes_stream().eventsource();
             let mut tools = BTreeMap::<usize, ChatToolState>::new();
             let mut finish = None;

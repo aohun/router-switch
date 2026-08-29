@@ -12,7 +12,6 @@ use axum::{
 };
 use bytes::Bytes;
 use domain::{CursorKind, CursorSettings};
-use futures_util::StreamExt;
 use parking_lot::RwLock;
 use prost::Message;
 use serde_json::json;
@@ -89,13 +88,13 @@ fn run_request(text: &str, model: &str) -> pb::AgentClientMessage {
 }
 
 struct ScriptedProvider {
-    rounds: Mutex<Vec<Vec<ModelEvent>>>,
+    rounds: Arc<Mutex<Vec<Vec<ModelEvent>>>>,
 }
 
 impl ScriptedProvider {
     fn new(rounds: Vec<Vec<ModelEvent>>) -> SharedProvider {
         Arc::new(Self {
-            rounds: Mutex::new(rounds),
+            rounds: Arc::new(Mutex::new(rounds)),
         })
     }
 }
@@ -109,7 +108,8 @@ impl Provider for ScriptedProvider {
         let rounds = self.rounds.clone();
         Box::pin(stream! {
             let events = {
-                let mut guard = rounds.lock().await;
+                let mut guard: tokio::sync::MutexGuard<'_, Vec<Vec<ModelEvent>>> =
+                    rounds.lock().await;
                 if guard.is_empty() {
                     vec![ModelEvent::TextDelta("fallback".into()), ModelEvent::Done(FinishReason::Stop)]
                 } else {

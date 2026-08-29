@@ -36,6 +36,8 @@ pub enum GatewayError {
     Http(#[from] reqwest::Error),
     #[error(transparent)]
     Hex(#[from] hex::FromHexError),
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
 }
 
 impl IntoResponse for GatewayError {

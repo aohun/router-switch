@@ -42,8 +42,12 @@ pub fn thinking_delta(text: String) -> pb::AgentServerMessage {
 pub fn turn_ended(usage: Option<Usage>) -> pb::AgentServerMessage {
     server_interaction(pb::interaction_update::Message::TurnEnded(
         pb::TurnEndedUpdate {
-            input_tokens: usage.and_then(|u| u.input_tokens.map(|v| v as i64)),
-            output_tokens: usage.and_then(|u| u.output_tokens.map(|v| v as i64)),
+            input_tokens: usage
+                .as_ref()
+                .and_then(|u| u.input_tokens.map(|v| v as i64)),
+            output_tokens: usage
+                .as_ref()
+                .and_then(|u| u.output_tokens.map(|v| v as i64)),
             cache_read_tokens: None,
             cache_write_tokens: None,
             reasoning_tokens: None,

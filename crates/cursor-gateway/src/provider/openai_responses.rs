@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{FinishReason, ModelInvocation, Role, Usage};
-use crate::{GatewayError, Result};
+use crate::GatewayError;
 
 use super::{merge_extra_params, ModelEvent, Provider, ProviderStream};
 
@@ -129,12 +129,12 @@ impl Provider for OpenAiResponsesProvider {
                 response = request.send() => response,
             };
             let response = response.map_err(|err| GatewayError::Provider(format!("OpenAI Responses request failed: {err}")))?;
-            if !response.status().is_success() {
-                let status = response.status();
+            let status = response.status();
+            if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
                 Err(GatewayError::Provider(format!("Responses error {status}: {error_text}")))?;
+                return;
             }
-
             let mut event_stream = response.bytes_stream().eventsource();
             let mut tool_index = 0usize;
             let mut finish = FinishReason::Stop;

@@ -25,7 +25,7 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PromptSpec {
     pub instructions: String,
     pub tools: Vec<ToolDefinition>,
