@@ -10,7 +10,6 @@ use crate::{
     interaction,
     lifecycle,
     model::{FinishReason, ModelInvocation, ProviderMessage, ToolCall, Usage},
-    prompting::Mode,
     provider::ModelEvent,
     proto::agent::v1 as pb,
     sessions::{CursorSessionHandle, CursorSessionRegistry},

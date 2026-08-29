@@ -48,4 +48,3 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-http-body-util = "0.1"
