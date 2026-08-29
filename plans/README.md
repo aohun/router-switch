@@ -4,7 +4,7 @@ Execution order is top to bottom. Status: TODO, IN PROGRESS, DONE, BLOCKED.
 
 | Plan | Title | Status | Priority | Effort | Depends on |
 | --- | --- | --- | --- | --- | --- |
-| [001](001-cursor-agent-gateway.md) | Rewrite Cursor Agent gateway from scratch | TODO | P1 | L | none |
+| [001](001-cursor-agent-gateway.md) | Rewrite Cursor Agent gateway from scratch | DONE | P1 | L | none |
 
 ## Notes
 
