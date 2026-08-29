@@ -8,46 +8,46 @@ pub type Result<T, E = GatewayError> = std::result::Result<T, E>;
 
 #[derive(Debug, Error)]
 pub enum GatewayError {
-    #[error("Config error: {0}")]
+    #[error("config: {0}")]
     Config(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
-
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("Protocol error: {0}")]
+    #[error("protocol: {0}")]
     Protocol(String),
-
-    #[error("Provider error: {0}")]
+    #[error("provider: {0}")]
     Provider(String),
-
-    #[error("Upstream error: {0}")]
+    #[error("upstream: {0}")]
     Upstream(String),
-
-    #[error("Protobuf error: {0}")]
-    Protobuf(#[from] prost::DecodeError),
-
-    #[error("Protobuf encode error: {0}")]
-    ProtobufEncode(#[from] prost::EncodeError),
-
-    #[error("Store error: {0}")]
+    #[error("store: {0}")]
     Store(String),
-
-    #[error("{0}")]
-    Other(String),
+    #[error("run not found: {0}")]
+    RunNotFound(String),
+    #[error("cancelled")]
+    Cancelled,
+    #[error("decode: {0}")]
+    Decode(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Encode(#[from] prost::EncodeError),
+    #[error(transparent)]
+    ProstDecode(#[from] prost::DecodeError),
+    #[error(transparent)]
+    Http(#[from] reqwest::Error),
+    #[error(transparent)]
+    Hex(#[from] hex::FromHexError),
 }
 
 impl IntoResponse for GatewayError {
     fn into_response(self) -> Response {
-        let status = match self {
-            GatewayError::Protocol(_) => StatusCode::BAD_REQUEST,
-            GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
+        let status = match &self {
+            GatewayError::Protocol(_) | GatewayError::Decode(_) | GatewayError::Hex(_) => {
+                StatusCode::BAD_REQUEST
+            }
+            GatewayError::Upstream(_) | GatewayError::Http(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Provider(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            GatewayError::RunNotFound(_) => StatusCode::NOT_FOUND,
+            GatewayError::Cancelled => StatusCode::REQUEST_TIMEOUT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()

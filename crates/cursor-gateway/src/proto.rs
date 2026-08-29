@@ -1,14 +1,19 @@
+pub mod agent {
+    #[allow(clippy::large_enum_variant)]
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/agent.v1.rs"));
+    }
+}
+
 pub mod aiserver {
     pub mod v1 {
-        use prost::Message;
-
-        #[derive(Clone, PartialEq, Message)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct BidiRequestId {
             #[prost(string, tag = "1")]
             pub request_id: String,
         }
 
-        #[derive(Clone, PartialEq, Message)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct BidiAppendRequest {
             #[prost(string, tag = "1")]
             pub data: String,
@@ -20,10 +25,50 @@ pub mod aiserver {
             pub data_binary: Vec<u8>,
         }
 
-        #[derive(Clone, Copy, PartialEq, Message)]
+        #[derive(Clone, Copy, PartialEq, ::prost::Message)]
         pub struct BidiAppendResponse {}
 
-        #[derive(Clone, PartialEq, Message)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct CustomErrorDetails {
+            #[prost(string, tag = "1")]
+            pub title: String,
+            #[prost(string, tag = "2")]
+            pub detail: String,
+            #[prost(bool, optional, tag = "3")]
+            pub allow_command_links_potentially_unsafe_please_only_use_for_handwritten_trusted_markdown:
+                Option<bool>,
+            #[prost(bool, optional, tag = "4")]
+            pub is_retryable: Option<bool>,
+            #[prost(bool, optional, tag = "5")]
+            pub show_request_id: Option<bool>,
+            #[prost(bool, optional, tag = "6")]
+            pub should_show_immediate_error: Option<bool>,
+        }
+
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ErrorDetails {
+            #[prost(enumeration = "error_details::Error", tag = "1")]
+            pub error: i32,
+            #[prost(message, optional, tag = "2")]
+            pub details: Option<CustomErrorDetails>,
+            #[prost(bool, optional, tag = "3")]
+            pub is_expected: Option<bool>,
+        }
+
+        pub mod error_details {
+            #[derive(
+                Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration,
+            )]
+            #[repr(i32)]
+            pub enum Error {
+                Unspecified = 0,
+                CustomMessage = 29,
+                ProviderError = 57,
+                Internal = 59,
+            }
+        }
+
+        #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct StreamChatRequest {
             #[prost(string, optional, tag = "1")]
             pub prompt: Option<String>,
@@ -33,7 +78,7 @@ pub mod aiserver {
             pub conversation_id: Option<String>,
         }
 
-        #[derive(Clone, PartialEq, Message)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct StreamChatResponse {
             #[prost(string, tag = "1")]
             pub text: String,
@@ -43,145 +88,65 @@ pub mod aiserver {
     }
 }
 
-pub mod agent {
-    pub mod v1 {
-        use prost::Message;
+pub mod catalog {
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AvailableModelsAddition {
+        #[prost(string, repeated, tag = "1")]
+        pub model_names: Vec<String>,
+        #[prost(message, repeated, tag = "2")]
+        pub models: Vec<AvailableModel>,
+    }
 
-        #[derive(Clone, PartialEq, Message)]
-        pub struct BidiRequestId {
-            #[prost(string, tag = "1")]
-            pub request_id: String,
-        }
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AvailableModel {
+        #[prost(string, tag = "1")]
+        pub name: String,
+        #[prost(bool, tag = "2")]
+        pub default_on: bool,
+        #[prost(bool, optional, tag = "5")]
+        pub supports_agent: Option<bool>,
+        #[prost(int32, optional, tag = "6")]
+        pub degradation_status: Option<i32>,
+        #[prost(message, optional, tag = "8")]
+        pub tooltip_data: Option<TooltipData>,
+        #[prost(bool, optional, tag = "9")]
+        pub supports_thinking: Option<bool>,
+        #[prost(bool, optional, tag = "10")]
+        pub supports_images: Option<bool>,
+        #[prost(bool, optional, tag = "14")]
+        pub supports_max_mode: Option<bool>,
+        #[prost(string, optional, tag = "17")]
+        pub client_display_name: Option<String>,
+        #[prost(string, optional, tag = "18")]
+        pub server_model_name: Option<String>,
+        #[prost(bool, optional, tag = "19")]
+        pub supports_non_max_mode: Option<bool>,
+        #[prost(bool, optional, tag = "21")]
+        pub is_recommended_for_background_composer: Option<bool>,
+        #[prost(bool, optional, tag = "22")]
+        pub supports_plan_mode: Option<bool>,
+        #[prost(string, optional, tag = "24")]
+        pub inputbox_short_model_name: Option<String>,
+        #[prost(bool, optional, tag = "25")]
+        pub supports_sandboxing: Option<bool>,
+        #[prost(bool, optional, tag = "26")]
+        pub supports_cmd_k: Option<bool>,
+        #[prost(string, optional, tag = "41")]
+        pub vendor_name: Option<String>,
+    }
 
-        #[derive(Clone, PartialEq, Message)]
-        pub struct AgentClientMessage {
-            #[prost(message, optional, tag = "1")]
-            pub run_request: Option<AgentRunRequest>,
-        }
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct TooltipData {
+        #[prost(string, optional, tag = "7")]
+        pub markdown_content: Option<String>,
+    }
 
-        #[derive(Clone, PartialEq, Message)]
-        pub struct ConversationStateStructure {
-            #[prost(string, repeated, tag = "1")]
-            pub root_prompt_messages_json: Vec<String>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct ConversationAction {
-            #[prost(message, optional, tag = "1")]
-            pub user_message_action: Option<UserMessageAction>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct UserMessageAction {
-            #[prost(message, optional, tag = "1")]
-            pub user_message: Option<UserMessage>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct UserMessage {
-            #[prost(string, tag = "1")]
-            pub text: String,
-            #[prost(string, optional, tag = "2")]
-            pub message_id: Option<String>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct AgentRunRequest {
-            #[prost(message, optional, tag = "1")]
-            pub conversation_state: Option<ConversationStateStructure>,
-            #[prost(message, optional, tag = "2")]
-            pub action: Option<ConversationAction>,
-            #[prost(message, optional, tag = "3")]
-            pub model_details: Option<ModelDetails>,
-            #[prost(string, optional, tag = "5")]
-            pub conversation_id: Option<String>,
-            #[prost(string, optional, tag = "8")]
-            pub custom_system_prompt: Option<String>,
-            #[prost(message, optional, tag = "9")]
-            pub requested_model: Option<RequestedModel>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct RequestedModel {
-            #[prost(string, tag = "1")]
-            pub model_id: String,
-            #[prost(string, optional, tag = "2")]
-            pub display_name: Option<String>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct ModelDetails {
-            #[prost(string, tag = "1")]
-            pub model_id: String,
-            #[prost(message, optional, tag = "2")]
-            pub thinking_details: Option<ThinkingDetails>,
-            #[prost(string, tag = "3")]
-            pub display_model_id: String,
-            #[prost(string, tag = "4")]
-            pub display_name: String,
-            #[prost(string, tag = "5")]
-            pub display_name_short: String,
-            #[prost(string, repeated, tag = "6")]
-            pub aliases: Vec<String>,
-            #[prost(bool, optional, tag = "7")]
-            pub max_mode: Option<bool>,
-        }
-
-        #[derive(Clone, Copy, PartialEq, Message)]
-        pub struct ThinkingDetails {}
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct AgentServerMessage {
-            #[prost(message, optional, tag = "1")]
-            pub interaction_update: Option<InteractionUpdate>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct InteractionUpdate {
-            #[prost(message, optional, tag = "1")]
-            pub text_delta: Option<TextDeltaUpdate>,
-            #[prost(message, optional, tag = "4")]
-            pub thinking_delta: Option<ThinkingDeltaUpdate>,
-            #[prost(message, optional, tag = "7")]
-            pub partial_tool_call: Option<PartialToolCallUpdate>,
-            #[prost(message, optional, tag = "14")]
-            pub turn_ended: Option<TurnEndedUpdate>,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct TextDeltaUpdate {
-            #[prost(string, tag = "1")]
-            pub text: String,
-            #[prost(bool, tag = "2")]
-            pub is_server_notice: bool,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct ThinkingDeltaUpdate {
-            #[prost(string, tag = "1")]
-            pub text: String,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct PartialToolCallUpdate {
-            #[prost(string, tag = "1")]
-            pub call_id: String,
-            #[prost(string, tag = "2")]
-            pub tool_name: String,
-            #[prost(string, tag = "3")]
-            pub args_text_delta: String,
-        }
-
-        #[derive(Clone, PartialEq, Message)]
-        pub struct TurnEndedUpdate {
-            #[prost(int64, optional, tag = "1")]
-            pub input_tokens: Option<i64>,
-            #[prost(int64, optional, tag = "2")]
-            pub output_tokens: Option<i64>,
-        }
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct UsableModelsAddition {
+        #[prost(message, repeated, tag = "1")]
+        pub models: Vec<super::agent::v1::ModelDetails>,
     }
 }
-
 pub mod account {
     use prost::Message;
 
@@ -301,180 +266,4 @@ pub mod account {
 
     #[derive(Clone, Copy, PartialEq, Message)]
     pub struct Empty {}
-}
-
-pub mod catalog {
-    use prost::Message;
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct AvailableModelsAddition {
-        #[prost(string, repeated, tag = "1")]
-        pub model_names: Vec<String>,
-        #[prost(message, repeated, tag = "2")]
-        pub models: Vec<AvailableModel>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct AvailableModel {
-        #[prost(string, tag = "1")]
-        pub name: String,
-        #[prost(bool, tag = "2")]
-        pub default_on: bool,
-        #[prost(bool, optional, tag = "5")]
-        pub supports_agent: Option<bool>,
-        #[prost(int32, optional, tag = "6")]
-        pub degradation_status: Option<i32>,
-        #[prost(message, optional, tag = "8")]
-        pub tooltip_data: Option<TooltipData>,
-        #[prost(bool, optional, tag = "9")]
-        pub supports_thinking: Option<bool>,
-        #[prost(bool, optional, tag = "10")]
-        pub supports_images: Option<bool>,
-        #[prost(bool, optional, tag = "14")]
-        pub supports_max_mode: Option<bool>,
-        #[prost(string, optional, tag = "17")]
-        pub client_display_name: Option<String>,
-        #[prost(string, optional, tag = "18")]
-        pub server_model_name: Option<String>,
-        #[prost(bool, optional, tag = "19")]
-        pub supports_non_max_mode: Option<bool>,
-        #[prost(message, optional, tag = "20")]
-        pub tooltip_data_for_max_mode: Option<TooltipData>,
-        #[prost(bool, optional, tag = "21")]
-        pub is_recommended_for_background_composer: Option<bool>,
-        #[prost(bool, optional, tag = "22")]
-        pub supports_plan_mode: Option<bool>,
-        #[prost(string, optional, tag = "24")]
-        pub inputbox_short_model_name: Option<String>,
-        #[prost(bool, optional, tag = "25")]
-        pub supports_sandboxing: Option<bool>,
-        #[prost(bool, optional, tag = "26")]
-        pub supports_cmd_k: Option<bool>,
-        #[prost(message, repeated, tag = "29")]
-        pub parameter_definitions: Vec<ModelParameterDefinition>,
-        #[prost(message, repeated, tag = "30")]
-        pub variants: Vec<ModelVariant>,
-        #[prost(string, repeated, tag = "36")]
-        pub legacy_slugs: Vec<String>,
-        #[prost(int32, optional, tag = "38")]
-        pub named_model_section_index: Option<i32>,
-        #[prost(string, optional, tag = "41")]
-        pub vendor_name: Option<String>,
-        #[prost(message, optional, tag = "42")]
-        pub vendor: Option<AvailableModelVendor>,
-        #[prost(message, repeated, tag = "48")]
-        pub model_picker_badges: Vec<ModelPickerBadge>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct TooltipData {
-        #[prost(string, optional, tag = "7")]
-        pub markdown_content: Option<String>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct ModelParameterDefinition {
-        #[prost(string, tag = "1")]
-        pub id: String,
-        #[prost(string, tag = "2")]
-        pub name: String,
-        #[prost(string, optional, tag = "3")]
-        pub markdown_tooltip: Option<String>,
-        #[prost(message, optional, tag = "4")]
-        pub parameter_type: Option<ModelParameterType>,
-        #[prost(bool, optional, tag = "5")]
-        pub is_cycleable_by_hotkey: Option<bool>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct ModelParameterType {
-        #[prost(message, optional, tag = "1")]
-        pub boolean_parameter: Option<BooleanParameter>,
-        #[prost(message, optional, tag = "2")]
-        pub enum_parameter: Option<EnumParameter>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct BooleanParameter {
-        #[prost(message, repeated, tag = "1")]
-        pub values: Vec<BooleanParameterValue>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct BooleanParameterValue {
-        #[prost(string, tag = "1")]
-        pub value: String,
-        #[prost(string, optional, tag = "2")]
-        pub display_name: Option<String>,
-        #[prost(bool, optional, tag = "3")]
-        pub increases_model_cost: Option<bool>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct EnumParameter {
-        #[prost(message, repeated, tag = "1")]
-        pub values: Vec<EnumParameterValue>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct EnumParameterValue {
-        #[prost(string, tag = "1")]
-        pub value: String,
-        #[prost(string, optional, tag = "2")]
-        pub display_name: Option<String>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct ModelVariant {
-        #[prost(message, repeated, tag = "1")]
-        pub parameter_values: Vec<ModelParameterValue>,
-        #[prost(string, tag = "2")]
-        pub display_name: String,
-        #[prost(bool, tag = "3")]
-        pub is_max_mode: bool,
-        #[prost(bool, optional, tag = "4")]
-        pub is_default_max_config: Option<bool>,
-        #[prost(bool, optional, tag = "5")]
-        pub is_default_non_max_config: Option<bool>,
-        #[prost(message, optional, tag = "6")]
-        pub tooltip_data: Option<TooltipData>,
-        #[prost(string, optional, tag = "8")]
-        pub display_name_outside_picker: Option<String>,
-        #[prost(string, optional, tag = "9")]
-        pub variant_string_representation: Option<String>,
-        #[prost(string, optional, tag = "11")]
-        pub legacy_slug: Option<String>,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct ModelParameterValue {
-        #[prost(string, tag = "1")]
-        pub id: String,
-        #[prost(string, tag = "2")]
-        pub value: String,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct ModelPickerBadge {
-        #[prost(string, tag = "1")]
-        pub label: String,
-        #[prost(int32, tag = "2")]
-        pub variant: i32,
-        #[prost(bool, tag = "3")]
-        pub dismiss_on_selection: bool,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct AvailableModelVendor {
-        #[prost(int32, tag = "1")]
-        pub id: i32,
-        #[prost(string, tag = "2")]
-        pub display_name: String,
-    }
-
-    #[derive(Clone, PartialEq, Message)]
-    pub struct UsableModelsAddition {
-        #[prost(message, repeated, tag = "1")]
-        pub models: Vec<super::agent::v1::ModelDetails>,
-    }
 }

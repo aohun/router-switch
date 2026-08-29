@@ -1,11 +1,13 @@
+use async_stream::try_stream;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::GatewayError;
+use crate::model::{FinishReason, ModelInvocation, Role, Usage};
+use crate::{GatewayError, Result};
 
-use super::{ModelEvent, ModelInvocation, Provider, ProviderStream};
+use super::{merge_extra_params, ModelEvent, Provider, ProviderStream};
 
 pub struct OpenAiResponsesProvider {
     pub base_url: String,
@@ -37,6 +39,56 @@ fn join_url(base: &str, path: &str) -> String {
     )
 }
 
+fn responses_input(invocation: &ModelInvocation) -> Vec<Value> {
+    let mut out = Vec::new();
+    if !invocation.prompt.instructions.is_empty() {
+        out.push(json!({
+            "role": "system",
+            "content": [{"type": "input_text", "text": invocation.prompt.instructions}],
+        }));
+    }
+    for message in &invocation.history {
+        match message.role {
+            Role::System => out.push(json!({
+                "role": "system",
+                "content": [{"type": "input_text", "text": message.content}],
+            })),
+            Role::User => out.push(json!({
+                "role": "user",
+                "content": [{"type": "input_text", "text": message.content}],
+            })),
+            Role::Assistant => {
+                let mut content = Vec::new();
+                if !message.content.is_empty() {
+                    content.push(json!({"type": "output_text", "text": message.content}));
+                }
+                for call in &message.tool_calls {
+                    content.push(json!({
+                        "type": "function_call",
+                        "call_id": call.call_id,
+                        "name": call.name,
+                        "arguments": if call.arguments_text.is_empty() {
+                            call.arguments.to_string()
+                        } else {
+                            call.arguments_text.clone()
+                        },
+                    }));
+                }
+                out.push(json!({
+                    "role": "assistant",
+                    "content": content,
+                }));
+            }
+            Role::Tool => out.push(json!({
+                "type": "function_call_output",
+                "call_id": message.tool_call_id.clone().unwrap_or_default(),
+                "output": message.content,
+            })),
+        }
+    }
+    out
+}
+
 impl Provider for OpenAiResponsesProvider {
     fn stream(
         &self,
@@ -47,73 +99,121 @@ impl Provider for OpenAiResponsesProvider {
         let url = join_url(&self.base_url, "/responses");
         let api_key = self.api_key.clone();
         let model = if !invocation.model.is_empty() {
-            invocation.model
+            invocation.model.clone()
         } else {
             self.default_model.clone()
         };
 
-        let body = json!({
-            "model": model,
-            "stream": true,
-            "input": invocation.prompt
-        });
+        Box::pin(try_stream! {
+            let mut body = json!({
+                "model": model,
+                "stream": true,
+                "input": responses_input(&invocation),
+                "tools": invocation.prompt.tools.iter().map(|tool| json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                })).collect::<Vec<_>>(),
+            });
+            merge_extra_params(&mut body, &invocation.extra_params)?;
 
-        let stream = async_stream::stream! {
             let request = client
                 .post(&url)
-                .header("authorization", format!("Bearer {}", api_key))
+                .header("authorization", format!("Bearer {api_key}"))
                 .header("content-type", "application/json")
                 .json(&body);
 
-            let response = match request.send().await {
-                Ok(res) => res,
-                Err(err) => {
-                    yield Err(GatewayError::Provider(format!("OpenAI Responses request failed: {err}")));
-                    return;
-                }
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => return,
+                response = request.send() => response,
             };
-
+            let response = response.map_err(|err| GatewayError::Provider(format!("OpenAI Responses request failed: {err}")))?;
             if !response.status().is_success() {
                 let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
-                yield Err(GatewayError::Provider(format!(
-                    "Responses error {status}: {error_text}"
-                )));
-                return;
+                Err(GatewayError::Provider(format!("Responses error {status}: {error_text}")))?;
             }
 
             let mut event_stream = response.bytes_stream().eventsource();
-            while let Some(event_res) = event_stream.next().await {
-                if cancellation.is_cancelled() {
-                    return;
+            let mut tool_index = 0usize;
+            let mut finish = FinishReason::Stop;
+            loop {
+                let event = tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    event = event_stream.next() => event,
+                };
+                let Some(event) = event else { break };
+                let event = event.map_err(|err| GatewayError::Provider(format!("Responses stream error: {err}")))?;
+                let data = event.data.trim();
+                if data == "[DONE]" {
+                    break;
                 }
-                match event_res {
-                    Ok(event) => {
-                        let data = event.data.trim();
-                        if data == "[DONE]" {
-                            yield Ok(ModelEvent::Done);
-                            break;
-                        }
-                        if let Ok(val) = serde_json::from_str::<Value>(data) {
-                            if let Some(delta) = val.get("delta").and_then(Value::as_str) {
-                                if !delta.is_empty() {
-                                    yield Ok(ModelEvent::TextDelta(delta.to_string()));
-                                }
-                            } else if let Some(text) = val.pointer("/output_text").and_then(Value::as_str) {
-                                if !text.is_empty() {
-                                    yield Ok(ModelEvent::TextDelta(text.to_string()));
-                                }
+                let Ok(val) = serde_json::from_str::<Value>(data) else { continue };
+                let event_type = val.get("type").and_then(Value::as_str).unwrap_or_default();
+                match event_type {
+                    "response.output_text.delta" => {
+                        if let Some(text) = val.get("delta").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                yield ModelEvent::TextDelta(text.to_string());
                             }
                         }
                     }
-                    Err(err) => {
-                        yield Err(GatewayError::Provider(format!("Responses stream error: {err}")));
-                        return;
+                    "response.reasoning.delta" | "response.reasoning_summary_text.delta" => {
+                        if let Some(text) = val.get("delta").and_then(Value::as_str) {
+                            if !text.is_empty() {
+                                yield ModelEvent::ThinkingDelta(text.to_string());
+                            }
+                        }
                     }
+                    "response.output_item.added" => {
+                        let item = val.get("item").unwrap_or(&Value::Null);
+                        if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                            let call_id = item
+                                .get("call_id")
+                                .or_else(|| item.get("id"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                            yield ModelEvent::ToolCallStart {
+                                index: tool_index,
+                                call_id,
+                                name,
+                            };
+                            finish = FinishReason::ToolUse;
+                        }
+                    }
+                    "response.function_call_arguments.delta" => {
+                        if let Some(delta) = val.get("delta").and_then(Value::as_str) {
+                            yield ModelEvent::ToolCallArgumentsDelta {
+                                index: tool_index,
+                                delta: delta.to_string(),
+                            };
+                        }
+                    }
+                    "response.function_call_arguments.done" | "response.output_item.done" => {
+                        let item = val.get("item").unwrap_or(&Value::Null);
+                        if item.get("type").and_then(Value::as_str) == Some("function_call")
+                            || event_type == "response.function_call_arguments.done"
+                        {
+                            yield ModelEvent::ToolCallEnd { index: tool_index };
+                            tool_index += 1;
+                        }
+                    }
+                    "response.completed" => {
+                        if let Some(usage) = val.pointer("/response/usage") {
+                            yield ModelEvent::Usage(Usage {
+                                input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+                                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                            });
+                        }
+                        break;
+                    }
+                    _ => {}
                 }
             }
-        };
-
-        Box::pin(stream)
+            yield ModelEvent::Done(finish);
+        })
     }
 }

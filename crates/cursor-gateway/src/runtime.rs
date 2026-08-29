@@ -11,7 +11,7 @@ use crate::{
         settings::{clear_proxy_settings, write_proxy_settings},
     },
     server::start_backend_server,
-    session::CursorSessionRegistry,
+    sessions::CursorSessionRegistry,
     Result,
 };
 
@@ -26,15 +26,21 @@ pub struct CursorGatewayRuntime {
 
 impl CursorGatewayRuntime {
     pub fn new() -> Result<Self> {
+        let settings = Arc::new(RwLock::new(None));
         let ca_manager = CaManager::managed()?;
+        let registry = CursorSessionRegistry::new(settings.clone())?;
         Ok(Self {
-            registry: CursorSessionRegistry::new(),
-            settings: Arc::new(RwLock::new(None)),
+            registry,
+            settings,
             ca_manager,
             proxy_runtime: ProxyRuntime::default(),
             backend_addr: None,
             backend_task: None,
         })
+    }
+
+    pub fn registry(&self) -> &CursorSessionRegistry {
+        &self.registry
     }
 
     pub fn is_running(&self) -> bool {
@@ -73,11 +79,9 @@ impl CursorGatewayRuntime {
             ));
         }
 
-        // 1. Ensure CA is initialized
         self.ca_manager.initialize_local()?;
         let loaded_ca = self.ca_manager.load()?;
 
-        // 2. Start Axum backend server
         let (backend_addr, backend_handle) = start_backend_server(
             self.registry.clone(),
             self.settings.clone(),
@@ -87,19 +91,16 @@ impl CursorGatewayRuntime {
         self.backend_addr = Some(backend_addr);
         self.backend_task = Some(backend_handle);
 
-        // 3. Start Hudsucker MITM proxy
         let requested_proxy_port = proxy_port.unwrap_or(2080);
         let (proxy_url, actual_proxy_port) = self
             .proxy_runtime
             .start(backend_addr, loaded_ca, requested_proxy_port)
             .await?;
 
-        // 4. Configure Cursor settings.json with proxy
         if let Err(err) = write_proxy_settings(&proxy_url) {
             tracing::warn!(%err, "could not write Cursor proxy settings to settings.json");
         }
 
-        // 5. Ensure local Ultra account exists in state.vscdb
         if let Err(err) = ensure_local_ultra_account() {
             tracing::warn!(%err, "could not ensure Cursor Ultra account in state.vscdb");
         }
@@ -114,18 +115,12 @@ impl CursorGatewayRuntime {
     }
 
     pub async fn stop(&mut self) -> Result<()> {
-        // 1. Clear Cursor proxy settings
         let _ = clear_proxy_settings();
-
-        // 2. Stop MITM proxy
         self.proxy_runtime.stop().await;
-
-        // 3. Stop backend server
         if let Some(task) = self.backend_task.take() {
             task.abort();
         }
         self.backend_addr = None;
-
         tracing::info!("Cursor local gateway stopped");
         Ok(())
     }

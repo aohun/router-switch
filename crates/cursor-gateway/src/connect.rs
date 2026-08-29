@@ -16,7 +16,7 @@ pub enum ConnectCode {
 }
 
 impl ConnectCode {
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Canceled => "canceled",
             Self::InvalidArgument => "invalid_argument",
@@ -68,14 +68,6 @@ pub fn encode_message<M: Message>(message: &M) -> Result<Bytes> {
     Ok(output.freeze())
 }
 
-pub fn encode_raw_message(payload: &[u8]) -> Bytes {
-    let mut output = BytesMut::with_capacity(5 + payload.len());
-    output.put_u8(0);
-    output.put_u32(payload.len() as u32);
-    output.extend_from_slice(payload);
-    output.freeze()
-}
-
 pub fn encode_end_stream() -> Bytes {
     encode_end_stream_payload(b"{}")
 }
@@ -97,27 +89,6 @@ fn encode_end_stream_payload(payload: &[u8]) -> Bytes {
     output.put_u32(payload.len() as u32);
     output.extend_from_slice(payload);
     output.freeze()
-}
-
-/// Helper to encode a complete Connect-RPC framed response buffer (data frame + end-stream frame).
-pub fn encode_connect_proto_response(message: &impl Message) -> Result<Vec<u8>> {
-    let data_bytes = message.encode_to_vec();
-    Ok(encode_connect_raw_response(&data_bytes))
-}
-
-/// Helper to encode a raw protobuf slice into a complete Connect-RPC framed response buffer.
-pub fn encode_connect_raw_response(payload: &[u8]) -> Vec<u8> {
-    let data_len = payload.len();
-    let mut buf = Vec::with_capacity(5 + data_len + 5 + 2);
-    // Data frame (flag 0x00, 4-byte big-endian len, payload)
-    buf.push(0x00);
-    buf.extend_from_slice(&(data_len as u32).to_be_bytes());
-    buf.extend_from_slice(payload);
-    // End-stream frame (flag 0x02, 4-byte big-endian len 2, b"{}")
-    buf.push(END_STREAM_FLAG);
-    buf.extend_from_slice(&2u32.to_be_bytes());
-    buf.extend_from_slice(b"{}");
-    buf
 }
 
 pub fn decode_unary<M: Message + Default>(body: &[u8]) -> Result<M> {
@@ -147,37 +118,4 @@ pub fn decode_frames(mut body: &[u8]) -> Result<Vec<(u8, Bytes)>> {
         body = &body[length..];
     }
     Ok(frames)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Clone, PartialEq, Message)]
-    struct Dummy {
-        #[prost(string, tag = "1")]
-        text: String,
-    }
-
-    #[test]
-    fn connect_unary_roundtrip() {
-        let original = Dummy {
-            text: "hello".into(),
-        };
-        let encoded = encode_message(&original).unwrap();
-        let decoded: Dummy = decode_unary(&encoded).unwrap();
-        assert_eq!(decoded.text, "hello");
-    }
-
-    #[test]
-    fn connect_raw_response_frames() {
-        let dummy = Dummy {
-            text: "test".into(),
-        };
-        let framed = encode_connect_proto_response(&dummy).unwrap();
-        let frames = decode_frames(&framed).unwrap();
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].0, 0); // Data frame
-        assert_eq!(frames[1].0, END_STREAM_FLAG); // End stream
-    }
 }

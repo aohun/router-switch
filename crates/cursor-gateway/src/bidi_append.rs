@@ -1,106 +1,159 @@
-use std::sync::Arc;
-
-use axum::{
-    body::{to_bytes, Body},
-    extract::State,
-    http::{header, HeaderValue, Request, Response, StatusCode},
-};
-use domain::CursorSettings;
-use parking_lot::RwLock;
 use prost::Message;
 
 use crate::{
-    connect::decode_unary,
-    proto::{agent::v1 as agent_pb, aiserver::v1 as ai_pb},
-    session::CursorSessionRegistry,
+    actor::CursorCommand,
+    interaction,
+    proto::{agent::v1 as agent, aiserver::v1 as ai},
+    sessions::{CursorParent, CursorSessionRegistry},
     GatewayError, Result,
 };
 
-#[derive(Clone)]
-pub struct AppState {
-    pub registry: CursorSessionRegistry,
-    pub settings: Arc<RwLock<Option<CursorSettings>>>,
+pub struct DecodedAppend {
+    pub request_id: String,
+    pub seqno: i64,
+    pub message: agent::AgentClientMessage,
 }
 
-pub async fn bidi_append_handler(
-    State(state): State<AppState>,
-    request: Request<Body>,
-) -> Result<Response<Body>> {
-    let (_parts, body) = request.into_parts();
-    let body_bytes = to_bytes(body, usize::MAX)
-        .await
-        .map_err(|e| GatewayError::Protocol(format!("read bidi body: {e}")))?;
+impl DecodedAppend {
+    pub fn model_id(&self) -> Option<&str> {
+        let agent::agent_client_message::Message::RunRequest(request) =
+            self.message.message.as_ref()?
+        else {
+            return None;
+        };
+        request
+            .requested_model
+            .as_ref()
+            .map(|model| model.model_id.as_str())
+            .filter(|model| !model.is_empty())
+            .or_else(|| {
+                request
+                    .model_details
+                    .as_ref()
+                    .map(|model| model.model_id.as_str())
+                    .filter(|model| !model.is_empty())
+            })
+    }
 
-    let bidi_req: ai_pb::BidiAppendRequest = decode_unary(&body_bytes)?;
-    let request_id = bidi_req
+    pub fn conversation_id(&self) -> Option<&str> {
+        let agent::agent_client_message::Message::RunRequest(request) =
+            self.message.message.as_ref()?
+        else {
+            return None;
+        };
+        request.conversation_id.as_deref()
+    }
+}
+
+pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
+    let request_id = request
         .request_id
-        .map(|r| r.request_id)
-        .unwrap_or_default();
+        .as_ref()
+        .map(|id| id.request_id.as_str())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| GatewayError::Protocol("BidiAppend request_id is required".into()))?;
+    if !request.data_binary.is_empty() {
+        return Err(GatewayError::Protocol(
+            "BidiAppend data_binary is not part of the captured protocol".into(),
+        ));
+    }
+    if request.data.is_empty() {
+        return Err(GatewayError::Protocol(
+            "BidiAppend contains no AgentClientMessage".into(),
+        ));
+    }
+    let payload = hex::decode(&request.data)?;
+    Ok(DecodedAppend {
+        request_id: request_id.into(),
+        seqno: request.append_seqno,
+        message: agent::AgentClientMessage::decode(payload.as_slice())?,
+    })
+}
 
-    let client_msg_bytes = if !bidi_req.data_binary.is_empty() {
-        bidi_req.data_binary
-    } else if !bidi_req.data.is_empty() {
-        hex::decode(&bidi_req.data).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+pub async fn append(
+    registry: &CursorSessionRegistry,
+    request: DecodedAppend,
+    parent: Option<CursorParent>,
+) -> Result<ai::BidiAppendResponse> {
+    let handle = registry.get_or_create(&request.request_id).await?;
+    if let Some(parent) = parent {
+        handle.set_parent(parent)?;
+    }
+    if matches!(
+        request.message.message.as_ref(),
+        Some(agent::agent_client_message::Message::ClientHeartbeat(_))
+    ) {
+        handle.emit(&interaction::heartbeat())?;
+    }
+    handle
+        .command(CursorCommand::Append {
+            seqno: request.seqno,
+            message: Box::new(request.message),
+        })
+        .await?;
+    Ok(ai::BidiAppendResponse {})
+}
 
-    let client_msg: Option<agent_pb::AgentClientMessage> = if !client_msg_bytes.is_empty() {
-        agent_pb::AgentClientMessage::decode(&client_msg_bytes[..]).ok()
-    } else {
-        None
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut prompt = String::new();
-    let mut model_id = None;
-
-    if let Some(msg) = client_msg {
-        if let Some(run_req) = msg.run_request {
-            if let Some(action) = run_req.action {
-                if let Some(user_action) = action.user_message_action {
-                    if let Some(user_msg) = user_action.user_message {
-                        prompt = user_msg.text;
-                    }
-                }
-            }
-            if prompt.is_empty() {
-                if let Some(conv_state) = run_req.conversation_state {
-                    if let Some(last) = conv_state.root_prompt_messages_json.last() {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(last) {
-                            if let Some(text) = val.get("text").and_then(|t| t.as_str()) {
-                                prompt = text.to_string();
-                            }
-                        }
-                    }
-                }
-            }
-            if let Some(req_model) = run_req.requested_model {
-                if !req_model.model_id.is_empty() {
-                    model_id = Some(req_model.model_id);
-                }
-            } else if let Some(details) = run_req.model_details {
-                if !details.model_id.is_empty() {
-                    model_id = Some(details.model_id);
-                }
-            }
+    fn encoded(run: agent::AgentRunRequest) -> ai::BidiAppendRequest {
+        let message = agent::AgentClientMessage {
+            message: Some(agent::agent_client_message::Message::RunRequest(run)),
+        };
+        ai::BidiAppendRequest {
+            data: hex::encode(message.encode_to_vec()),
+            request_id: Some(ai::BidiRequestId {
+                request_id: "request".into(),
+            }),
+            append_seqno: 1,
+            data_binary: Vec::new(),
         }
     }
 
-    if !request_id.is_empty() {
-        let current_settings = state.settings.read().clone();
-        state
-            .registry
-            .start_agent_run(&request_id, prompt, model_id, current_settings);
+    #[test]
+    fn route_model_uses_requested_model_id() {
+        let decoded = decode(&encoded(agent::AgentRunRequest {
+            requested_model: Some(agent::RequestedModel {
+                model_id: "33ceed20".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(decoded.model_id(), Some("33ceed20"));
     }
 
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::OK;
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/proto"),
-    );
-    response
-        .headers_mut()
-        .insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
-    Ok(response)
+    #[test]
+    fn decodes_exec_client_message_instead_of_dropping() {
+        let message = agent::AgentClientMessage {
+            message: Some(agent::agent_client_message::Message::ExecClientMessage(
+                agent::ExecClientMessage {
+                    id: 7,
+                    exec_id: "call-1".into(),
+                    message: Some(agent::exec_client_message::Message::ReadResult(
+                        agent::ReadResult::default(),
+                    )),
+                    ..Default::default()
+                },
+            )),
+        };
+        let request = ai::BidiAppendRequest {
+            data: hex::encode(message.encode_to_vec()),
+            request_id: Some(ai::BidiRequestId {
+                request_id: "req-exec".into(),
+            }),
+            append_seqno: 2,
+            data_binary: Vec::new(),
+        };
+        let decoded = decode(&request).unwrap();
+        match decoded.message.message {
+            Some(agent::agent_client_message::Message::ExecClientMessage(exec)) => {
+                assert_eq!(exec.id, 7);
+                assert_eq!(exec.exec_id, "call-1");
+            }
+            other => panic!("expected exec_client_message, got {other:?}"),
+        }
+    }
 }

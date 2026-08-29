@@ -3,11 +3,12 @@ pub mod openai_chat;
 pub mod openai_responses;
 
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures_util::Stream;
-use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use crate::model::{FinishReason, ModelInvocation, Usage};
 use crate::Result;
 
 pub use anthropic::AnthropicProvider;
@@ -19,34 +20,19 @@ pub enum ModelEvent {
     TextDelta(String),
     ThinkingDelta(String),
     ToolCallStart {
+        index: usize,
         call_id: String,
         name: String,
     },
     ToolCallArgumentsDelta {
-        call_id: String,
+        index: usize,
         delta: String,
     },
     ToolCallEnd {
-        call_id: String,
+        index: usize,
     },
-    Usage {
-        input_tokens: Option<u64>,
-        output_tokens: Option<u64>,
-    },
-    Done,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProviderMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ModelInvocation {
-    pub prompt: String,
-    pub model: String,
-    pub messages: Vec<ProviderMessage>,
+    Usage(Usage),
+    Done(FinishReason),
 }
 
 pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<ModelEvent>> + Send>>;
@@ -59,17 +45,48 @@ pub trait Provider: Send + Sync {
     ) -> ProviderStream;
 }
 
+pub type SharedProvider = Arc<dyn Provider>;
+
 pub fn create_provider(
     provider_type: &str,
     base_url: String,
     api_key: String,
     model: String,
-) -> Box<dyn Provider> {
+) -> SharedProvider {
     match provider_type.trim().to_ascii_lowercase().as_str() {
-        "anthropic" | "claude" => Box::new(AnthropicProvider::new(base_url, api_key, model)),
+        "anthropic" | "claude" => Arc::new(AnthropicProvider::new(base_url, api_key, model)),
         "openai-responses" | "responses" => {
-            Box::new(OpenAiResponsesProvider::new(base_url, api_key, model))
+            Arc::new(OpenAiResponsesProvider::new(base_url, api_key, model))
         }
-        _ => Box::new(OpenAiChatProvider::new(base_url, api_key, model)),
+        _ => Arc::new(OpenAiChatProvider::new(base_url, api_key, model)),
     }
+}
+
+pub(crate) fn merge_extra_params(
+    body: &mut serde_json::Value,
+    extra: &serde_json::Value,
+) -> Result<()> {
+    let Some(extra) = extra.as_object() else {
+        if extra.is_null() {
+            return Ok(());
+        }
+        return Err(crate::GatewayError::Config(
+            "model extra params must be an object".into(),
+        ));
+    };
+    let body = body.as_object_mut().ok_or_else(|| {
+        crate::GatewayError::Provider("provider request body must be an object".into())
+    })?;
+    for (name, value) in extra {
+        if matches!(
+            name.as_str(),
+            "model" | "stream" | "messages" | "input" | "tools" | "system" | "instructions"
+        ) {
+            return Err(crate::GatewayError::Config(format!(
+                "model extra params cannot replace {name}"
+            )));
+        }
+        body.insert(name.clone(), value.clone());
+    }
+    Ok(())
 }

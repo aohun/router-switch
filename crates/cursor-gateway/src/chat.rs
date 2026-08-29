@@ -1,6 +1,6 @@
 use axum::{
     body::{to_bytes, Body, Bytes},
-    extract::State,
+    extract::{Extension, State},
     http::{header, HeaderValue, Request, Response, StatusCode},
 };
 use std::convert::Infallible;
@@ -8,17 +8,32 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    bidi_append::AppState,
     connect::{decode_unary, encode_end_stream, encode_message},
+    handlers::AppState,
+    model::{ModelInvocation, PromptSpec, ProviderMessage},
     proto::aiserver::v1 as ai_pb,
-    provider::{create_provider, ModelEvent, ModelInvocation},
+    provider::{create_provider, ModelEvent},
+    proxy::{self, CursorProxy},
     GatewayError, Result,
 };
 
 pub async fn stream_chat_handler(
     State(state): State<AppState>,
+    Extension(proxy): Extension<CursorProxy>,
     request: Request<Body>,
 ) -> Result<Response<Body>> {
+    let s = state
+        .registry
+        .settings()
+        .read()
+        .clone()
+        .unwrap_or_else(|| domain::official_cursor_settings());
+
+    // Official 服务商: do not adapt as OpenAI — proxy upstream.
+    if s.kind.is_official() {
+        return proxy::forward(Extension(proxy), request).await;
+    }
+
     let (_parts, body) = request.into_parts();
     let body_bytes = to_bytes(body, usize::MAX)
         .await
@@ -27,12 +42,6 @@ pub async fn stream_chat_handler(
     let chat_req: ai_pb::StreamChatRequest = decode_unary(&body_bytes).unwrap_or_default();
     let prompt = chat_req.prompt.unwrap_or_default();
     let requested_model = chat_req.model_id;
-
-    let s = state
-        .settings
-        .read()
-        .clone()
-        .unwrap_or_else(|| domain::official_cursor_settings());
 
     let target_model = requested_model
         .filter(|m| !m.is_empty())
@@ -47,9 +56,13 @@ pub async fn stream_chat_handler(
 
     let cancellation = CancellationToken::new();
     let invocation = ModelInvocation {
-        prompt,
         model: target_model.clone(),
-        messages: Vec::new(),
+        prompt: PromptSpec {
+            instructions: String::new(),
+            tools: Vec::new(),
+        },
+        history: vec![ProviderMessage::user(prompt)],
+        extra_params: s.options.clone(),
     };
 
     let mut provider_stream = provider.stream(invocation, cancellation.clone());
@@ -66,7 +79,7 @@ pub async fn stream_chat_handler(
                         yield Ok::<Bytes, Infallible>(framed);
                     }
                 }
-                Ok(ModelEvent::Done) => {
+                Ok(ModelEvent::Done(_)) => {
                     break;
                 }
                 Err(err) => {

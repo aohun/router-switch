@@ -1,11 +1,13 @@
+use async_stream::try_stream;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::GatewayError;
+use crate::model::{FinishReason, ModelInvocation, Role, Usage};
+use crate::{GatewayError, Result};
 
-use super::{ModelEvent, ModelInvocation, Provider, ProviderStream};
+use super::{merge_extra_params, ModelEvent, Provider, ProviderStream};
 
 pub struct AnthropicProvider {
     pub base_url: String,
@@ -37,6 +39,52 @@ fn join_url(base: &str, path: &str) -> String {
     )
 }
 
+fn anthropic_messages(invocation: &ModelInvocation) -> (String, Vec<Value>) {
+    let mut system = invocation.prompt.instructions.clone();
+    let mut messages = Vec::new();
+    for message in &invocation.history {
+        match message.role {
+            Role::System => {
+                if !system.is_empty() {
+                    system.push_str("\n\n");
+                }
+                system.push_str(&message.content);
+            }
+            Role::User => messages.push(json!({
+                "role": "user",
+                "content": message.content,
+            })),
+            Role::Assistant => {
+                let mut content = Vec::new();
+                if !message.content.is_empty() {
+                    content.push(json!({"type": "text", "text": message.content}));
+                }
+                for call in &message.tool_calls {
+                    content.push(json!({
+                        "type": "tool_use",
+                        "id": call.call_id,
+                        "name": call.name,
+                        "input": call.arguments,
+                    }));
+                }
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": content,
+                }));
+            }
+            Role::Tool => messages.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
+                    "content": message.content,
+                }],
+            })),
+        }
+    }
+    (system, messages)
+}
+
 impl Provider for AnthropicProvider {
     fn stream(
         &self,
@@ -44,32 +92,32 @@ impl Provider for AnthropicProvider {
         cancellation: CancellationToken,
     ) -> ProviderStream {
         let client = self.client.clone();
-        let url = join_url(&self.base_url, "/v1/messages");
+        let url = join_url(&self.base_url, "/messages");
         let api_key = self.api_key.clone();
         let model = if !invocation.model.is_empty() {
-            invocation.model
+            invocation.model.clone()
         } else {
             self.default_model.clone()
         };
 
-        let messages = if !invocation.messages.is_empty() {
-            invocation
-                .messages
-                .into_iter()
-                .map(|m| json!({"role": m.role, "content": m.content}))
-                .collect::<Vec<_>>()
-        } else {
-            vec![json!({"role": "user", "content": invocation.prompt})]
-        };
+        Box::pin(try_stream! {
+            let (system, messages) = anthropic_messages(&invocation);
+            let mut body = json!({
+                "model": model,
+                "stream": true,
+                "max_tokens": 8192,
+                "messages": messages,
+                "tools": invocation.prompt.tools.iter().map(|tool| json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
+                })).collect::<Vec<_>>(),
+            });
+            if !system.is_empty() {
+                body["system"] = Value::String(system);
+            }
+            merge_extra_params(&mut body, &invocation.extra_params)?;
 
-        let body = json!({
-            "model": model,
-            "max_tokens": 8192,
-            "stream": true,
-            "messages": messages
-        });
-
-        let stream = async_stream::stream! {
             let request = client
                 .post(&url)
                 .header("x-api-key", &api_key)
@@ -77,68 +125,106 @@ impl Provider for AnthropicProvider {
                 .header("content-type", "application/json")
                 .json(&body);
 
-            let response = match request.send().await {
-                Ok(res) => res,
-                Err(err) => {
-                    yield Err(GatewayError::Provider(format!("Anthropic request failed: {err}")));
-                    return;
-                }
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => return,
+                response = request.send() => response,
             };
-
+            let response = response.map_err(|err| GatewayError::Provider(format!("Anthropic request failed: {err}")))?;
             if !response.status().is_success() {
                 let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
-                yield Err(GatewayError::Provider(format!(
-                    "Anthropic error {status}: {error_text}"
-                )));
-                return;
+                Err(GatewayError::Provider(format!("Anthropic error {status}: {error_text}")))?;
             }
 
             let mut event_stream = response.bytes_stream().eventsource();
-            while let Some(event_res) = event_stream.next().await {
-                if cancellation.is_cancelled() {
-                    return;
-                }
-                match event_res {
-                    Ok(event) => {
-                        let event_type = event.event.as_str();
-                        let data = event.data.trim();
-                        if event_type == "message_stop" {
-                            yield Ok(ModelEvent::Done);
-                            break;
+            let mut tool_index = 0usize;
+            let mut current_tool_index = None;
+            let mut finish = FinishReason::Stop;
+            loop {
+                let event = tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    event = event_stream.next() => event,
+                };
+                let Some(event) = event else { break };
+                let event = event.map_err(|err| GatewayError::Provider(format!("Anthropic stream error: {err}")))?;
+                let Ok(val) = serde_json::from_str::<Value>(&event.data) else { continue };
+                let event_type = val.get("type").and_then(Value::as_str).unwrap_or_default();
+                match event_type {
+                    "content_block_start" => {
+                        let block = val.get("content_block").unwrap_or(&Value::Null);
+                        if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                            let call_id = block.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+                            let name = block.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                            current_tool_index = Some(tool_index);
+                            yield ModelEvent::ToolCallStart {
+                                index: tool_index,
+                                call_id,
+                                name,
+                            };
+                            tool_index += 1;
+                            finish = FinishReason::ToolUse;
                         }
-                        if let Ok(val) = serde_json::from_str::<Value>(data) {
-                            if event_type == "content_block_delta" {
-                                if let Some(delta) = val.get("delta") {
-                                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                                        if !text.is_empty() {
-                                            yield Ok(ModelEvent::TextDelta(text.to_string()));
-                                        }
-                                    } else if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
-                                        if !thinking.is_empty() {
-                                            yield Ok(ModelEvent::ThinkingDelta(thinking.to_string()));
-                                        }
+                    }
+                    "content_block_delta" => {
+                        let delta = val.get("delta").unwrap_or(&Value::Null);
+                        match delta.get("type").and_then(Value::as_str) {
+                            Some("text_delta") => {
+                                if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                                    if !text.is_empty() {
+                                        yield ModelEvent::TextDelta(text.to_string());
                                     }
                                 }
-                            } else if event_type == "message_delta" {
-                                if let Some(usage) = val.get("usage") {
-                                    let output = usage.get("output_tokens").and_then(Value::as_u64);
-                                    yield Ok(ModelEvent::Usage {
-                                        input_tokens: None,
-                                        output_tokens: output,
-                                    });
+                            }
+                            Some("thinking_delta") | Some("reasoning_delta") => {
+                                if let Some(text) = delta
+                                    .get("thinking")
+                                    .or_else(|| delta.get("text"))
+                                    .and_then(Value::as_str)
+                                {
+                                    if !text.is_empty() {
+                                        yield ModelEvent::ThinkingDelta(text.to_string());
+                                    }
                                 }
                             }
+                            Some("input_json_delta") => {
+                                if let (Some(index), Some(partial)) = (
+                                    current_tool_index,
+                                    delta.get("partial_json").and_then(Value::as_str),
+                                ) {
+                                    yield ModelEvent::ToolCallArgumentsDelta {
+                                        index,
+                                        delta: partial.to_string(),
+                                    };
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    Err(err) => {
-                        yield Err(GatewayError::Provider(format!("Anthropic stream error: {err}")));
-                        return;
+                    "content_block_stop" => {
+                        if let Some(index) = current_tool_index.take() {
+                            yield ModelEvent::ToolCallEnd { index };
+                        }
                     }
+                    "message_delta" => {
+                        if let Some(usage) = val.get("usage") {
+                            yield ModelEvent::Usage(Usage {
+                                input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+                                output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                            });
+                        }
+                        if val
+                            .pointer("/delta/stop_reason")
+                            .and_then(Value::as_str)
+                            == Some("tool_use")
+                        {
+                            finish = FinishReason::ToolUse;
+                        }
+                    }
+                    "message_stop" => break,
+                    _ => {}
                 }
             }
-        };
-
-        Box::pin(stream)
+            yield ModelEvent::Done(finish);
+        })
     }
 }

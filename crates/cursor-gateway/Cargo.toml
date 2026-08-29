@@ -3,6 +3,7 @@ name = "cursor-gateway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 domain = { workspace = true }
@@ -16,27 +17,35 @@ eventsource-stream = "0.2"
 futures-util = "0.3"
 hex = "0.4"
 hudsucker = { version = "0.25", features = ["http2"] }
+include_dir = "0.7"
 json5 = "0.4"
 parking_lot = "0.12"
 pem = "3"
 prost = "0.13"
 prost-types = "0.13"
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["brotli", "deflate", "gzip", "json", "rustls-tls", "stream", "system-proxy"] }
 rcgen = { version = "0.14", features = ["aws_lc_rs", "pem", "x509-parser"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha1 = "0.10"
 thiserror = { workspace = true }
 time = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
-tracing = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "decompression-gzip"] }
+tracing = "0.1"
 url = { workspace = true }
+uuid = { workspace = true }
 x509-parser = "0.18"
-sha1 = "0.10"
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+http-body-util = "0.1"
