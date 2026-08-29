@@ -12,8 +12,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     actor::{self, CursorCommand},
     prompting::PromptCompiler,
-    provider::{create_provider, SharedProvider},
     proto::agent::v1 as pb,
+    provider::{create_provider, SharedProvider},
     GatewayError, Result,
 };
 
@@ -261,7 +261,11 @@ impl CursorSessionRegistry {
     }
 
     pub async fn upstream(&self, request_id: &str) -> bool {
-        self.inner.upstream_runs.lock().await.contains_key(request_id)
+        self.inner
+            .upstream_runs
+            .lock()
+            .await
+            .contains_key(request_id)
     }
 
     pub async fn finish_upstream(&self, request_id: String, generation: u64) {
@@ -276,7 +280,13 @@ impl CursorSessionRegistry {
             if self.inner.runs.lock().await.contains_key(request_id) {
                 return CursorRoute::Local;
             }
-            if let Some(generation) = self.inner.upstream_runs.lock().await.get(request_id).copied()
+            if let Some(generation) = self
+                .inner
+                .upstream_runs
+                .lock()
+                .await
+                .get(request_id)
+                .copied()
             {
                 return CursorRoute::Upstream(generation);
             }
@@ -284,7 +294,13 @@ impl CursorSessionRegistry {
             if self.inner.runs.lock().await.contains_key(request_id) {
                 return CursorRoute::Local;
             }
-            if let Some(generation) = self.inner.upstream_runs.lock().await.get(request_id).copied()
+            if let Some(generation) = self
+                .inner
+                .upstream_runs
+                .lock()
+                .await
+                .get(request_id)
+                .copied()
             {
                 return CursorRoute::Upstream(generation);
             }

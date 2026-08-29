@@ -49,22 +49,26 @@ pub async fn dispatch_tool(
         "semblesearch" | "semblefindrelated" | "semanticsearch" => {
             // Degraded fallback: no semble/ONNX. Prefer a short tool error so the model can Grep.
             Ok(PendingTool::Immediate(ToolOutcome {
-                content: "SemanticSearch is unavailable in Router Switch; use Grep or Glob instead."
-                    .into(),
+                content:
+                    "SemanticSearch is unavailable in Router Switch; use Grep or Glob instead."
+                        .into(),
                 is_error: true,
-                completed_tool_call: Some(interaction::tool_placeholder(&call.name, &call.call_id)?),
+                completed_tool_call: Some(interaction::tool_placeholder(
+                    &call.name,
+                    &call.call_id,
+                )?),
             }))
         }
-        "todowrite" | "updatecurrentstep" | "awaitshell" => Ok(PendingTool::Immediate(
-            ToolOutcome {
+        "todowrite" | "updatecurrentstep" | "awaitshell" => {
+            Ok(PendingTool::Immediate(ToolOutcome {
                 content: "ok".into(),
                 is_error: false,
                 completed_tool_call: Some(interaction::tool_placeholder(
                     &call.name,
                     &call.call_id,
                 )?),
-            },
-        )),
+            }))
+        }
         "shell" | "read" | "delete" | "grep" | "glob" | "readlints" | "write" | "strreplace"
         | "editnotebook" | "task" | "callmcptool" | "fetchmcpresource" | "getmcptools" => {
             let id = *next_exec_id;
@@ -386,9 +390,10 @@ pub async fn complete_interaction(
                     .or_else(|| call.arguments.get("query"))
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let content = WebSearch::new().search(query).await.unwrap_or_else(|err| {
-                    format!("WebSearch failed: {err}")
-                });
+                let content = WebSearch::new()
+                    .search(query)
+                    .await
+                    .unwrap_or_else(|err| format!("WebSearch failed: {err}"));
                 return Ok(ToolOutcome {
                     content,
                     is_error: false,
@@ -414,9 +419,10 @@ pub async fn complete_interaction(
                     .get("url")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let content = WebFetch::new().fetch(url).await.unwrap_or_else(|err| {
-                    format!("WebFetch failed: {err}")
-                });
+                let content = WebFetch::new()
+                    .fetch(url)
+                    .await
+                    .unwrap_or_else(|err| format!("WebFetch failed: {err}"));
                 return Ok(ToolOutcome {
                     content,
                     is_error: false,

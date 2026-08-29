@@ -5,12 +5,7 @@ use domain::CursorSettings;
 use parking_lot::RwLock;
 use tokio::net::TcpListener;
 
-use crate::{
-    handlers::build_router,
-    proxy::CursorProxy,
-    sessions::CursorSessionRegistry,
-    Result,
-};
+use crate::{handlers::build_router, proxy::CursorProxy, sessions::CursorSessionRegistry, Result};
 
 pub async fn start_backend_server(
     registry: CursorSessionRegistry,

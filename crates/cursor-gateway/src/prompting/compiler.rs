@@ -69,9 +69,9 @@ fn render(template: &str, values: &BTreeMap<&str, String>) -> Result<String> {
     for capture in expression.captures_iter(template) {
         let token = capture.get(0).expect("runtime template token");
         let name = &capture[1];
-        let value = values
-            .get(name)
-            .ok_or_else(|| GatewayError::Protocol(format!("runtime template value is missing: {name}")))?;
+        let value = values.get(name).ok_or_else(|| {
+            GatewayError::Protocol(format!("runtime template value is missing: {name}"))
+        })?;
         output.push_str(&template[cursor..token.start()]);
         output.push_str(value);
         cursor = token.end();

@@ -24,13 +24,13 @@ pub mod sessions;
 pub mod web;
 
 pub use error::{GatewayError, Result};
+pub use handlers::build_router;
 pub use harness::{
     clear_proxy_settings, ensure_local_ultra_account, ensure_local_ultra_account_at,
     force_inject_ultra, force_inject_ultra_at, inject_if_missing, inject_if_missing_at,
     settings_match, settings_path, state_db_path, write_proxy_settings, CaManager, CaState,
     LoadedCa, ProxyRuntime,
 };
-pub use handlers::build_router;
 pub use runtime::CursorGatewayRuntime;
 pub use server::start_backend_server;
 pub use sessions::CursorSessionRegistry;

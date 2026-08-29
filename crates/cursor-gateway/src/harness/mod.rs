@@ -9,6 +9,4 @@ pub use account::{
 };
 pub use ca::{CaManager, CaState, LoadedCa};
 pub use proxy::ProxyRuntime;
-pub use settings::{
-    clear_proxy_settings, settings_match, settings_path, write_proxy_settings,
-};
+pub use settings::{clear_proxy_settings, settings_match, settings_path, write_proxy_settings};

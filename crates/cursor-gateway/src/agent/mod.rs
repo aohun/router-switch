@@ -7,11 +7,10 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::{
-    interaction,
-    lifecycle,
+    interaction, lifecycle,
     model::{FinishReason, ModelInvocation, ProviderMessage, ToolCall, Usage},
-    provider::ModelEvent,
     proto::agent::v1 as pb,
+    provider::ModelEvent,
     sessions::{CursorSessionHandle, CursorSessionRegistry},
     GatewayError, Result,
 };
@@ -137,14 +136,8 @@ async fn run_loop(
             let outcome = match pending {
                 PendingTool::Immediate(outcome) => outcome,
                 PendingTool::AwaitClient { kind } => {
-                    wait_for_tool_result(
-                        &handle,
-                        client_messages,
-                        call,
-                        kind,
-                        &cancellation,
-                    )
-                    .await?
+                    wait_for_tool_result(&handle, client_messages, call, kind, &cancellation)
+                        .await?
                 }
             };
             let ToolOutcome {

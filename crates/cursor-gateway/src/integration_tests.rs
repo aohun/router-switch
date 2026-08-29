@@ -386,7 +386,10 @@ async fn tool_round_trip_resumes_model_until_done() {
     for _ in 0..80 {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         while let Ok(frame) = subscriber.try_recv() {
-            if frame.first().is_some_and(|f| f & connect::END_STREAM_FLAG != 0) {
+            if frame
+                .first()
+                .is_some_and(|f| f & connect::END_STREAM_FLAG != 0)
+            {
                 saw_end = true;
             }
             if let Ok(frames) = decode_frames(&frame) {
@@ -524,15 +527,13 @@ async fn web_fetch_server_path_after_client_approval() {
         message: Some(pb::agent_client_message::Message::InteractionResponse(
             pb::InteractionResponse {
                 id: query_id,
-                result: Some(
-                    pb::interaction_response::Result::WebFetchRequestResponse(
-                        pb::WebFetchRequestResponse {
-                            result: Some(pb::web_fetch_request_response::Result::Approved(
-                                pb::web_fetch_request_response::Approved {},
-                            )),
-                        },
-                    ),
-                ),
+                result: Some(pb::interaction_response::Result::WebFetchRequestResponse(
+                    pb::WebFetchRequestResponse {
+                        result: Some(pb::web_fetch_request_response::Result::Approved(
+                            pb::web_fetch_request_response::Approved {},
+                        )),
+                    },
+                )),
             },
         )),
     };
@@ -548,7 +549,10 @@ async fn web_fetch_server_path_after_client_approval() {
     for _ in 0..80 {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         while let Ok(frame) = subscriber.try_recv() {
-            if frame.first().is_some_and(|f| f & connect::END_STREAM_FLAG != 0) {
+            if frame
+                .first()
+                .is_some_and(|f| f & connect::END_STREAM_FLAG != 0)
+            {
                 saw_end = true;
             }
         }
@@ -624,7 +628,10 @@ fn prompt_compiler_embeds_system_and_tools() {
         )
         .unwrap();
     assert!(!spec.instructions.is_empty());
-    assert!(spec.tools.iter().any(|t| t.name == "Read" || t.name == "Shell"));
+    assert!(spec
+        .tools
+        .iter()
+        .any(|t| t.name == "Read" || t.name == "Shell"));
     let _ = PromptSpec {
         instructions: spec.instructions,
         tools: spec.tools,

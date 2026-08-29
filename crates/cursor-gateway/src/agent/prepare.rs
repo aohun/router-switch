@@ -60,8 +60,7 @@ pub async fn prepare(
 
     if combined_user.trim().is_empty() {
         return Err(GatewayError::Protocol(
-            "AgentRunRequest produced an empty user prompt (no text, history, or blobs)"
-                .into(),
+            "AgentRunRequest produced an empty user prompt (no text, history, or blobs)".into(),
         ));
     }
 
@@ -79,14 +78,10 @@ pub async fn prepare(
         .compiler()
         .runtime_message(mode, &runtime_values)
         .unwrap_or_else(|_| String::new());
-    let mut prompt = registry.compiler().prompt_spec(
-        mode,
-        &model_id,
-        Some(&model_id),
-        &[],
-        false,
-        false,
-    )?;
+    let mut prompt =
+        registry
+            .compiler()
+            .prompt_spec(mode, &model_id, Some(&model_id), &[], false, false)?;
     if !runtime.is_empty() {
         prompt.instructions = format!("{}\n\n{}", prompt.instructions, runtime);
     }

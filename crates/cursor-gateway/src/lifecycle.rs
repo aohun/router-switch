@@ -19,7 +19,9 @@ pub fn finish_success(handle: &CursorSessionHandle) {
 pub fn fail(handle: &CursorSessionHandle, error: &GatewayError) -> Result<()> {
     let stream_error = match error {
         GatewayError::Provider(_) | GatewayError::Http(_) => provider_error(error),
-        GatewayError::Protocol(message) => plain_message(ConnectCode::InvalidArgument, message.clone()),
+        GatewayError::Protocol(message) => {
+            plain_message(ConnectCode::InvalidArgument, message.clone())
+        }
         GatewayError::Decode(_) | GatewayError::Json(_) | GatewayError::Hex(_) => {
             plain_error(ConnectCode::InvalidArgument, error)
         }

@@ -7,11 +7,7 @@ use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    connect::END_STREAM_FLAG,
-    sessions::CursorSessionRegistry,
-    Result,
-};
+use crate::{connect::END_STREAM_FLAG, sessions::CursorSessionRegistry, Result};
 
 pub async fn stream(registry: &CursorSessionRegistry, request_id: &str) -> Result<Response<Body>> {
     let handle = registry.get_or_create(request_id).await?;

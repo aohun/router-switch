@@ -8,9 +8,10 @@ use axum::{
 use tower_http::decompression::RequestDecompressionLayer;
 
 use crate::{
-    account, analytics, bidi_append, chat, connect, model_catalog, run_sse,
+    account, analytics, bidi_append, chat, connect, model_catalog,
     proto::{agent::v1 as agent, aiserver::v1 as ai},
     proxy::{self, CursorProxy},
+    run_sse,
     sessions::{CursorParent, CursorRoute, CursorSessionRegistry},
     Result,
 };
@@ -25,7 +26,10 @@ pub fn build_router(registry: CursorSessionRegistry, proxy: CursorProxy) -> Rout
         registry: registry.clone(),
     };
     Router::new()
-        .route("/__router-switch__/healthz", get(|| async { StatusCode::NO_CONTENT }))
+        .route(
+            "/__router-switch__/healthz",
+            get(|| async { StatusCode::NO_CONTENT }),
+        )
         .route("/agent.v1.AgentService/RunSSE", post(run_sse_handler))
         .route(
             "/aiserver.v1.BidiService/BidiAppend",

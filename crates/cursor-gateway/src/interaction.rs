@@ -88,11 +88,7 @@ pub fn tool_placeholder(name: &str, call_id: &str) -> Result<pb::ToolCall> {
             Tool::CommunicateUpdateToolCall(pb::CommunicateUpdateToolCall::default())
         }
         "getmcptools" => Tool::GetMcpToolsToolCall(pb::GetMcpToolsToolCall::default()),
-        _ => {
-            return Err(GatewayError::Protocol(format!(
-                "unsupported tool: {name}"
-            )))
-        }
+        _ => return Err(GatewayError::Protocol(format!("unsupported tool: {name}"))),
     };
     Ok(pb::ToolCall {
         hook_additional_contexts: Vec::new(),

@@ -28,7 +28,9 @@ impl Mode {
             "multitask" => Ok(Self::Multitask),
             "subagent" => Ok(Self::Subagent),
             "compaction" => Ok(Self::Compaction),
-            other => Err(GatewayError::Config(format!("unknown prompt mode: {other}"))),
+            other => Err(GatewayError::Config(format!(
+                "unknown prompt mode: {other}"
+            ))),
         }
     }
 
@@ -84,9 +86,9 @@ impl PromptAssets {
             EMBEDDED_PROMPTS
                 .get_file(path)
                 .map(|file| {
-                    file.contents_utf8()
-                        .map(str::to_string)
-                        .ok_or_else(|| GatewayError::Config(format!("prompt asset is not UTF-8: {path}")))
+                    file.contents_utf8().map(str::to_string).ok_or_else(|| {
+                        GatewayError::Config(format!("prompt asset is not UTF-8: {path}"))
+                    })
                 })
                 .transpose()
         })
@@ -109,8 +111,9 @@ impl PromptAssets {
         ] {
             let prompt = asset(&format!("{}/prompt.md", mode.name()))?
                 .ok_or_else(|| GatewayError::Config(format!("missing prompt for {mode:?}")))?;
-            let runtime = asset(&format!("{}/runtime.md", mode.name()))?
-                .ok_or_else(|| GatewayError::Config(format!("missing runtime template for {mode:?}")))?;
+            let runtime = asset(&format!("{}/runtime.md", mode.name()))?.ok_or_else(|| {
+                GatewayError::Config(format!("missing runtime template for {mode:?}"))
+            })?;
             validate_runtime_template(mode, &runtime)?;
             let manifest = asset(&format!("modes/{}.json", mode.name()))?
                 .ok_or_else(|| GatewayError::Config(format!("missing manifest for {mode:?}")))?;
@@ -122,9 +125,9 @@ impl PromptAssets {
             });
         }
         Ok(Self {
-            modes: modes
-                .try_into()
-                .map_err(|_| GatewayError::Config("incomplete Cursor prompt mode catalog".into()))?,
+            modes: modes.try_into().map_err(|_| {
+                GatewayError::Config("incomplete Cursor prompt mode catalog".into())
+            })?,
         })
     }
 
