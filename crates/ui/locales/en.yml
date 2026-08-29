@@ -251,7 +251,7 @@ provider:
 
 cursor:
   gateway_title: "Cursor Local Gateway"
-  gateway_desc: "Intercept Cursor client traffic and route to custom AI providers with Agent & Chat dual-channel streaming."
+  gateway_desc: "Local Agent BYOK gateway: with a third-party provider, Agent runs locally (tools still execute in the Cursor client); official provider traffic is forwarded upstream to Cursor."
   gateway_status: "Gateway Status"
   gateway_running: "Running"
   gateway_stopped: "Stopped"

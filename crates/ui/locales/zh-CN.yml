@@ -251,7 +251,7 @@ provider:
 
 cursor:
   gateway_title: "Cursor 本地网关"
-  gateway_desc: "拦截 Cursor 客户端流量并透明转发到自定义 AI 接口，支持 Agent / Chat 双通道流式传输。"
+  gateway_desc: "本地 Agent BYOK 网关：第三方服务商下在 Cursor 内跑 Agent（工具仍由 Cursor 客户端执行），官方服务商流量透传至 Cursor 上游。"
   gateway_status: "网关状态"
   gateway_running: "运行中"
   gateway_stopped: "已停止"
