@@ -367,6 +367,8 @@ pub struct CatalogRowDraft {
     pub model: Entity<InputState>,
     pub context_window: Entity<InputState>,
     pub reasoning_effort: Entity<SelectState<Vec<ReasoningOptionItem>>>,
+    /// Codex 专属: 该模型声明支持的思考档位; None = 默认三档
+    pub reasoning_levels: Option<Vec<String>>,
     pub model_select: Option<Entity<SelectState<Vec<ModelSelectItem>>>>,
     pub _model_select_sub: Option<Subscription>,
 }
@@ -377,6 +379,7 @@ impl CatalogRowDraft {
         model_val: &str,
         context_window_val: Option<u64>,
         reasoning_effort_val: Option<&str>,
+        reasoning_levels_val: Option<Vec<String>>,
         fetched_models: &[String],
         window: &mut Window,
         cx: &mut App,
@@ -469,6 +472,7 @@ impl CatalogRowDraft {
             model,
             context_window,
             reasoning_effort,
+            reasoning_levels: reasoning_levels_val,
             model_select,
             _model_select_sub,
         }
@@ -544,6 +548,7 @@ impl CatalogRowDraft {
             model: model_trimmed.to_string(),
             context_window,
             reasoning_effort,
+            reasoning_levels: self.reasoning_levels.clone(),
         })
     }
 
@@ -3041,6 +3046,7 @@ impl RouterApp {
                 "",
                 Some(128_000),
                 None,
+                None,
                 &fetched,
                 window,
                 cx,
@@ -4739,6 +4745,33 @@ impl RouterApp {
                 session::XAI_PROVIDER,
                 cx,
             ))
+    }
+
+    /// 切换 Codex 映射行的思考档位声明
+    fn toggle_catalog_row_level(
+        &mut self,
+        row_index: usize,
+        level: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = self.form.as_mut() {
+            if form.app != AppKind::Codex {
+                return;
+            }
+            if let Some(row) = form.catalog_rows.get_mut(row_index) {
+                let mut levels = row
+                    .reasoning_levels
+                    .clone()
+                    .unwrap_or_else(|| vec!["low".into(), "medium".into(), "high".into()]);
+                if levels.iter().any(|l| l == level) {
+                    levels.retain(|l| l != level);
+                } else {
+                    levels.push(level.to_string());
+                }
+                row.reasoning_levels = (!levels.is_empty()).then_some(levels);
+                cx.notify();
+            }
+        }
     }
 
     fn refresh_skills(&mut self, cx: &mut Context<Self>) {
@@ -9679,6 +9712,10 @@ impl RouterApp {
                                     )
                                     .children(
                                         form.catalog_rows.iter().enumerate().map(|(idx, row)| {
+                                            v_flex()
+                                                .w_full()
+                                                .gap(px(4.))
+                                                .child(
                                             h_flex()
                                                 .w_full()
                                                 .items_center()
@@ -9737,7 +9774,54 @@ impl RouterApp {
                                                                     this.remove_catalog_row(idx, cx);
                                                                 })),
                                                         ),
+                                                ),
+                                            )
+                                            // Codex: 逐模型思考档位声明(多选)
+                                            .when(form.app == AppKind::Codex, |this| {
+                                                let effective = row
+                                                    .reasoning_levels
+                                                    .clone()
+                                                    .unwrap_or_else(|| {
+                                                        vec!["low".into(), "medium".into(), "high".into()]
+                                                    });
+                                                this.child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .items_center()
+                                                        .gap(px(4.))
+                                                        .pl(px(4.))
+                                                        .pb(px(2.))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(11.))
+                                                                .text_color(theme.muted_foreground)
+                                                                .child("支持档位:"),
+                                                        )
+                                                        .children(domain::REASONING_LEVELS.map(
+                                                            |level| {
+                                                                let selected = effective
+                                                                    .iter()
+                                                                    .any(|l| l == level);
+                                                                Button::new(SharedString::from(
+                                                                    format!(
+                                                                        "row-level-{idx}-{level}"
+                                                                    ),
+                                                                ))
+                                                                .ghost()
+                                                                .xsmall()
+                                                                .selected(selected)
+                                                                .label(level.to_string())
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        this.toggle_catalog_row_level(
+                                                                            idx, level, cx,
+                                                                        );
+                                                                    },
+                                                                ))
+                                                            },
+                                                        )),
                                                 )
+                                            })
                                         }),
                                     )
                                     .into_any_element()
@@ -10005,7 +10089,13 @@ impl FormDraft {
             String,
             String,
             bool,
-            Vec<(String, String, Option<u64>, Option<String>)>,
+            Vec<(
+                String,
+                String,
+                Option<u64>,
+                Option<String>,
+                Option<Vec<String>>,
+            )>,
         ) = match &form {
             ProviderForm::Codex(f) => (
                 f.name.clone(),
@@ -10021,6 +10111,7 @@ impl FormDraft {
                             m.model.clone(),
                             m.context_window,
                             m.reasoning_effort.clone(),
+                            m.reasoning_levels.clone(),
                         )
                     })
                     .collect(),
@@ -10039,6 +10130,7 @@ impl FormDraft {
                             m.model.clone(),
                             m.context_window,
                             m.reasoning_effort.clone(),
+                            None,
                         )
                     })
                     .collect(),
@@ -10057,6 +10149,7 @@ impl FormDraft {
                             m.model.clone(),
                             m.context_window,
                             m.reasoning_effort.clone(),
+                            None,
                         )
                     })
                     .collect(),
@@ -10074,6 +10167,7 @@ impl FormDraft {
                             m.display_name.clone(),
                             m.model_id.clone(),
                             m.context_limit,
+                            None,
                             None,
                         )
                     })
@@ -10093,6 +10187,7 @@ impl FormDraft {
                             m.model_id.clone(),
                             m.context_window,
                             None,
+                            None,
                         )
                     })
                     .collect(),
@@ -10111,6 +10206,7 @@ impl FormDraft {
                             m.model.clone(),
                             m.context_window,
                             m.reasoning_effort.clone(),
+                            None,
                         )
                     })
                     .collect(),
@@ -10128,6 +10224,7 @@ impl FormDraft {
                             m.display_name.clone(),
                             m.model_id.clone(),
                             m.context_limit,
+                            None,
                             None,
                         )
                     })
@@ -10205,8 +10302,8 @@ impl FormDraft {
 
         let catalog_rows = catalog_rows_data
             .into_iter()
-            .map(|(dn, m, cw, re)| {
-                CatalogRowDraft::new(&dn, &m, cw, re.as_deref(), &[], window, cx)
+            .map(|(dn, m, cw, re, rl)| {
+                CatalogRowDraft::new(&dn, &m, cw, re.as_deref(), rl, &[], window, cx)
             })
             .collect();
 

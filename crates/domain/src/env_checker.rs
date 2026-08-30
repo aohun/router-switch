@@ -149,16 +149,124 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-/// Build search paths for locating candidate binaries across the system
+/// Windows: 展开 `%VAR%` 环境变量引用。注册表 `Path` 是 `REG_EXPAND_SZ`,
+/// winreg 读出的字符串不会自动展开; Winlogon 启动的进程即使丢失用户 PATH,
+/// `%USERPROFILE%` / `%LOCALAPPDATA%` / `%SystemRoot%` 等变量仍然存在,
+/// 因此逐个用 `std::env::var` 展开是安全的。未定义的变量原样保留。
+#[cfg(target_os = "windows")]
+fn expand_env_chars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let var = &after[..end];
+                match std::env::var(var) {
+                    Ok(value) => out.push_str(&value),
+                    Err(_) => out.push_str(&format!("%{var}%")),
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Windows: 合并注册表(HKLM + HKCU)与进程 PATH, 去重保序。
+/// 进程 PATH 排最前(继承到的仍生效), 其后用户、机器——与"新开终端看到的 PATH"
+/// 的解析顺序一致, 修复应用内自更新重启后用户 PATH 丢失导致「未安装」的问题。
+#[cfg(target_os = "windows")]
+pub fn effective_path_paths() -> Vec<PathBuf> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    let process = std::env::var("PATH").unwrap_or_default();
+    let user = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Environment")
+        .and_then(|key| key.get_value::<String, _>("Path"))
+        .map(|raw| expand_env_chars(&raw))
+        .unwrap_or_default();
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment")
+        .and_then(|key| key.get_value::<String, _>("Path"))
+        .map(|raw| expand_env_chars(&raw))
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for segment in [process, user, machine] {
+        for part in segment.split(';') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            push_unique_path(&mut out, PathBuf::from(part));
+        }
+    }
+    out
+}
+
+/// 非 Windows: 直接使用进程 PATH
+#[cfg(not(target_os = "windows"))]
+pub fn effective_path_paths() -> Vec<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
+/// Build search paths for locating candidate binaries across the system.
+///
+/// PATH(Windows 下为注册表合并后的有效 PATH)条目排在最前——终端里 `tool`
+/// 解析到哪个二进制, 检测就优先报告哪个, 避免 `~/.local/bin` 里的旧 npm shim
+/// 遮蔽新装版本; 版本管理器与硬编码回退目录在其后作为兜底。
 pub fn build_tool_search_paths(tool: &str) -> Vec<PathBuf> {
     let mut search_paths = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
+
+    // 1) 有效 PATH 优先
+    for part in effective_path_paths() {
+        push_unique_path(&mut search_paths, part);
+    }
 
     if tool == "grok" && !home.as_os_str().is_empty() {
         push_unique_path(&mut search_paths, home.join(".grok/bin"));
     }
     if tool == "opencode" && !home.as_os_str().is_empty() {
         push_unique_path(&mut search_paths, home.join(".opencode/bin"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // 独立安装器目录(winget / 官方安装包, 可能从未写入 PATH)
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let local_app_data = PathBuf::from(local_app_data);
+            if tool == "codex" {
+                push_unique_path(
+                    &mut search_paths,
+                    local_app_data
+                        .join("Programs")
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("bin"),
+                );
+            }
+            if tool == "claude" {
+                push_unique_path(
+                    &mut search_paths,
+                    local_app_data.join("Programs").join("claude"),
+                );
+            }
+        }
+        // npm 全局目录(自定义 prefix 场景)
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            push_unique_path(&mut search_paths, PathBuf::from(app_data).join("npm"));
+        }
     }
 
     if !home.as_os_str().is_empty() {
@@ -220,12 +328,6 @@ pub fn build_tool_search_paths(tool: &str) -> Vec<PathBuf> {
         }
     }
 
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for part in std::env::split_paths(&path_var) {
-            push_unique_path(&mut search_paths, part);
-        }
-    }
-
     search_paths
 }
 
@@ -252,17 +354,31 @@ pub fn resolve_path_default(tool: &str) -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("cmd")
-            .args(["/C", &format!("where {}", tool)])
-            .output()
-            .ok()?;
+        // 用合并注册表后的有效 PATH 执行 where, 并跳过 Windows 应用执行别名
+        // (Microsoft\WindowsApps 下的重解析点只会拉起商店/协议处理器)
+        let effective = effective_path_paths();
+        let mut command = Command::new("cmd");
+        command.args(["/C", &format!("where {tool}")]);
+        let joined = effective
+            .iter()
+            .filter(|dir| {
+                !dir.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("microsoft\\windowsapps")
+            })
+            .map(|dir| dir.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(";");
+        command.env("PATH", &joined);
+        let output = command.output().ok()?;
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(first) = text.lines().next().map(str::trim) {
-                if !first.is_empty() {
-                    let p = PathBuf::from(first);
-                    return std::fs::canonicalize(&p).ok().or(Some(p));
+            for line in text.lines().map(str::trim) {
+                if line.is_empty() || line.to_ascii_lowercase().contains("microsoft\\windowsapps") {
+                    continue;
                 }
+                let p = PathBuf::from(line);
+                return std::fs::canonicalize(&p).ok().or(Some(p));
             }
         }
     }

@@ -14,3 +14,5 @@ toml.workspace = true
 ureq.workspace = true
 url.workspace = true
 uuid.workspace = true
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"

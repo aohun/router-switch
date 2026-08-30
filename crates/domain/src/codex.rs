@@ -28,6 +28,9 @@ pub struct CodexModelMapping {
     pub model: String,
     pub context_window: Option<u64>,
     pub reasoning_effort: Option<String>,
+    /// 该模型真实支持的思考档位(声明式); None = 使用默认三档 (low/medium/high)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -272,6 +275,7 @@ pub fn generate_catalog_json(mappings: &[CodexModelMapping]) -> Option<String> {
             } else {
                 &m.display_name
             };
+            let declared = declared_reasoning_levels(m.reasoning_levels.as_deref());
             let mut obj = json!({
                 "slug": m.model,
                 "display_name": display_name,
@@ -279,8 +283,11 @@ pub fn generate_catalog_json(mappings: &[CodexModelMapping]) -> Option<String> {
                 "context_window": context,
                 "max_context_window": context,
                 "supports_reasoning_summaries": true,
-                "default_reasoning_level": default_reasoning_level(m.reasoning_effort.as_deref()),
-                "supported_reasoning_levels": reasoning_level_presets(),
+                "default_reasoning_level": default_reasoning_level_for(
+                    m.reasoning_effort.as_deref(),
+                    &declared,
+                ),
+                "supported_reasoning_levels": reasoning_level_presets(&declared),
                 "shell_type": "shell_command",
                 "visibility": "list",
                 "supported_in_api": true,
@@ -308,16 +315,45 @@ pub fn generate_catalog_json(mappings: &[CodexModelMapping]) -> Option<String> {
 /// catalog models have no bundled prompt, so carry a compact fallback.
 const CODEX_FALLBACK_BASE_INSTRUCTIONS: &str = "You are Codex, a software engineering agent running on the user's machine. Work inside the user's workspace: read and edit files, run commands, and complete the requested coding tasks carefully and safely.";
 
-/// Reasoning levels this Codex build accepts for a custom catalog model,
-/// folded from the app's finer effort choices (xhigh/max act as `high`).
-fn reasoning_level_presets() -> Value {
-    ["low", "medium", "high"]
+/// Codex 认可的八个标准思考档位
+pub const REASONING_LEVELS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+/// 归并映射行声明的档位: 丢弃未知值(避免生成 Codex 会拒绝的条目), 保持声明顺序;
+/// 未声明或全部无效时回退默认三档。
+fn declared_reasoning_levels(levels: Option<&[String]>) -> Vec<String> {
+    let declared: Vec<String> = levels
+        .unwrap_or(&[])
+        .iter()
+        .map(|level| level.trim().to_ascii_lowercase())
+        .filter(|level| REASONING_LEVELS.contains(&level.as_str()))
+        .collect();
+    if declared.is_empty() {
+        vec!["low".to_string(), "medium".to_string(), "high".to_string()]
+    } else {
+        declared
+    }
+}
+
+fn reasoning_level_presets(levels: &[String]) -> Value {
+    levels
         .iter()
         .map(|level| {
-            let name = match *level {
-                "low" => "Low",
-                "high" => "High",
-                _ => "Medium",
+            let name: String = match level.as_str() {
+                "low" => "Low".to_string(),
+                "high" => "High".to_string(),
+                "medium" => "Medium".to_string(),
+                other => {
+                    let mut chars = other.chars();
+                    match chars.next() {
+                        Some(first) => {
+                            let rest: String = chars.collect();
+                            format!("{}{rest}", first.to_ascii_uppercase())
+                        }
+                        None => other.to_string(),
+                    }
+                }
             };
             json!({
                 "effort": level,
@@ -327,14 +363,31 @@ fn reasoning_level_presets() -> Value {
         .collect()
 }
 
-fn default_reasoning_level(effort: Option<&str>) -> &'static str {
-    match effort.map(str::trim) {
+/// 默认档位: 声明的 effort 归一后仍在档位列表中则用它, 否则用列表中最高档。
+fn default_reasoning_level_for(effort: Option<&str>, levels: &[String]) -> String {
+    let effort_normalized = match effort.map(str::trim) {
         Some("low") | Some("minimal") => "low",
+        Some("medium") => "medium",
         Some("high") | Some("xhigh") | Some("extra-high") | Some("extra high") | Some("max") => {
             "high"
         }
-        _ => "medium",
+        _ => "",
+    };
+    if !effort_normalized.is_empty() && levels.iter().any(|l| l == effort_normalized) {
+        return effort_normalized.to_string();
     }
+    // 列表中按标准顺序的最高档
+    levels
+        .iter()
+        .filter(|level| REASONING_LEVELS.contains(&level.as_str()))
+        .max_by_key(|level| {
+            REASONING_LEVELS
+                .iter()
+                .position(|l| l == *level)
+                .unwrap_or(0)
+        })
+        .cloned()
+        .unwrap_or_else(|| "medium".to_string())
 }
 
 pub fn generate_third_party_config(provider_name: &str, base_url: &str, model: &str) -> String {
@@ -586,6 +639,12 @@ mod tests {
             model: "gemini-3.7-flash-high".into(),
             context_window: Some(200_000),
             reasoning_effort: Some("high".into()),
+            reasoning_levels: Some(vec![
+                "low".into(),
+                "medium".into(),
+                "high".into(),
+                "xhigh".into(),
+            ]),
         }])
         .expect("catalog json");
 
@@ -619,7 +678,8 @@ mod tests {
             .iter()
             .map(|level| level["effort"].as_str().unwrap())
             .collect();
-        assert_eq!(efforts, vec!["low", "medium", "high"]);
+        // 声明了 reasoning_levels 时按声明生成
+        assert_eq!(efforts, vec!["low", "medium", "high", "xhigh"]);
         assert!(levels[0].get("description").is_some());
         // Legacy key retained for older Codex builds.
         assert_eq!(model["reasoning_effort"], "high");

@@ -35,7 +35,8 @@ pub use codex::{
     generate_third_party_auth, generate_third_party_config,
     generate_third_party_config_with_catalog, has_login_material, official_codex_provider,
     official_codex_settings, parse_codex_form, CodexForm, CodexKind, CodexModelMapping,
-    CodexPreset, CodexSettings, DEFAULT_CODEX_MODEL, OFFICIAL_CODEX_ID, RESPONSES_PRESETS,
+    CodexPreset, CodexSettings, DEFAULT_CODEX_MODEL, OFFICIAL_CODEX_ID, REASONING_LEVELS,
+    RESPONSES_PRESETS,
 };
 pub use connectivity::{
     check_reachability, check_reachability_with_retry, extract_provider_probe_target,

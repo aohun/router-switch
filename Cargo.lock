@@ -1824,6 +1824,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
+ "winreg",
 ]
 
 [[package]]

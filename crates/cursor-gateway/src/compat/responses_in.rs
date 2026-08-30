@@ -106,6 +106,7 @@ pub(crate) fn parse(body: &Value) -> Result<ParsedInbound> {
         history,
         stream,
         extra,
+        hosted_web_search: false,
     })
 }
 

@@ -205,6 +205,10 @@ pub fn build_compat_router(registry: CompatRegistry) -> Router {
         .route("/chat/completions", post(chat_completions))
         .route("/responses", post(responses))
         .route("/models", get(list_models))
+        // Codex 新客户端把搜索命令发到独立的 /alpha/search 协议(而非内嵌在
+        // /responses 里); 不注册会在路由层直接 404。载荷按 Responses 方言处理。
+        .route("/alpha/search", post(responses))
+        .route("/v1/alpha/search", post(responses))
         .fallback(compat_fallback)
         .layer(DefaultBodyLimit::disable())
         .with_state(registry)
@@ -302,6 +306,16 @@ async fn route_compat(
     let requested_model = parsed.model.clone();
     let upstream_model = map_model(&target, &requested_model);
     parsed.extra = normalize_extra_for_upstream(parsed.extra, target.protocol);
+    // Anthropic 托管 WebSearch → OpenAI Responses 内建 web_search 工具:
+    // 搜索在上游执行, 结果与引用随后随响应文本返回。
+    if parsed.hosted_web_search && target.protocol == RequestProtocol::OpenAiResponses {
+        parsed.extra["hosted_web_search"] = Value::Bool(true);
+    } else {
+        parsed
+            .extra
+            .as_object_mut()
+            .map(|obj| obj.remove("hosted_web_search"));
+    }
 
     let invocation = ModelInvocation {
         model: upstream_model.clone(),
@@ -447,6 +461,8 @@ pub(crate) struct ParsedInbound {
     pub history: Vec<crate::model::ProviderMessage>,
     pub stream: bool,
     pub extra: Value,
+    /// 请求携带 Anthropic 托管 WebSearch 工具(web_search_20250305 等)
+    pub hosted_web_search: bool,
 }
 
 #[derive(Debug, Default)]
@@ -851,6 +867,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn alpha_search_endpoint_is_served() {
+        // Codex 新客户端把搜索发到 /alpha/search; 未注册时会在路由层 404
+        let upstream = spawn_chat_upstream(false).await;
+        let mut gateway = routed_gateway(upstream);
+        let port = gateway.start(0).await.unwrap();
+        for path in ["/alpha/search", "/v1/alpha/search"] {
+            let response = reqwest::Client::new()
+                .post(format!("http://127.0.0.1:{port}{path}"))
+                .bearer_auth("sk-mock-key-12345")
+                .json(&json!({"model": "gpt-5.3", "stream": false, "input": "search weather"}))
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "{path} -> {}",
+                response.status()
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_hosted_web_search_is_not_sent_as_function() {
+        let body = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "stream": false,
+            "messages": [{"role": "user", "content": "search"}],
+            "tools": [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 8},
+                {"type": "text_editor_20250124", "name": "str_replace_editor"},
+                {"name": "read_file", "description": "read", "input_schema": {"type": "object"}},
+            ],
+        });
+        let parsed = anthropic_in::parse(&body).unwrap();
+        assert!(parsed.hosted_web_search);
+        // 只有普通 function 工具进入 tools 列表
+        assert_eq!(parsed.prompt.tools.len(), 1);
+        assert_eq!(parsed.prompt.tools[0].name, "read_file");
     }
 
     #[test]

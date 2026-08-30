@@ -74,6 +74,14 @@ pub(crate) fn parse(body: &Value) -> Result<ParsedInbound> {
     }
 
     let tools = parse_tools(body.get("tools"));
+    let hosted_web_search = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| is_hosted_tool(tool) && super::str_field(tool, "name") == "web_search")
+        });
     let extra = take_extra(body, &["max_tokens", "temperature", "top_p", "top_k"]);
     Ok(ParsedInbound {
         model,
@@ -84,7 +92,21 @@ pub(crate) fn parse(body: &Value) -> Result<ParsedInbound> {
         history,
         stream,
         extra,
+        hosted_web_search,
     })
+}
+
+/// Anthropic 托管工具类型(web_search_20250305 / web_search / computer_* 等):
+/// 它们不是 function 工具, 不能当作 function 发给上游
+fn is_hosted_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|tool_type| {
+            tool_type.starts_with("web_search")
+                || tool_type.starts_with("computer_")
+                || tool_type.starts_with("text_editor")
+                || tool_type.starts_with("bash_")
+        })
 }
 
 fn parse_tools(tools: Option<&Value>) -> Vec<ToolDefinition> {
@@ -93,6 +115,7 @@ fn parse_tools(tools: Option<&Value>) -> Vec<ToolDefinition> {
         .map(|tools| {
             tools
                 .iter()
+                .filter(|tool| !is_hosted_tool(tool))
                 .filter_map(|tool| {
                     let name = super::str_field(tool, "name");
                     if name.is_empty() {

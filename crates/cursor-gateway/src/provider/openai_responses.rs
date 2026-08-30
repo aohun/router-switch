@@ -94,6 +94,14 @@ impl Provider for OpenAiResponsesProvider {
 
         Box::pin(try_stream! {
             let url = resolve_provider_url(&base_url, "openai-responses")?;
+            let mut extra_params = invocation.extra_params.clone();
+            // Anthropic 托管 WebSearch → Responses 内建 web_search 工具:
+            // 搜索在上游执行, 结果与 URL 引用随响应返回
+            let hosted_web_search = extra_params
+                .as_object_mut()
+                .and_then(|obj| obj.remove("hosted_web_search"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
             let mut body = json!({
                 "model": model,
                 "stream": true,
@@ -105,7 +113,13 @@ impl Provider for OpenAiResponsesProvider {
                     "parameters": tool.parameters,
                 })).collect::<Vec<_>>(),
             });
-            merge_extra_params(&mut body, &invocation.extra_params)?;
+            if hosted_web_search {
+                body["tools"].as_array_mut().expect("tools array").insert(
+                    0,
+                    json!({ "type": "web_search" }),
+                );
+            }
+            merge_extra_params(&mut body, &extra_params)?;
 
             let request = client
                 .post(&url)
@@ -155,8 +169,22 @@ impl Provider for OpenAiResponsesProvider {
                             }
                         }
                     }
-                    "response.output_item.added" => {
+                    "response.output_item.added" | "response.output_item.done" => {
                         let item = val.get("item").unwrap_or(&Value::Null);
+                        if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+                            // 托管搜索在上游执行: 把搜索动作转成可见文本,
+                            // 结果与 URL 引用包含在其后的模型输出里
+                            let query = item
+                                .pointer("/action/query")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            if event_type == "response.output_item.added" && !query.is_empty() {
+                                yield ModelEvent::TextDelta(format!(
+                                    "\n[Web Search: {query}]\n"
+                                ));
+                            }
+                            continue;
+                        }
                         if item.get("type").and_then(Value::as_str) == Some("function_call") {
                             let call_id = item
                                 .get("call_id")
