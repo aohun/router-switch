@@ -109,6 +109,17 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn usage_script_guide_keeps_template_variables_literal() {
+        rust_i18n::set_locale("zh-CN");
+        let tips = rust_i18n::t!("usage_script.guide_tips").to_string();
+        assert!(tips.contains("{{apiKey}}"), "tips: {tips}");
+        assert!(tips.contains("{{baseUrl}}"), "tips: {tips}");
+        let sample = rust_i18n::t!("usage_script.guide_sample").to_string();
+        assert!(sample.contains("{{baseUrl}}/api/usage"), "sample: {sample}");
+        assert!(sample.contains('\n'), "sample should be multi-line");
+    }
+
+    #[test]
     fn test_i18n_locales() {
         println!("Available locales: {:?}", rust_i18n::available_locales!());
         rust_i18n::set_locale("zh-CN");

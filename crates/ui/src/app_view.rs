@@ -1081,7 +1081,7 @@ impl RouterApp {
         let usage_user_id = cx.new(|cx| InputState::new(window, cx));
         let usage_timeout = cx.new(|cx| InputState::new(window, cx));
         let usage_interval = cx.new(|cx| InputState::new(window, cx));
-        let usage_code = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+        let usage_code = cx.new(|cx| InputState::new(window, cx).code_editor("javascript"));
 
         let mut app = Self {
             workspace,
@@ -4540,6 +4540,64 @@ impl RouterApp {
                                 ),
                         )
                         .child(div().h(px(300.)).child(Input::new(&self.usage_code))),
+                ),
+            )
+            // Script guide
+            .child(
+                theme::tile(cx).child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.guide_title").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.guide_format").to_string()),
+                        )
+                        .child(
+                            div()
+                                .p(px(12.))
+                                .rounded(px(8.))
+                                .bg(theme.secondary.opacity(0.5))
+                                .font_family("Menlo")
+                                .text_size(px(11.5))
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.guide_sample").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.guide_fields_title").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("usage_script.guide_fields").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.guide_tips_title").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("usage_script.guide_tips").to_string()),
+                        ),
                 ),
             )
             // Actions
