@@ -279,6 +279,16 @@ pub fn generate_catalog_json(mappings: &[CodexModelMapping]) -> Option<String> {
                 "context_window": context,
                 "max_context_window": context,
                 "supports_reasoning_summaries": true,
+                "default_reasoning_level": default_reasoning_level(m.reasoning_effort.as_deref()),
+                "supported_reasoning_levels": reasoning_level_presets(),
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": true,
+                "priority": 100,
+                "support_verbosity": false,
+                "truncation_policy": {"mode": "tokens", "limit": context},
+                "experimental_supported_tools": [],
+                "base_instructions": CODEX_FALLBACK_BASE_INSTRUCTIONS,
             });
             if let Some(effort) = &m.reasoning_effort {
                 let effort_trimmed = effort.trim();
@@ -291,6 +301,40 @@ pub fn generate_catalog_json(mappings: &[CodexModelMapping]) -> Option<String> {
         .collect();
 
     serde_json::to_string_pretty(&json!({ "models": models })).ok()
+}
+
+/// Codex's catalog loader rejects a model entry that has neither
+/// `base_instructions` nor `model_messages.instructions_template`; custom
+/// catalog models have no bundled prompt, so carry a compact fallback.
+const CODEX_FALLBACK_BASE_INSTRUCTIONS: &str = "You are Codex, a software engineering agent running on the user's machine. Work inside the user's workspace: read and edit files, run commands, and complete the requested coding tasks carefully and safely.";
+
+/// Reasoning levels this Codex build accepts for a custom catalog model,
+/// folded from the app's finer effort choices (xhigh/max act as `high`).
+fn reasoning_level_presets() -> Value {
+    ["low", "medium", "high"]
+        .iter()
+        .map(|level| {
+            let name = match *level {
+                "low" => "Low",
+                "high" => "High",
+                _ => "Medium",
+            };
+            json!({
+                "effort": level,
+                "description": format!("{name} reasoning effort"),
+            })
+        })
+        .collect()
+}
+
+fn default_reasoning_level(effort: Option<&str>) -> &'static str {
+    match effort.map(str::trim) {
+        Some("low") | Some("minimal") => "low",
+        Some("high") | Some("xhigh") | Some("extra-high") | Some("extra high") | Some("max") => {
+            "high"
+        }
+        _ => "medium",
+    }
 }
 
 pub fn generate_third_party_config(provider_name: &str, base_url: &str, model: &str) -> String {
@@ -529,4 +573,60 @@ fn non_empty_str(value: Option<&Value>) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_json_carries_full_model_info_schema() {
+        let json = generate_catalog_json(&[CodexModelMapping {
+            display_name: "Gemini Flash".into(),
+            model: "gemini-3.7-flash-high".into(),
+            context_window: Some(200_000),
+            reasoning_effort: Some("high".into()),
+        }])
+        .expect("catalog json");
+
+        let catalog: Value = serde_json::from_str(&json).unwrap();
+        let model = &catalog["models"][0];
+        assert_eq!(model["slug"], "gemini-3.7-flash-high");
+        assert_eq!(model["context_window"], 200_000);
+        // Codex (>= 0.149 alpha) rejects the catalog unless every model entry
+        // carries the full ModelInfo surface; keep these keys present.
+        for key in [
+            "supported_reasoning_levels",
+            "shell_type",
+            "visibility",
+            "supported_in_api",
+            "priority",
+            "support_verbosity",
+            "truncation_policy",
+            "experimental_supported_tools",
+            "base_instructions",
+        ] {
+            assert!(model.get(key).is_some(), "missing {key}");
+        }
+        assert_eq!(model["shell_type"], "shell_command");
+        assert_eq!(model["visibility"], "list");
+        assert_eq!(model["supported_in_api"], true);
+        assert_eq!(model["truncation_policy"]["mode"], "tokens");
+        assert_eq!(model["truncation_policy"]["limit"], 200_000);
+        assert_eq!(model["default_reasoning_level"], "high");
+        let levels = model["supported_reasoning_levels"].as_array().unwrap();
+        let efforts: Vec<&str> = levels
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect();
+        assert_eq!(efforts, vec!["low", "medium", "high"]);
+        assert!(levels[0].get("description").is_some());
+        // Legacy key retained for older Codex builds.
+        assert_eq!(model["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn catalog_json_is_none_without_mappings() {
+        assert!(generate_catalog_json(&[]).is_none());
+    }
 }
