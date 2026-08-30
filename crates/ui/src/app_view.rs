@@ -117,7 +117,7 @@ impl SelectItem for PresetSelectItem {
 }
 
 pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
-    match app {
+    let mut presets: Vec<PresetSelectItem> = match app {
         AppKind::Codex => RESPONSES_PRESETS
             .iter()
             .map(|p| PresetSelectItem {
@@ -230,7 +230,13 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 modality_image: p.supports_images,
             })
             .collect(),
+    };
+    // 自定义模板排第一, 便于直接手填
+    if let Some(pos) = presets.iter().position(|p| p.id == "custom") {
+        let custom = presets.remove(pos);
+        presets.insert(0, custom);
     }
+    presets
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7675,9 +7681,11 @@ impl FormDraft {
         } else if name.trim().is_empty() {
             None
         } else {
+            // 回显: 按端点匹配来源预设, 匹配不上(纯手填或已改过端点)则落在自定义模板
             presets
                 .iter()
-                .position(|p| p.name == name)
+                .position(|p| !p.base_url.is_empty() && p.base_url.trim() == base_url.trim())
+                .or_else(|| presets.iter().position(|p| p.id == "custom"))
                 .map(|idx| gpui_component::IndexPath::default().row(idx))
         };
 
