@@ -65,6 +65,16 @@ pub use usage_query::UsageQueryError;
 mod auth_native;
 pub mod oauth;
 pub mod sessions;
+pub mod skills;
+
+/// 会话/Skills 模块使用的应用标识字符串(与 cc-switch 的 provider id 对齐)
+pub mod session_apps {
+    pub const CLAUDE: &str = "claude";
+    pub const CODEX: &str = "codex";
+    pub const GROK: &str = "grok";
+    pub const OPENCODE: &str = "opencode";
+    pub const PI: &str = "pi";
+}
 
 static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -1100,6 +1110,51 @@ impl Workspace {
     /// 退出登录(清除本地存储的凭据; Codex 原生 auth.json 一并移除)
     pub fn oauth_logout(&self, provider: &str) -> Result<(), SessionError> {
         crate::auth_native::clear_credentials(provider, &self.store, &self.codex_paths)
+    }
+
+    /// 各应用的 skills 目录: (app, dir)
+    pub fn skills_roots(&self) -> Vec<(String, PathBuf)> {
+        vec![
+            (
+                session_apps::CLAUDE.to_string(),
+                self.claude_paths.home.join("skills"),
+            ),
+            (
+                session_apps::CODEX.to_string(),
+                self.codex_paths.home.join("skills"),
+            ),
+            (
+                session_apps::GROK.to_string(),
+                self.grok_paths.home.join("skills"),
+            ),
+            (
+                session_apps::OPENCODE.to_string(),
+                self.opencode_paths.home.join("skills"),
+            ),
+            (
+                session_apps::PI.to_string(),
+                self.pi_paths.home.join("skills"),
+            ),
+        ]
+    }
+
+    /// 扫描全部 Skills(按目录名跨应用归并)
+    pub fn scan_skills(&self) -> Vec<skills::SkillEntry> {
+        skills::scan_skills(&self.skills_roots())
+    }
+
+    /// 把 Skill 安装到目标应用(从任一已有副本拷贝)
+    pub fn install_skill(&self, source: &Path, target_app: &str) -> Result<(), String> {
+        let roots = self.skills_roots();
+        let Some((_, target_dir)) = roots.iter().find(|(app, _)| app == target_app) else {
+            return Err(format!("不支持的应用: {target_app}"));
+        };
+        skills::install_skill(source, target_dir)
+    }
+
+    /// 移除某应用下的 Skill 副本
+    pub fn remove_skill(&self, path: &Path) -> Result<(), String> {
+        skills::remove_skill(path)
     }
 
     /// 会话根目录: (codex_roots, claude_root)

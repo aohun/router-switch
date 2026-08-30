@@ -8,6 +8,7 @@ nav:
   dashboard: "Dashboard"
   notifications: "Notifications"
   sessions: "Sessions"
+  skills: "Skills"
   settings: "Preferences"
   soon: "Soon"
 
@@ -337,3 +338,15 @@ sessions:
   role_user: "User"
   role_tool: "Tool"
   pick_hint: "Select a session on the left to view details"
+  batch_tooltip: "Batch select"
+  filter_tooltip: "Filter by app"
+skills:
+  title: "Skills Manager"
+  search: "Search installed skills by name or description..."
+  installed: "Installed"
+  local: "Local"
+  empty: "No installed skills found in any app"
+  loading: "Scanning skills..."
+  last_copy: "This is the last copy; keep one in another app first"
+  removed: "Skill removed from the app"
+  installed_msg: "Skill installed to the app"

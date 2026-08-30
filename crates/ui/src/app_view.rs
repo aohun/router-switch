@@ -700,6 +700,7 @@ impl CatalogRowDraft {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Dashboard,
+    Skills,
     Sessions,
     Codex,
     Claude,
@@ -899,6 +900,12 @@ pub struct RouterApp {
     session_checked: std::collections::HashSet<String>,
     session_expanded: std::collections::HashSet<String>,
     sessions_search: Entity<InputState>,
+    sessions_batch_mode: bool,
+    sessions_search_open: bool,
+    sessions_filter_menu_open: bool,
+    skills_list: Vec<session::skills::SkillEntry>,
+    skills_loading: bool,
+    skills_search: Entity<InputState>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
@@ -1112,6 +1119,8 @@ impl RouterApp {
         let usage_code = cx.new(|cx| InputState::new(window, cx).code_editor("javascript"));
         let sessions_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("sessions.search").to_string()));
+        let skills_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("skills.search").to_string()));
 
         let mut app = Self {
             workspace,
@@ -1158,6 +1167,12 @@ impl RouterApp {
             session_checked: std::collections::HashSet::new(),
             session_expanded: std::collections::HashSet::new(),
             sessions_search: sessions_search,
+            sessions_batch_mode: false,
+            sessions_search_open: true,
+            sessions_filter_menu_open: false,
+            skills_list: Vec::new(),
+            skills_loading: false,
+            skills_search: skills_search,
             usage_refresh_select,
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
@@ -1844,6 +1859,9 @@ impl RouterApp {
         }
         if route == Route::Sessions && self.sessions_list.is_empty() && !self.sessions_loading {
             self.refresh_sessions(cx);
+        }
+        if route == Route::Skills && self.skills_list.is_empty() && !self.skills_loading {
+            self.refresh_skills(cx);
         }
         self.route = route;
         cx.notify();
@@ -3478,6 +3496,16 @@ impl RouterApp {
             .children(app_nav_items)
             .child(div().flex_1())
             .child(self.nav_item(
+                "nav-skills",
+                CustomIcon::Kimi,
+                Some(rgb(0x6366F1).into()), // Indigo
+                t!("nav.skills").to_string(),
+                Route::Skills,
+                None,
+                false,
+                cx,
+            ))
+            .child(self.nav_item(
                 "nav-sessions",
                 CustomIcon::ChartCurve,
                 Some(rgb(0x8B5CF6).into()), // Violet
@@ -4713,6 +4741,72 @@ impl RouterApp {
             ))
     }
 
+    fn refresh_skills(&mut self, cx: &mut Context<Self>) {
+        self.skills_loading = true;
+        cx.notify();
+        let roots = self.workspace.skills_roots();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let skills = session::tokio_runtime()
+                        .spawn(async move { session::skills::scan_skills(&roots) })
+                        .await
+                        .unwrap_or_default();
+                    let _ = this.update(&mut cx, |this, cx| {
+                        this.skills_list = skills;
+                        this.skills_loading = false;
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// 把 Skill 安装到目标应用(从任一已有副本拷贝)或从该应用移除
+    fn toggle_skill_install(
+        &mut self,
+        entry: session::skills::SkillEntry,
+        target_app: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let existing = entry
+            .installs
+            .iter()
+            .find(|install| install.app == target_app);
+        match existing {
+            Some(install) => {
+                // 仅当其它应用仍有副本时才允许移除
+                if entry.installs.len() <= 1 {
+                    notify_info(t!("skills.last_copy").to_string(), window, cx);
+                    return;
+                }
+                match self.workspace.remove_skill(&install.path) {
+                    Ok(()) => {
+                        notify_success(t!("skills.removed").to_string(), window, cx);
+                        self.refresh_skills(cx);
+                    }
+                    Err(err) => window.push_notification(Notification::error(err), cx),
+                }
+            }
+            None => {
+                let Some(source) = entry.installs.first().map(|install| install.path.clone())
+                else {
+                    return;
+                };
+                match self.workspace.install_skill(&source, target_app) {
+                    Ok(()) => {
+                        notify_success(t!("skills.installed").to_string(), window, cx);
+                        self.refresh_skills(cx);
+                    }
+                    Err(err) => window.push_notification(Notification::error(err), cx),
+                }
+            }
+        }
+    }
+
     fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
         self.sessions_loading = true;
         cx.notify();
@@ -4881,6 +4975,282 @@ impl RouterApp {
         }
     }
 
+    fn render_skills_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let search_value = self.skills_search.read(cx).value().to_lowercase();
+        let search = search_value.trim().to_lowercase();
+
+        let visible: Vec<&session::skills::SkillEntry> = self
+            .skills_list
+            .iter()
+            .filter(|entry| {
+                search.is_empty()
+                    || entry.dir_name.to_lowercase().contains(&search)
+                    || entry
+                        .name
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&search)
+                    || entry
+                        .description
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&search)
+            })
+            .collect();
+
+        let app_meta: &[(&'static str, CustomIcon, Hsla, &'static str)] = &[
+            (
+                session::skills::APP_CLAUDE,
+                CustomIcon::Claude,
+                rgb(0xD97757).into(),
+                "Claude",
+            ),
+            (
+                session::skills::APP_CODEX,
+                CustomIcon::OpenAI,
+                rgb(0x10A37F).into(),
+                "Codex",
+            ),
+            (
+                session::skills::APP_GROK,
+                CustomIcon::Grok,
+                rgb(0x8B5CF6).into(),
+                "Grok Build",
+            ),
+            (
+                session::skills::APP_OPENCODE,
+                CustomIcon::OpenCode,
+                rgb(0x6366F1).into(),
+                "OpenCode",
+            ),
+            (
+                session::skills::APP_PI,
+                CustomIcon::Pi,
+                rgb(0x3B82F6).into(),
+                "Pi",
+            ),
+        ];
+
+        // 每应用计数
+        let count_chips = app_meta.iter().map(|(app, icon, color, label)| {
+            let count = self
+                .skills_list
+                .iter()
+                .filter(|entry| entry.installs.iter().any(|install| install.app == *app))
+                .count();
+            Tag::secondary().small().child(
+                h_flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(Icon::new(*icon).size(px(12.)).text_color(*color))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(*color)
+                            .child(format!("{label}: {count}")),
+                    ),
+            )
+        });
+
+        v_flex()
+            .w_full()
+            .p(px(24.))
+            .gap(px(16.))
+            // Header
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        Button::new("skills-back")
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.set_route(Route::Dashboard, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .child(t!("skills.title").to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("skills-refresh")
+                            .ghost()
+                            .icon(CustomIcon::RotateCw)
+                            .tooltip(t!("sessions.refresh").to_string())
+                            .disabled(self.skills_loading)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.refresh_skills(cx);
+                            })),
+                    ),
+            )
+            // 统计条
+            .child(
+                theme::tile(cx).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("skills-installed-chip")
+                                .outline()
+                                .xsmall()
+                                .selected(true)
+                                .label(t!("skills.installed").to_string()),
+                        )
+                        .child(div().flex_1())
+                        .children(count_chips),
+                ),
+            )
+            // 搜索
+            .child(Input::new(&self.skills_search))
+            // Skill 列表
+            .child(
+                theme::tile(cx).p(px(0.)).overflow_hidden().child(
+                    div()
+                        .id("skills-list-scroll")
+                        .max_h(px(640.))
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .children(visible.iter().enumerate().map(|(index, entry)| {
+                            let divider = index > 0;
+                            let entry_for_actions = (*entry).clone();
+                            self.render_skill_row(entry_for_actions, divider, app_meta, cx)
+                        })),
+                ),
+            )
+            .children(self.skills_loading.then(|| {
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.muted_foreground)
+                    .child(t!("sessions.loading").to_string())
+            }))
+            .when(visible.is_empty() && !self.skills_loading, |this| {
+                this.child(
+                    v_flex().items_center().py(px(48.)).child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.muted_foreground)
+                            .child(t!("skills.empty").to_string()),
+                    ),
+                )
+            })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_skill_row(
+        &self,
+        entry: session::skills::SkillEntry,
+        divider: bool,
+        app_meta: &[(&'static str, CustomIcon, Hsla, &'static str)],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let display_name = entry.name.clone().unwrap_or_else(|| entry.dir_name.clone());
+        let description = entry.description.clone().unwrap_or_default();
+
+        let app_icons = app_meta
+            .iter()
+            .map(|(app, icon, color, label)| {
+                let installed = entry.installs.iter().any(|install| install.app == *app);
+                let entry_for_click = entry.clone();
+                let app_for_click = *app;
+                let label_for_tooltip = *label;
+                div()
+                    .id(SharedString::from(format!(
+                        "skill-app-{}-{}",
+                        entry.dir_name, app
+                    )))
+                    .size(px(26.))
+                    .rounded(px(13.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .bg(if installed {
+                        color.opacity(0.15)
+                    } else {
+                        theme.secondary.opacity(0.35)
+                    })
+                    .tooltip(move |window, cx| {
+                        let text = if installed {
+                            format!("{label_for_tooltip}: 已安装，点击移除")
+                        } else {
+                            format!("{label_for_tooltip}: 未安装，点击安装")
+                        };
+                        gpui_component::tooltip::Tooltip::new(text).build(window, cx)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_skill_install(
+                            entry_for_click.clone(),
+                            app_for_click,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .child(Icon::new(*icon).size(px(14.)).text_color(if installed {
+                        *color
+                    } else {
+                        theme.muted_foreground.opacity(0.45)
+                    }))
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .w_full()
+            .px(px(16.))
+            .py(px(10.))
+            .when(divider, |this| {
+                this.border_t_1().border_color(theme.border.opacity(0.6))
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(3.))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme.foreground)
+                                            .child(display_name),
+                                    )
+                                    .child(
+                                        Tag::secondary()
+                                            .small()
+                                            .child(t!("skills.local").to_string()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(description),
+                            ),
+                    )
+                    .child(h_flex().items_center().gap(px(6.)).children(app_icons)),
+            )
+    }
+
     fn render_sessions_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let search_value = self.sessions_search.read(cx).value().to_lowercase();
@@ -4951,6 +5321,7 @@ impl RouterApp {
                     .child(
                         v_flex()
                             .w(px(400.))
+                            .relative()
                             .gap(px(8.))
                             .child(
                                 h_flex()
@@ -4973,136 +5344,268 @@ impl RouterApp {
                                                     .child(format!("{}", visible.len())),
                                             ),
                                     )
+                                    // 图标工具栏: 批量选择 / 筛选 / 搜索 / 刷新
                                     .child(
-                                        Button::new("sessions-refresh")
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(CustomIcon::RotateCw)
-                                            .tooltip(t!("sessions.refresh").to_string())
-                                            .disabled(self.sessions_loading)
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.refresh_sessions(cx);
-                                            })),
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(2.))
+                                            .child(
+                                                Button::new("sessions-batch-toggle")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Check)
+                                                    .selected(self.sessions_batch_mode)
+                                                    .tooltip(
+                                                        t!("sessions.batch_tooltip").to_string(),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.sessions_batch_mode =
+                                                            !this.sessions_batch_mode;
+                                                        if !this.sessions_batch_mode {
+                                                            this.session_checked.clear();
+                                                        }
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("sessions-filter-toggle")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon({
+                                                        let icon: Icon =
+                                                            match self.sessions_filter.as_deref() {
+                                                                Some("codex") => {
+                                                                    CustomIcon::OpenAI.into()
+                                                                }
+                                                                Some("claude") => {
+                                                                    CustomIcon::Claude.into()
+                                                                }
+                                                                _ => IconName::Asterisk.into(),
+                                                            };
+                                                        icon
+                                                    })
+                                                    .tooltip(
+                                                        t!("sessions.filter_tooltip").to_string(),
+                                                    )
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.sessions_filter_menu_open =
+                                                            !this.sessions_filter_menu_open;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("sessions-search-toggle")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Search)
+                                                    .selected(self.sessions_search_open)
+                                                    .tooltip(t!("sessions.search").to_string())
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.sessions_search_open =
+                                                            !this.sessions_search_open;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                Button::new("sessions-refresh")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(CustomIcon::RotateCw)
+                                                    .tooltip(t!("sessions.refresh").to_string())
+                                                    .disabled(self.sessions_loading)
+                                                    .on_click(cx.listener(
+                                                        |this, _, _window, cx| {
+                                                            this.refresh_sessions(cx);
+                                                        },
+                                                    )),
+                                            ),
                                     ),
                             )
-                            .child(
-                                h_flex()
-                                    .gap(px(6.))
-                                    .child(div().flex_1().child(Input::new(&self.sessions_search))),
-                            )
-                            // 筛选: 全部 / Codex / Claude
-                            .child(
-                                h_flex().gap(px(4.)).children(
-                                    [
-                                        (None, t!("usage.app_all").to_string()),
-                                        (Some("codex".to_string()), "Codex".to_string()),
-                                        (Some("claude".to_string()), "Claude".to_string()),
-                                    ]
-                                    .into_iter()
-                                    .map(|(filter, label)| {
-                                        let selected = self.sessions_filter == filter;
-                                        Button::new(SharedString::from(format!(
-                                            "sessions-filter-{:?}",
-                                            filter
-                                        )))
-                                        .outline()
-                                        .xsmall()
-                                        .selected(selected)
-                                        .label(label)
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.sessions_filter = filter.clone();
-                                                cx.notify();
-                                            }),
-                                        )
-                                    }),
-                                ),
-                            )
-                            // 批量操作面板
-                            .child(
-                                theme::tile(cx).child(
-                                    v_flex()
-                                        .w_full()
-                                        .gap(px(8.))
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(6.))
-                                                .child(Tag::secondary().small().child(format!(
-                                                    "{} {}",
-                                                    t!("sessions.selected_prefix"),
-                                                    self.session_checked.len()
-                                                )))
-                                                .child(
-                                                    div()
-                                                        .text_size(px(11.5))
-                                                        .text_color(theme.muted_foreground)
-                                                        .child(
-                                                            t!("sessions.select_hint").to_string(),
-                                                        ),
-                                                ),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(10.))
-                                                .child(
-                                                    Button::new("sessions-select-all")
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .label(
-                                                            t!("sessions.select_all").to_string(),
-                                                        )
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            let visible: Vec<String> = this
-                                                                .sessions_list
-                                                                .iter()
-                                                                .filter(|meta| {
-                                                                    this.sessions_filter
-                                                                        .as_deref()
-                                                                        .is_none_or(|f| {
-                                                                            meta.provider_id == f
+                            // 搜索行(点放大镜展开)
+                            .when(self.sessions_search_open, |this| {
+                                this.child(
+                                    h_flex().gap(px(6.)).child(
+                                        div().flex_1().child(Input::new(&self.sessions_search)),
+                                    ),
+                                )
+                            })
+                            // 批量操作面板(点勾选图标展开)
+                            .when(self.sessions_batch_mode, |this| {
+                                let checked_count = self.session_checked.len();
+                                this.child(
+                                    theme::tile(cx).child(
+                                        v_flex()
+                                            .w_full()
+                                            .gap(px(8.))
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(6.))
+                                                    .child(Tag::secondary().small().child(format!(
+                                                        "{} {}",
+                                                        t!("sessions.selected_prefix"),
+                                                        checked_count
+                                                    )))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.5))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("sessions.select_hint")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(10.))
+                                                    .child(
+                                                        Button::new("sessions-select-all")
+                                                            .ghost()
+                                                            .xsmall()
+                                                            .label(
+                                                                t!("sessions.select_all")
+                                                                    .to_string(),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    let visible: Vec<String> = this
+                                                                        .sessions_list
+                                                                        .iter()
+                                                                        .filter(|meta| {
+                                                                            this.sessions_filter
+                                                                                .as_deref()
+                                                                                .is_none_or(|f| {
+                                                                                    meta.provider_id
+                                                                                        == f
+                                                                                })
                                                                         })
-                                                                })
-                                                                .filter_map(|meta| {
-                                                                    meta.source_path.clone()
-                                                                })
-                                                                .collect();
-                                                            for path in visible {
-                                                                this.session_checked.insert(path);
-                                                            }
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("sessions-clear-checked")
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .label(t!("sessions.clear").to_string())
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.session_checked.clear();
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(
-                                                    Button::new("sessions-batch-delete")
-                                                        .outline()
-                                                        .xsmall()
-                                                        .icon(IconName::Delete)
-                                                        .label(
-                                                            t!("sessions.batch_delete").to_string(),
-                                                        )
+                                                                        .filter_map(|meta| {
+                                                                            meta.source_path.clone()
+                                                                        })
+                                                                        .collect();
+                                                                    for path in visible {
+                                                                        this.session_checked
+                                                                            .insert(path);
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        Button::new("sessions-clear-checked")
+                                                            .ghost()
+                                                            .xsmall()
+                                                            .label(t!("sessions.clear").to_string())
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    this.session_checked.clear();
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                    )
+                                                    .child(
+                                                        Button::new("sessions-batch-delete")
+                                                            .outline()
+                                                            .xsmall()
+                                                            .icon(IconName::Delete)
+                                                            .label(
+                                                                t!("sessions.batch_delete")
+                                                                    .to_string(),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.delete_checked_sessions(
+                                                                        window, cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                    ),
+                                            ),
+                                    ),
+                                )
+                            })
+                            // 应用筛选下拉菜单
+                            .when(self.sessions_filter_menu_open, |this| {
+                                this.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(36.))
+                                        .right(px(0.))
+                                        .w(px(170.))
+                                        .p(px(6.))
+                                        .rounded(px(10.))
+                                        .bg(theme.background)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .shadow_lg()
+                                        .child(
+                                            v_flex().gap(px(1.)).children(
+                                                [
+                                                    (None, "全部", None),
+                                                    (
+                                                        Some("codex".to_string()),
+                                                        "Codex",
+                                                        Some(CustomIcon::OpenAI),
+                                                    ),
+                                                    (
+                                                        Some("claude".to_string()),
+                                                        "Claude",
+                                                        Some(CustomIcon::Claude),
+                                                    ),
+                                                ]
+                                                .into_iter()
+                                                .map(|(filter, label, icon)| {
+                                                    let active = self.sessions_filter == filter;
+                                                    div()
+                                                        .id(SharedString::from(format!(
+                                                            "sessions-filter-menu-{:?}",
+                                                            filter
+                                                        )))
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.))
+                                                        .px(px(10.))
+                                                        .py(px(7.))
+                                                        .rounded(px(6.))
+                                                        .cursor_pointer()
+                                                        .hover(|this| {
+                                                            this.bg(theme.secondary.opacity(0.6))
+                                                        })
                                                         .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                this.delete_checked_sessions(
-                                                                    window, cx,
-                                                                );
+                                                            move |this, _, _, cx| {
+                                                                this.sessions_filter =
+                                                                    filter.clone();
+                                                                this.sessions_filter_menu_open =
+                                                                    false;
+                                                                cx.notify();
                                                             },
-                                                        )),
-                                                ),
+                                                        ))
+                                                        .children(icon.map(|icon| {
+                                                            Icon::new(icon)
+                                                                .size(px(14.))
+                                                                .text_color(theme.foreground)
+                                                        }))
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .text_size(px(12.5))
+                                                                .text_color(theme.foreground)
+                                                                .child(label),
+                                                        )
+                                                        .when(active, |this| {
+                                                            this.child(
+                                                                Icon::new(IconName::Check)
+                                                                    .size(px(12.))
+                                                                    .text_color(theme.foreground),
+                                                            )
+                                                        })
+                                                }),
+                                            ),
                                         ),
-                                ),
-                            )
+                                )
+                            })
                             // 会话列表
                             .child(
                                 div()
@@ -9288,6 +9791,7 @@ impl Render for RouterApp {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
                 Route::Sessions => self.render_sessions_page(cx).into_any_element(),
+                Route::Skills => self.render_skills_page(cx).into_any_element(),
                 Route::Codex => self
                     .render_app_providers_page(AppKind::Codex, cx)
                     .into_any_element(),

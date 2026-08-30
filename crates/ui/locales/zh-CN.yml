@@ -8,6 +8,7 @@ nav:
   dashboard: "仪表盘"
   notifications: "系统通知"
   sessions: "会话管理"
+  skills: "Skills 管理"
   settings: "偏好设置"
   soon: "即将支持"
 
@@ -337,3 +338,15 @@ sessions:
   role_user: "用户"
   role_tool: "工具"
   pick_hint: "从左侧选择一个会话查看详情"
+  batch_tooltip: "批量选择"
+  filter_tooltip: "按应用筛选"
+skills:
+  title: "Skills 管理"
+  search: "搜索已安装技能的名称、描述..."
+  installed: "已安装"
+  local: "本地"
+  empty: "未在任何应用中发现已安装的 Skills"
+  loading: "正在扫描 Skills..."
+  last_copy: "这是最后一个副本，请先在其它应用保留一份"
+  removed: "已从该应用移除 Skill"
+  installed_msg: "Skill 已安装到该应用"
