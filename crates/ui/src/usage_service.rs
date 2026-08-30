@@ -11,10 +11,8 @@ pub enum UsageWindowChoice {
     #[default]
     Hours6,
     Hours24,
-    Yesterday,
     Days7,
     Days30,
-    Month,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -258,16 +256,8 @@ pub async fn load_dashboard_usage(
             let cutoff = Local::now() - Duration::hours(24);
             (cutoff.date_naive(), today, Some(cutoff.timestamp_millis()))
         }
-        UsageWindowChoice::Yesterday => {
-            let y = today - Duration::days(1);
-            (y, y, None)
-        }
         UsageWindowChoice::Days7 => (today - Duration::days(6), today, None),
         UsageWindowChoice::Days30 => (today - Duration::days(29), today, None),
-        UsageWindowChoice::Month => {
-            let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
-            (start, today, None)
-        }
     };
 
     let since_str = since_date.format("%Y-%m-%d").to_string();

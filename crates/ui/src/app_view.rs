@@ -2990,6 +2990,38 @@ impl RouterApp {
             )
     }
 
+    fn render_usage_window_chip(
+        &self,
+        choice: UsageWindowChoice,
+        label: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let selected = self.usage_window == choice;
+        div()
+            .id(SharedString::from(format!("usage-window-{:?}", choice)))
+            .h(px(26.))
+            .px(px(12.))
+            .rounded(px(13.))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .when(selected, |this| {
+                this.bg(rgb(0x4F46E5)).text_color(rgb(0xFFFFFF))
+            })
+            .when(!selected, |this| {
+                this.text_color(theme.muted_foreground)
+                    .hover(|this| this.bg(theme.secondary.opacity(0.6)))
+            })
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.usage_window = choice;
+                this.refresh_dashboard_data(cx);
+            }))
+    }
+
     fn render_usage_line_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let default_data = DashboardUsageData::default();
@@ -3421,6 +3453,7 @@ impl RouterApp {
                     .w_full()
                     .items_center()
                     .justify_end()
+                    .gap(px(10.))
                     .p(px(8.))
                     .rounded(px(10.))
                     .bg(theme.secondary.opacity(0.35))
@@ -3439,28 +3472,12 @@ impl RouterApp {
                                 [
                                     (UsageWindowChoice::Hours6, t!("usage.hours_6").to_string()),
                                     (UsageWindowChoice::Hours24, t!("usage.hours_24").to_string()),
-                                    (
-                                        UsageWindowChoice::Yesterday,
-                                        t!("usage.yesterday").to_string(),
-                                    ),
                                     (UsageWindowChoice::Days7, t!("usage.days_7").to_string()),
                                     (UsageWindowChoice::Days30, t!("usage.days_30").to_string()),
-                                    (UsageWindowChoice::Month, t!("usage.this_month").to_string()),
                                 ]
                                 .into_iter()
                                 .map(|(choice, label)| {
-                                    Button::new(SharedString::from(format!(
-                                        "usage-window-{:?}",
-                                        choice
-                                    )))
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.usage_window == choice)
-                                    .label(label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.usage_window = choice;
-                                        this.refresh_dashboard_data(cx);
-                                    }))
+                                    self.render_usage_window_chip(choice, label, cx)
                                 }),
                             ),
                     )
