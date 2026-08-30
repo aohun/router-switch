@@ -55,6 +55,7 @@ pub use store::{
     AppLanguage, AppSettings, LogConfig, LogLevel, Store, StoreError, ThemePreference,
 };
 use thiserror::Error;
+pub use usage_query::UsageQueryError;
 
 static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -65,6 +66,34 @@ pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("failed to initialize tokio runtime for cursor gateway")
     })
+}
+
+/// 一次用量查询的完整执行参数(owned, 可送入后台任务)
+#[derive(Debug, Clone)]
+pub struct PreparedUsageQuery {
+    pub script_code: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub timeout_secs: u64,
+    pub access_token: Option<String>,
+    pub user_id: Option<String>,
+    pub template_type: String,
+}
+
+impl PreparedUsageQuery {
+    /// 执行 HTTP 请求 + JS 提取, 返回原始结果(未落库)
+    pub async fn run(self) -> Result<serde_json::Value, UsageQueryError> {
+        usage_query::execute_usage_script(
+            &self.script_code,
+            &self.api_key,
+            &self.base_url,
+            self.timeout_secs,
+            self.access_token.as_deref(),
+            self.user_id.as_deref(),
+            Some(&self.template_type),
+        )
+        .await
+    }
 }
 
 fn codex_model_mappings(mappings: &[domain::CodexModelMapping]) -> Vec<(String, String)> {
@@ -1003,6 +1032,115 @@ impl Workspace {
         Ok(copy)
     }
 
+    /// 保存用量查询配置
+    pub fn save_usage_script(
+        &self,
+        provider_id: &str,
+        config: &domain::UsageScriptConfig,
+    ) -> Result<(), SessionError> {
+        if self.store.get_provider(provider_id)?.is_none() {
+            return Err(SessionError::Message("服务商不存在".into()));
+        }
+        self.store.save_usage_script(provider_id, config)?;
+        Ok(())
+    }
+
+    pub fn usage_script(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<domain::UsageScriptConfig>, SessionError> {
+        Ok(self.store.usage_script(provider_id)?)
+    }
+
+    pub fn delete_usage_script(&self, provider_id: &str) -> Result<(), SessionError> {
+        self.store.delete_usage_script(provider_id)?;
+        Ok(())
+    }
+
+    /// 最近一次用量查询结果与时间戳
+    pub fn usage_result(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<(domain::UsageQueryResult, i64)>, SessionError> {
+        Ok(self.store.usage_result(provider_id)?)
+    }
+
+    /// 自动刷新调度用的全量清单
+    pub fn list_usage_scripts(
+        &self,
+    ) -> Result<Vec<(String, domain::UsageScriptConfig, Option<i64>)>, SessionError> {
+        Ok(self.store.list_usage_scripts()?)
+    }
+
+    /// 按 id 获取服务商
+    pub fn provider(&self, provider_id: &str) -> Result<Option<Provider>, SessionError> {
+        Ok(self.store.get_provider(provider_id)?)
+    }
+
+    /// 收集执行用量查询所需的全部参数(同步, 不阻塞); 返回的任务在后台 await。
+    pub fn prepare_usage_query(
+        &self,
+        provider_id: &str,
+    ) -> Result<PreparedUsageQuery, SessionError> {
+        let Some(config) = self.store.usage_script(provider_id)? else {
+            return Err(SessionError::Message("未配置用量查询".into()));
+        };
+        self.prepare_usage_query_with_config(provider_id, &config)
+    }
+
+    /// 同上, 但使用调用方给定的配置(测试脚本按钮: 不必先保存)
+    pub fn prepare_usage_query_with_config(
+        &self,
+        provider_id: &str,
+        config: &domain::UsageScriptConfig,
+    ) -> Result<PreparedUsageQuery, SessionError> {
+        let Some(provider) = self.store.get_provider(provider_id)? else {
+            return Err(SessionError::Message("服务商不存在".into()));
+        };
+        let (provider_base, provider_key) = domain::extract_provider_probe_target(&provider)
+            .unwrap_or_else(|_| (String::new(), None));
+        let api_key = config
+            .effective_api_key(provider_key.as_deref().unwrap_or(""))
+            .to_string();
+        let base_url = config.effective_base_url(&provider_base).to_string();
+        Ok(PreparedUsageQuery {
+            script_code: config.code.clone(),
+            api_key,
+            base_url,
+            timeout_secs: config.timeout_secs,
+            access_token: config.access_token.clone(),
+            user_id: config.user_id.clone(),
+            template_type: config.template_type.clone(),
+        })
+    }
+
+    /// 解析执行结果并落库(同步, 在 await 完成后于 UI 线程调用)。
+    pub fn complete_usage_query(
+        &self,
+        provider_id: &str,
+        outcome: Result<serde_json::Value, UsageQueryError>,
+    ) -> domain::UsageQueryResult {
+        let result = match outcome {
+            Ok(value) => domain::parse_usage_result(value),
+            Err(err) => domain::failed_usage_result(err.to_string()),
+        };
+        let _ = self
+            .store
+            .save_usage_result(provider_id, &result, now_secs());
+        result
+    }
+
+    /// 同步执行一次用量查询(测试/后台刷新共用; 会阻塞调用线程直到 HTTP 超时)。
+    pub fn query_provider_usage_blocking(
+        &self,
+        provider_id: &str,
+    ) -> Result<domain::UsageQueryResult, SessionError> {
+        let prepared = self.prepare_usage_query(provider_id)?;
+        let rt = tokio_runtime();
+        let outcome = rt.block_on(prepared.run());
+        Ok(self.complete_usage_query(provider_id, outcome))
+    }
+
     fn write_live(&self, provider: &Provider) -> Result<(), SessionError> {
         match &provider.settings {
             ProviderSettings::Codex(settings) => {
@@ -1525,6 +1663,70 @@ mod tests {
             .config_toml
             .contains(&format!("http://127.0.0.1:{port}/v1")));
         assert!(!live.config_toml.contains("https://api.example.com"));
+    }
+
+    #[test]
+    fn usage_query_roundtrip_with_mock_upstream() {
+        // 本机 mock 余额端点: 任意路径返回 OneAPI 风格余额 JSON
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let body = br#"{"is_active": true, "balance": 42.0}"#;
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        String::from_utf8_lossy(body)
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_codex_home(Some(temp.path().join("codex")))
+            .unwrap();
+
+        let form = CodexForm {
+            name: "BalanceProvider".into(),
+            website_url: String::new(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: format!("http://{addr}/v1"),
+            model: "gpt-test".into(),
+            request_protocol: String::new(),
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_codex_form(None, form).unwrap();
+
+        // 未配置时应报错
+        assert!(ws.query_provider_usage_blocking(&provider.id).is_err());
+
+        let mut config = domain::UsageScriptConfig::default();
+        config.enabled = true;
+        config.template_type = domain::TEMPLATE_GENERAL.into();
+        config.code = domain::preset_template(domain::TEMPLATE_GENERAL).to_string();
+        ws.save_usage_script(&provider.id, &config).unwrap();
+
+        // 默认凭证回退: base_url/api_key 均来自服务商配置
+        let result = ws.query_provider_usage_blocking(&provider.id).unwrap();
+        assert!(result.success, "result: {result:?}");
+        assert_eq!(result.data[0].remaining, Some(42.0));
+
+        // 结果已缓存
+        let (cached, _) = ws.usage_result(&provider.id).unwrap().unwrap();
+        assert_eq!(cached.data[0].remaining, Some(42.0));
+
+        // 删除配置后不再可查
+        ws.delete_usage_script(&provider.id).unwrap();
+        assert!(ws.usage_script(&provider.id).unwrap().is_none());
+        assert!(ws.query_provider_usage_blocking(&provider.id).is_err());
     }
 
     #[test]

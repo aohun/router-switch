@@ -11,6 +11,7 @@ members = [
     "crates/adapters-zcode",
     "crates/adapters-workbuddy",
     "crates/tokens-core",
+    "crates/usage-query",
     "crates/store",
     "crates/session",
     "crates/ui",
@@ -34,6 +35,7 @@ adapters-pi = { path = "crates/adapters-pi" }
 adapters-zcode = { path = "crates/adapters-zcode" }
 adapters-workbuddy = { path = "crates/adapters-workbuddy" }
 store = { path = "crates/store" }
+usage-query = { path = "crates/usage-query" }
 session = { path = "crates/session" }
 ui = { path = "crates/ui" }
 tokens-core = { path = "crates/tokens-core" }

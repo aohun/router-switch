@@ -710,6 +710,7 @@ pub enum Route {
     WorkBuddy,
     Notifications,
     Settings,
+    UsageScript,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -857,6 +858,19 @@ pub struct RouterApp {
     usage_window: UsageWindowChoice,
     usage_metric: UsageMetric,
     usage_refresh_interval: UsageRefreshInterval,
+    usage_script_provider: Option<String>,
+    usage_enabled: bool,
+    usage_template: String,
+    usage_api_key: Entity<InputState>,
+    usage_base_url: Entity<InputState>,
+    usage_access_token: Entity<InputState>,
+    usage_user_id: Entity<InputState>,
+    usage_timeout: Entity<InputState>,
+    usage_interval: Entity<InputState>,
+    usage_code: Entity<InputState>,
+    usage_querying: bool,
+    usage_last_result: Option<domain::UsageQueryResult>,
+    usage_badges: std::collections::HashMap<String, domain::UsageQueryResult>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
@@ -1059,6 +1073,16 @@ impl RouterApp {
             ];
         }
 
+        let usage_api_key =
+            cx.new(|cx| InputState::new(window, cx).placeholder("留空则使用服务商的 API Key"));
+        let usage_base_url =
+            cx.new(|cx| InputState::new(window, cx).placeholder("留空则使用服务商的请求地址"));
+        let usage_access_token = cx.new(|cx| InputState::new(window, cx));
+        let usage_user_id = cx.new(|cx| InputState::new(window, cx));
+        let usage_timeout = cx.new(|cx| InputState::new(window, cx));
+        let usage_interval = cx.new(|cx| InputState::new(window, cx));
+        let usage_code = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+
         let mut app = Self {
             workspace,
             providers: Vec::new(),
@@ -1078,6 +1102,19 @@ impl RouterApp {
             usage_window: UsageWindowChoice::Hours6,
             usage_metric: UsageMetric::Tokens,
             usage_refresh_interval: UsageRefreshInterval::Sec60,
+            usage_script_provider: None,
+            usage_enabled: false,
+            usage_template: domain::TEMPLATE_GENERAL.to_string(),
+            usage_api_key,
+            usage_base_url,
+            usage_access_token,
+            usage_user_id,
+            usage_timeout,
+            usage_interval,
+            usage_code,
+            usage_querying: false,
+            usage_last_result: None,
+            usage_badges: std::collections::HashMap::new(),
             usage_refresh_select,
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
@@ -1099,6 +1136,7 @@ impl RouterApp {
             provider_health: std::collections::HashMap::new(),
         };
         app.reload();
+        app.reload_usage_badges();
         app.refresh_dashboard_data(cx);
 
         if app.auto_check_update {
@@ -1119,6 +1157,66 @@ impl RouterApp {
                 })
                 .detach();
         }
+
+        // 用量查询自动刷新: 每分钟检查一次到期的服务商
+        let usage_view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(60))
+                            .await;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        let due: Vec<String> = usage_view
+                            .update(&mut cx, |this: &mut RouterApp, _| {
+                                this.workspace
+                                    .list_usage_scripts()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .filter(|(_, config, fetched_at)| {
+                                        if !config.enabled || config.auto_interval_minutes == 0 {
+                                            return false;
+                                        }
+                                        let interval = config.auto_interval_minutes as i64 * 60;
+                                        match fetched_at {
+                                            Some(at) => now - at >= interval,
+                                            None => true,
+                                        }
+                                    })
+                                    .map(|(id, _, _)| id)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for provider_id in due {
+                            let prepared = usage_view
+                                .update(&mut cx, |this: &mut RouterApp, _| {
+                                    this.workspace.prepare_usage_query(&provider_id).ok()
+                                })
+                                .ok()
+                                .flatten();
+                            let Some(prepared) = prepared else {
+                                continue;
+                            };
+                            let outcome = session::tokio_runtime()
+                                .spawn(prepared.run())
+                                .await
+                                .map_err(|e| usage_query::UsageQueryError(format!("任务失败: {e}")))
+                                .and_then(|inner| inner);
+                            let _ = usage_view.update(&mut cx, |this: &mut RouterApp, cx| {
+                                this.workspace.complete_usage_query(&provider_id, outcome);
+                                this.reload_usage_badges();
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+            })
+            .detach();
 
         let view = cx.entity().downgrade();
         let view_refresh = cx.entity().downgrade();
@@ -1165,6 +1263,195 @@ impl RouterApp {
             .detach();
 
         app
+    }
+
+    /// 刷新服务商卡片的用量徽标缓存
+    pub fn reload_usage_badges(&mut self) {
+        self.usage_badges = self
+            .workspace
+            .list_usage_scripts()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(id, config, _)| {
+                if !config.enabled {
+                    return None;
+                }
+                let result = self.workspace.usage_result(&id).ok().flatten()?.0;
+                Some((id, result))
+            })
+            .collect();
+    }
+
+    /// 打开用量查询配置页
+    fn open_usage_script(
+        &mut self,
+        provider_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(_provider) = self.workspace.provider(provider_id).ok().flatten() else {
+            return;
+        };
+        let mut config = self
+            .workspace
+            .usage_script(provider_id)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if config.code.trim().is_empty() {
+            config = config.with_preset_code();
+        }
+        self.usage_script_provider = Some(provider_id.to_string());
+        self.usage_enabled = config.enabled;
+        self.usage_template = config.template_type.clone();
+        self.usage_last_result = self
+            .workspace
+            .usage_result(provider_id)
+            .ok()
+            .flatten()
+            .map(|(r, _)| r);
+        self.usage_querying = false;
+        let updates = [
+            (
+                self.usage_api_key.clone(),
+                config.api_key.clone().unwrap_or_default(),
+            ),
+            (
+                self.usage_base_url.clone(),
+                config.base_url.clone().unwrap_or_default(),
+            ),
+            (
+                self.usage_access_token.clone(),
+                config.access_token.clone().unwrap_or_default(),
+            ),
+            (
+                self.usage_user_id.clone(),
+                config.user_id.clone().unwrap_or_default(),
+            ),
+            (self.usage_timeout.clone(), config.timeout_secs.to_string()),
+            (
+                self.usage_interval.clone(),
+                config.auto_interval_minutes.to_string(),
+            ),
+            (self.usage_code.clone(), config.code.clone()),
+        ];
+        for (input, value) in updates {
+            input.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+        self.set_route(Route::UsageScript, cx);
+    }
+
+    fn collect_usage_config(&self, cx: &Context<Self>) -> domain::UsageScriptConfig {
+        let read = |input: &Entity<InputState>| input.read(cx).value().to_string();
+        let parse_num =
+            |raw: String, default: u64| -> u64 { raw.trim().parse().unwrap_or(default) };
+        domain::UsageScriptConfig {
+            enabled: self.usage_enabled,
+            template_type: self.usage_template.clone(),
+            code: read(&self.usage_code),
+            timeout_secs: parse_num(read(&self.usage_timeout), 10),
+            auto_interval_minutes: parse_num(read(&self.usage_interval), 5) as u32,
+            api_key: Some(read(&self.usage_api_key)).filter(|s| !s.trim().is_empty()),
+            base_url: Some(read(&self.usage_base_url)).filter(|s| !s.trim().is_empty()),
+            access_token: Some(read(&self.usage_access_token)).filter(|s| !s.trim().is_empty()),
+            user_id: Some(read(&self.usage_user_id)).filter(|s| !s.trim().is_empty()),
+        }
+    }
+
+    fn set_usage_template(
+        &mut self,
+        template: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.usage_template = template.clone();
+        let code = domain::preset_template(&template).to_string();
+        self.usage_code
+            .update(cx, |state, cx| state.set_value(code, window, cx));
+        cx.notify();
+    }
+
+    fn save_usage_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider_id) = self.usage_script_provider.clone() else {
+            return;
+        };
+        let config = self.collect_usage_config(cx);
+        if let Err(err) = self.workspace.save_usage_script(&provider_id, &config) {
+            self.fail(err, window, cx);
+            return;
+        }
+        self.reload_usage_badges();
+        notify_success(t!("usage_script.saved").to_string(), window, cx);
+        let back = if self.previous_route == Route::UsageScript {
+            Route::Dashboard
+        } else {
+            self.previous_route
+        };
+        self.set_route(back, cx);
+    }
+
+    fn test_usage_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider_id) = self.usage_script_provider.clone() else {
+            return;
+        };
+        let config = self.collect_usage_config(cx);
+        let prepared = match self
+            .workspace
+            .prepare_usage_query_with_config(&provider_id, &config)
+        {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                self.fail(
+                    session::SessionError::Message(format!("无法发起查询: {err}")),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        self.usage_querying = true;
+        cx.notify();
+
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                let provider_id = provider_id.clone();
+                async move {
+                    let outcome = session::tokio_runtime()
+                        .spawn(prepared.run())
+                        .await
+                        .map_err(|e| usage_query::UsageQueryError(format!("任务失败: {e}")))
+                        .and_then(|inner| inner);
+
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.usage_querying = false;
+                            let result = this.workspace.complete_usage_query(&provider_id, outcome);
+                            this.usage_last_result = Some(result.clone());
+                            this.reload_usage_badges();
+                            match &result {
+                                r if r.success => {
+                                    window.push_notification(
+                                        Notification::success(usage_summary_text(r)),
+                                        cx,
+                                    );
+                                }
+                                r => {
+                                    window.push_notification(
+                                        Notification::error(
+                                            r.error.clone().unwrap_or_else(|| "查询失败".into()),
+                                        ),
+                                        cx,
+                                    );
+                                }
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
     }
 
     pub fn refresh_dashboard_data(&mut self, cx: &mut Context<Self>) {
@@ -1870,6 +2157,8 @@ impl RouterApp {
                         match this.workspace.delete(&target) {
                             Ok(()) => {
                                 this.reload();
+                                let _ = this.workspace.delete_usage_script(&target);
+                                this.usage_badges.remove(&target);
                                 this.logs.push(format!("删除了服务商: {}", target));
                                 if app == Some(AppKind::ZCode) {
                                     notify_success(
@@ -4007,6 +4296,298 @@ impl RouterApp {
             })
     }
 
+    fn render_usage_script_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let provider = self
+            .usage_script_provider
+            .as_deref()
+            .and_then(|id| self.workspace.provider(id).ok().flatten());
+        let provider_name = provider
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "未知服务商".into());
+        let is_new_api = self.usage_template == domain::TEMPLATE_NEW_API;
+
+        let template_chip =
+            |id: &'static str, name: String, template: &'static str, cx: &mut Context<Self>| {
+                let selected = self.usage_template == template;
+                Button::new(id)
+                    .outline()
+                    .xsmall()
+                    .selected(selected)
+                    .label(name)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_usage_template(template.to_string(), window, cx);
+                    }))
+            };
+
+        let result_summary = self.usage_last_result.as_ref().map(|result| {
+            let text = if result.success {
+                usage_summary_text(result)
+            } else {
+                result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "查询失败".to_string())
+            };
+            let tag = if result.success {
+                Tag::success().small().child(format!("上次查询: {text}"))
+            } else {
+                Tag::danger().small().child(format!("上次查询失败: {text}"))
+            };
+            div().child(tag)
+        });
+
+        v_flex()
+            .w_full()
+            .p(px(24.))
+            .gap(px(16.))
+            // Header
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        Button::new("usage-script-back")
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                let back = if this.previous_route == Route::UsageScript {
+                                    Route::Dashboard
+                                } else {
+                                    this.previous_route
+                                };
+                                this.set_route(back, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .child(format!("{} - {}", t!("usage_script.title"), provider_name)),
+                    ),
+            )
+            .children(result_summary)
+            // Enable toggle
+            .child(
+                theme::tile(cx).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.enable").to_string()),
+                        )
+                        .child(
+                            div()
+                                .id("usage-script-enable")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.usage_enabled = !this.usage_enabled;
+                                    cx.notify();
+                                }))
+                                .child(self.render_switch(self.usage_enabled, cx)),
+                        ),
+                ),
+            )
+            // Credentials & timing
+            .child(
+                theme::tile(cx).child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("usage_script.template").to_string()),
+                        )
+                        .child(
+                            h_flex()
+                                .gap(px(6.))
+                                .child(template_chip(
+                                    "usage-template-custom",
+                                    "自定义".to_string(),
+                                    domain::TEMPLATE_CUSTOM,
+                                    cx,
+                                ))
+                                .child(template_chip(
+                                    "usage-template-general",
+                                    t!("usage_script.template_general").to_string(),
+                                    domain::TEMPLATE_GENERAL,
+                                    cx,
+                                ))
+                                .child(template_chip(
+                                    "usage-template-newapi",
+                                    "NewAPI".to_string(),
+                                    domain::TEMPLATE_NEW_API,
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("usage_script.credentials_hint").to_string()),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.))
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap(px(4.))
+                                        .child(field_label(
+                                            t!("usage_script.api_key").to_string(),
+                                            cx,
+                                        ))
+                                        .child(Input::new(&self.usage_api_key)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap(px(4.))
+                                        .child(field_label(
+                                            t!("usage_script.base_url").to_string(),
+                                            cx,
+                                        ))
+                                        .child(Input::new(&self.usage_base_url)),
+                                ),
+                        )
+                        .when(is_new_api, |this| {
+                            this.child(
+                                h_flex()
+                                    .w_full()
+                                    .gap(px(12.))
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .gap(px(4.))
+                                            .child(field_label(
+                                                t!("usage_script.access_token").to_string(),
+                                                cx,
+                                            ))
+                                            .child(Input::new(&self.usage_access_token)),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .gap(px(4.))
+                                            .child(field_label(
+                                                t!("usage_script.user_id").to_string(),
+                                                cx,
+                                            ))
+                                            .child(Input::new(&self.usage_user_id)),
+                                    ),
+                            )
+                        })
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.))
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap(px(4.))
+                                        .child(field_label(
+                                            t!("usage_script.timeout").to_string(),
+                                            cx,
+                                        ))
+                                        .child(Input::new(&self.usage_timeout)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap(px(4.))
+                                        .child(field_label(
+                                            t!("usage_script.interval").to_string(),
+                                            cx,
+                                        ))
+                                        .child(Input::new(&self.usage_interval)),
+                                ),
+                        ),
+                ),
+            )
+            // Extractor code
+            .child(
+                theme::tile(cx).child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(8.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme.foreground)
+                                        .child(t!("usage_script.code").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("usage_script.code_hint").to_string()),
+                                ),
+                        )
+                        .child(div().h(px(300.)).child(Input::new(&self.usage_code))),
+                ),
+            )
+            // Actions
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        Button::new("usage-script-cancel")
+                            .outline()
+                            .label(t!("usage_script.cancel").to_string())
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                let back = if this.previous_route == Route::UsageScript {
+                                    Route::Dashboard
+                                } else {
+                                    this.previous_route
+                                };
+                                this.set_route(back, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("usage-script-test")
+                            .outline()
+                            .icon(CustomIcon::Activity)
+                            .label(if self.usage_querying {
+                                t!("usage_script.testing").to_string()
+                            } else {
+                                t!("usage_script.test").to_string()
+                            })
+                            .disabled(self.usage_querying)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.test_usage_script(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("usage-script-save")
+                            .primary()
+                            .icon(IconName::Check)
+                            .label(t!("usage_script.save").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_usage_script(window, cx);
+                            })),
+                    ),
+            )
+    }
+
     fn render_provider_card(
         &self,
         provider: &Provider,
@@ -4270,6 +4851,17 @@ impl RouterApp {
                                         .child(
                                             Tag::secondary().small().outline().child(login_type),
                                         ),
+                                )
+                                .when_some(
+                                    self.usage_badges.get(&provider.id).cloned(),
+                                    |this, result| {
+                                        let text = usage_badge_text(&result);
+                                        this.child(if result.success {
+                                            Tag::success().small().child(text)
+                                        } else {
+                                            Tag::danger().small().child(text)
+                                        })
+                                    },
                                 ),
                         ),
                 )
@@ -4339,6 +4931,20 @@ impl RouterApp {
                                     this.test_provider_connectivity(&id, window, cx);
                                 }))
                         })
+                        .child(
+                            Button::new(SharedString::from(format!("usage-{}", provider.id)))
+                                .outline()
+                                .small()
+                                .icon(CustomIcon::ChartCurve)
+                                .label(t!("provider.usage_query").to_string())
+                                .tooltip("配置用量查询(余额 / 套餐)")
+                                .on_click(cx.listener({
+                                    let id = id.clone();
+                                    move |this, _, window, cx| {
+                                        this.open_usage_script(&id, window, cx)
+                                    }
+                                })),
+                        )
                         .child(
                             Button::new(SharedString::from(format!("delete-{}", provider.id)))
                                 .outline()
@@ -7325,6 +7931,7 @@ impl Render for RouterApp {
                     .into_any_element(),
                 Route::Notifications => self.render_notifications_page(cx).into_any_element(),
                 Route::Settings => self.render_settings_page(cx).into_any_element(),
+                Route::UsageScript => self.render_usage_script_page(cx).into_any_element(),
             }
         };
 
@@ -8268,6 +8875,67 @@ fn field(
 
 fn notify_success(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::success(message), cx);
+}
+
+/// 表单字段标签
+fn field_label(label: String, cx: &App) -> impl IntoElement {
+    div()
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(cx.theme().foreground)
+        .child(label)
+}
+
+/// 用量结果的简短摘要(通知用)
+fn usage_summary_text(result: &domain::UsageQueryResult) -> String {
+    match result.data.first() {
+        Some(item) => {
+            let unit = item.unit.clone().unwrap_or_else(|| "USD".into());
+            let mut text = if result.data.len() > 1 {
+                format!("共 {} 个套餐: ", result.data.len())
+            } else {
+                String::new()
+            };
+            if let Some(name) = &item.plan_name {
+                text.push_str(name);
+                text.push_str(" ");
+            }
+            match (item.remaining, item.total) {
+                (Some(remaining), Some(total)) => {
+                    text.push_str(&format!("剩余 {remaining:.2}/{total:.2} {unit}"));
+                }
+                (Some(remaining), None) => {
+                    text.push_str(&format!("剩余 {remaining:.2} {unit}"));
+                }
+                _ => text.push_str("查询成功"),
+            }
+            text
+        }
+        None => "查询成功".to_string(),
+    }
+}
+
+/// 服务商卡片徽标文本
+fn usage_badge_text(result: &domain::UsageQueryResult) -> String {
+    if !result.success {
+        return "用量不可用".to_string();
+    }
+    match result.data.first() {
+        Some(item) => {
+            let unit = item.unit.clone().unwrap_or_else(|| "USD".into());
+            match (item.remaining, item.total) {
+                (Some(remaining), Some(total)) => {
+                    format!("剩余 {remaining:.2}/{total:.2} {unit}")
+                }
+                (Some(remaining), None) => format!("剩余 {remaining:.2} {unit}"),
+                _ => item
+                    .plan_name
+                    .clone()
+                    .unwrap_or_else(|| "已启用".to_string()),
+            }
+        }
+        None => "已启用".to_string(),
+    }
 }
 
 fn notify_info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {

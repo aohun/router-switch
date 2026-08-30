@@ -20,6 +20,7 @@ store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+usage-query.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 

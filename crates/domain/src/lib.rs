@@ -16,6 +16,7 @@ mod pi;
 mod protocol;
 mod provider;
 mod updater;
+mod usage_script;
 mod workbuddy;
 mod zcode;
 
@@ -77,6 +78,10 @@ pub use protocol::{
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
 pub use updater::{check_app_update, parse_release_notes, sample_app_release, AppRelease};
+pub use usage_script::{
+    failed_usage_result, parse_usage_result, preset_template, template_display_name, UsageDataItem,
+    UsageQueryResult, UsageScriptConfig, TEMPLATE_CUSTOM, TEMPLATE_GENERAL, TEMPLATE_NEW_API,
+};
 pub use workbuddy::{
     official_workbuddy_provider, official_workbuddy_settings, parse_workbuddy_form, WorkBuddyForm,
     WorkBuddyKind, WorkBuddyModelItem, WorkBuddyPreset, WorkBuddyReasoningConfig,

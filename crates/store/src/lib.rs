@@ -219,6 +219,12 @@ impl Store {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS provider_usage_scripts (
+                provider_id TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                result_json TEXT,
+                fetched_at INTEGER
+            );
             ",
         )?;
         let data_dir = path
@@ -369,6 +375,116 @@ impl Store {
             params![value],
         )?;
         Ok(())
+    }
+
+    /// 保存服务商的用量查询配置(保留已缓存的结果)
+    pub fn save_usage_script(
+        &self,
+        provider_id: &str,
+        config: &domain::UsageScriptConfig,
+    ) -> Result<(), StoreError> {
+        let config_json = serde_json::to_string(config)
+            .map_err(|e| StoreError::Corrupt(format!("用量脚本配置序列化失败: {e}")))?;
+        self.conn
+            .execute(
+                "INSERT INTO provider_usage_scripts (provider_id, config_json, result_json, fetched_at)
+                 VALUES (?1, ?2, NULL, NULL)
+                 ON CONFLICT(provider_id) DO UPDATE SET config_json = excluded.config_json",
+                rusqlite::params![provider_id, config_json],
+            )
+            .map_err(StoreError::from)?;
+        Ok(())
+    }
+
+    pub fn usage_script(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<domain::UsageScriptConfig>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT config_json FROM provider_usage_scripts WHERE provider_id = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![provider_id])?;
+        if let Some(row) = rows.next()? {
+            let json: String = row.get(0)?;
+            return Ok(Some(serde_json::from_str(&json).map_err(|e| {
+                StoreError::Corrupt(format!("用量脚本配置损坏: {e}"))
+            })?));
+        }
+        Ok(None)
+    }
+
+    pub fn delete_usage_script(&self, provider_id: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "DELETE FROM provider_usage_scripts WHERE provider_id = ?1",
+                rusqlite::params![provider_id],
+            )
+            .map_err(StoreError::from)?;
+        Ok(())
+    }
+
+    /// 缓存最近一次查询结果
+    pub fn save_usage_result(
+        &self,
+        provider_id: &str,
+        result: &domain::UsageQueryResult,
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        let result_json = serde_json::to_string(result)
+            .map_err(|e| StoreError::Corrupt(format!("用量结果序列化失败: {e}")))?;
+        self.conn
+            .execute(
+                "UPDATE provider_usage_scripts SET result_json = ?2, fetched_at = ?3
+                 WHERE provider_id = ?1",
+                rusqlite::params![provider_id, result_json, fetched_at],
+            )
+            .map_err(StoreError::from)?;
+        Ok(())
+    }
+
+    pub fn usage_result(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<(domain::UsageQueryResult, i64)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT result_json, fetched_at FROM provider_usage_scripts
+             WHERE provider_id = ?1 AND result_json IS NOT NULL",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![provider_id])?;
+        if let Some(row) = rows.next()? {
+            let json: String = row.get(0)?;
+            let fetched_at: i64 = row.get(1)?;
+            return Ok(Some((
+                serde_json::from_str(&json)
+                    .map_err(|e| StoreError::Corrupt(format!("用量结果损坏: {e}")))?,
+                fetched_at,
+            )));
+        }
+        Ok(None)
+    }
+
+    /// 全量列出用量脚本配置(自动刷新调度用): (provider_id, config, fetched_at)
+    pub fn list_usage_scripts(
+        &self,
+    ) -> Result<Vec<(String, domain::UsageScriptConfig, Option<i64>)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT provider_id, config_json, fetched_at FROM provider_usage_scripts")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (provider_id, json, fetched_at) = row?;
+            let config: domain::UsageScriptConfig = serde_json::from_str(&json)
+                .map_err(|e| StoreError::Corrupt(format!("用量脚本配置损坏: {e}")))?;
+            out.push((provider_id, config, fetched_at));
+        }
+        Ok(out)
     }
 
     fn is_current(&self, id: &str) -> Result<bool, StoreError> {
