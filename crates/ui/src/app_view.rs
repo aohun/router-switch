@@ -15,8 +15,8 @@ use domain::{
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, ClickEvent, Context, Entity,
+    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
 };
 use gpui_component::{
@@ -3088,6 +3088,55 @@ impl RouterApp {
             )
     }
 
+    fn render_dashboard_filter_chip(
+        &self,
+        id: &'static str,
+        icon: Option<CustomIcon>,
+        color: Hsla,
+        label: String,
+        selected: bool,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut RouterApp, &mut Window, &mut Context<RouterApp>) + 'static,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let mut chip = div()
+            .id(id)
+            .h(px(26.))
+            .px(px(10.))
+            .rounded(px(13.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if selected {
+                theme.foreground
+            } else {
+                theme.muted_foreground
+            })
+            .when(selected, |this| {
+                this.bg(theme.background)
+                    .border_1()
+                    .border_color(theme.border)
+                    .shadow_xs()
+            })
+            .when(!selected, |this| {
+                this.hover(|this| this.bg(theme.background.opacity(0.6)))
+            });
+        if let Some(icon) = icon {
+            chip = chip.child(Icon::new(icon).size(px(14.)).text_color(color));
+        }
+        chip.child(label).on_click(cx.listener(
+            move |this: &mut RouterApp,
+                  _: &ClickEvent,
+                  window: &mut Window,
+                  cx: &mut Context<RouterApp>| {
+                on_click(this, window, cx);
+            },
+        ))
+    }
+
     fn render_usage_line_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let default_data = DashboardUsageData::default();
@@ -3530,156 +3579,148 @@ impl RouterApp {
                             .items_center()
                             .gap(px(6.))
                             // All
-                            .child(
-                                Button::new("filter-app-all")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter.is_none())
-                                    .label(t!("usage.app_all").to_string())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = None;
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // Claude
-                            .child(
-                                Button::new("filter-app-claude")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::Claude))
-                                    .icon(CustomIcon::Claude)
-                                    .label("Claude")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter =
-                                            if this.dashboard_app_filter == Some(AppKind::Claude) {
-                                                None
-                                            } else {
-                                                Some(AppKind::Claude)
-                                            };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // Codex
-                            .child(
-                                Button::new("filter-app-codex")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::Codex))
-                                    .icon(CustomIcon::OpenAI)
-                                    .label("Codex")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter =
-                                            if this.dashboard_app_filter == Some(AppKind::Codex) {
-                                                None
-                                            } else {
-                                                Some(AppKind::Codex)
-                                            };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // Gemini
-                            .child(
-                                Button::new("filter-app-gemini")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(CustomIcon::DeepSeek)
-                                    .label("Gemini")
-                                    .on_click(cx.listener(|_this, _, window, cx| {
-                                        notify_info("Gemini 暂无近期用量记录", window, cx);
-                                    })),
-                            )
-                            // Grok
-                            .child(
-                                Button::new("filter-app-grok")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::Grok))
-                                    .icon(CustomIcon::Grok)
-                                    .label("Grok")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter =
-                                            if this.dashboard_app_filter == Some(AppKind::Grok) {
-                                                None
-                                            } else {
-                                                Some(AppKind::Grok)
-                                            };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // OpenCode
-                            .child(
-                                Button::new("filter-app-opencode")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::OpenCode))
-                                    .icon(CustomIcon::OpenCode)
-                                    .label("OpenCode")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter
-                                            == Some(AppKind::OpenCode)
-                                        {
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-all",
+                                None,
+                                Hsla::default(),
+                                t!("usage.app_all").to_string(),
+                                self.dashboard_app_filter.is_none(),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter = None;
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-claude",
+                                Some(CustomIcon::Claude),
+                                rgb(0xD97757).into(),
+                                "Claude".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::Claude),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::Claude) {
+                                            None
+                                        } else {
+                                            Some(AppKind::Claude)
+                                        };
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-codex",
+                                Some(CustomIcon::OpenAI),
+                                rgb(0x10A37F).into(),
+                                "Codex".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::Codex),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::Codex) {
+                                            None
+                                        } else {
+                                            Some(AppKind::Codex)
+                                        };
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-gemini",
+                                Some(CustomIcon::DeepSeek),
+                                rgb(0x3B82F6).into(),
+                                "Gemini".to_string(),
+                                false,
+                                cx,
+                                |_, window, cx| {
+                                    notify_info("Gemini 暂无近期用量记录", window, cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-grok",
+                                Some(CustomIcon::Grok),
+                                rgb(0x8B5CF6).into(),
+                                "Grok".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::Grok),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::Grok) {
+                                            None
+                                        } else {
+                                            Some(AppKind::Grok)
+                                        };
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-opencode",
+                                Some(CustomIcon::OpenCode),
+                                rgb(0x6366F1).into(),
+                                "OpenCode".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::OpenCode),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::OpenCode) {
                                             None
                                         } else {
                                             Some(AppKind::OpenCode)
                                         };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // Pi
-                            .child(
-                                Button::new("filter-app-pi")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::Pi))
-                                    .icon(CustomIcon::Pi)
-                                    .label("Pi")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter =
-                                            if this.dashboard_app_filter == Some(AppKind::Pi) {
-                                                None
-                                            } else {
-                                                Some(AppKind::Pi)
-                                            };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // ZCode
-                            .child(
-                                Button::new("filter-app-zcode")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::ZCode))
-                                    .icon(CustomIcon::ZCode)
-                                    .label("ZCode")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter =
-                                            if this.dashboard_app_filter == Some(AppKind::ZCode) {
-                                                None
-                                            } else {
-                                                Some(AppKind::ZCode)
-                                            };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            )
-                            // WorkBuddy
-                            .child(
-                                Button::new("filter-app-workbuddy")
-                                    .ghost()
-                                    .xsmall()
-                                    .selected(self.dashboard_app_filter == Some(AppKind::WorkBuddy))
-                                    .icon(CustomIcon::WorkBuddy)
-                                    .label("WorkBuddy")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.dashboard_app_filter = if this.dashboard_app_filter
-                                            == Some(AppKind::WorkBuddy)
-                                        {
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-pi",
+                                Some(CustomIcon::Pi),
+                                rgb(0x10B981).into(),
+                                "Pi".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::Pi),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::Pi) {
+                                            None
+                                        } else {
+                                            Some(AppKind::Pi)
+                                        };
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-zcode",
+                                Some(CustomIcon::ZCode),
+                                rgb(0x06B6D4).into(),
+                                "ZCode".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::ZCode),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::ZCode) {
+                                            None
+                                        } else {
+                                            Some(AppKind::ZCode)
+                                        };
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            ))
+                            .child(self.render_dashboard_filter_chip(
+                                "filter-app-workbuddy",
+                                Some(CustomIcon::WorkBuddy),
+                                rgb(0xF59E0B).into(),
+                                "WorkBuddy".to_string(),
+                                self.dashboard_app_filter == Some(AppKind::WorkBuddy),
+                                cx,
+                                |this, _, cx| {
+                                    this.dashboard_app_filter =
+                                        if this.dashboard_app_filter == Some(AppKind::WorkBuddy) {
                                             None
                                         } else {
                                             Some(AppKind::WorkBuddy)
                                         };
-                                        this.refresh_dashboard_data(cx);
-                                    })),
-                            ),
+                                    this.refresh_dashboard_data(cx);
+                                },
+                            )),
                     )
                     .child(
                         // Right: Date Selector first, then Refresh Selector, and Refresh button
