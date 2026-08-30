@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -36,6 +37,8 @@ pub struct PiSettings {
     pub api_key: String,
     pub model: String,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub model_mappings: Vec<PiModelMapping>,
 }
 
@@ -49,6 +52,13 @@ impl PiSettings {
             api_key: self.api_key.clone(),
             base_url: self.base_url.clone(),
             model: self.model.clone(),
+            request_protocol: if self.request_protocol.is_empty() {
+                RequestProtocol::default_for_app(AppKind::Pi)
+                    .as_str()
+                    .to_string()
+            } else {
+                self.request_protocol.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -63,6 +73,7 @@ pub struct PiForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub model_mappings: Vec<PiModelMapping>,
 }
 
@@ -148,6 +159,7 @@ pub fn official_pi_settings() -> PiSettings {
         base_url: String::new(),
         api_key: String::new(),
         model: DEFAULT_PI_MODEL.to_string(),
+        request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
         model_mappings: Vec::new(),
     }
 }
@@ -200,6 +212,9 @@ pub fn parse_pi_form(form: PiForm) -> Result<PiSettings, DomainError> {
                 base_url: base_url.to_string(),
                 api_key: api_key.to_string(),
                 model: model.to_string(),
+                request_protocol: RequestProtocol::parse(&form.request_protocol)
+                    .as_str()
+                    .into(),
                 model_mappings: form.model_mappings,
             })
         }

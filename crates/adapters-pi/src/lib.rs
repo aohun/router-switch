@@ -200,6 +200,7 @@ mod tests {
             api_key: "sk-s2a-key".into(),
             base_url: "https://s2a.ii.sb/v1".into(),
             model: "grok-4.6".into(),
+            request_protocol: String::new(),
             model_mappings: vec![PiModelMapping {
                 model_id: "claude-3-7-sonnet".into(),
                 display_name: "Claude Sonnet".into(),

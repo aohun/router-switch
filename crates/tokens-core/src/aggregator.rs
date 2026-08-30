@@ -177,6 +177,7 @@ pub fn generate_graph_result(
         years,
         contributions,
         time_metrics: None,
+        time_points: None,
     }
 }
 

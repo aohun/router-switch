@@ -179,6 +179,7 @@ mod tests {
             api_key: "sk-ds-123".into(),
             base_url: "https://api.deepseek.com/v1".into(),
             model: "deepseek-chat".into(),
+            request_protocol: String::new(),
             model_mappings: vec![OpenCodeModelMapping {
                 model_id: "deepseek-reasoner".into(),
                 display_name: "DeepSeek R1".into(),

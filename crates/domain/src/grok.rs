@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -32,6 +33,8 @@ pub struct GrokSettings {
     pub kind: GrokKind,
     pub config_toml: String,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub model_mappings: Vec<GrokModelMapping>,
 }
 
@@ -45,6 +48,13 @@ impl GrokSettings {
             base_url: extract_grok_base_url(&self.config_toml).unwrap_or_default(),
             model: extract_grok_model(&self.config_toml)
                 .unwrap_or_else(|| DEFAULT_GROK_MODEL.to_string()),
+            request_protocol: if self.request_protocol.is_empty() {
+                RequestProtocol::default_for_app(AppKind::Grok)
+                    .as_str()
+                    .to_string()
+            } else {
+                self.request_protocol.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -58,6 +68,7 @@ pub struct GrokForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub model_mappings: Vec<GrokModelMapping>,
 }
 
@@ -115,6 +126,7 @@ pub fn official_grok_settings() -> GrokSettings {
     GrokSettings {
         kind: GrokKind::Official,
         config_toml: String::new(),
+        request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
         model_mappings: Vec::new(),
     }
 }
@@ -140,6 +152,7 @@ pub fn parse_grok_form(form: GrokForm) -> Result<GrokSettings, DomainError> {
         GrokKind::Official => Ok(GrokSettings {
             kind: GrokKind::Official,
             config_toml: String::new(),
+            request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
             model_mappings: Vec::new(),
         }),
         GrokKind::ThirdParty => {
@@ -165,6 +178,9 @@ pub fn parse_grok_form(form: GrokForm) -> Result<GrokSettings, DomainError> {
             Ok(GrokSettings {
                 kind: GrokKind::ThirdParty,
                 config_toml,
+                request_protocol: RequestProtocol::parse(&form.request_protocol)
+                    .as_str()
+                    .into(),
                 model_mappings: form.model_mappings,
             })
         }
@@ -237,6 +253,7 @@ pub fn backfill_grok_settings(stored: &GrokSettings, live_toml: &str) -> GrokSet
     GrokSettings {
         kind: GrokKind::ThirdParty,
         config_toml,
+        request_protocol: stored.request_protocol.clone(),
         model_mappings: stored.model_mappings.clone(),
     }
 }

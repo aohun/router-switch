@@ -95,12 +95,7 @@ pub async fn prepare(
 
     let history = vec![ProviderMessage::user(combined_user)];
 
-    let extra_params = registry
-        .settings()
-        .read()
-        .as_ref()
-        .map(|s| s.options.clone())
-        .unwrap_or(Value::Null);
+    let extra_params = provider_extra_params(registry, &request);
 
     Ok(PreparedRun {
         model_id,
@@ -109,6 +104,49 @@ pub async fn prepare(
         history,
         extra_params,
     })
+}
+
+fn provider_extra_params(registry: &CursorSessionRegistry, request: &pb::AgentRunRequest) -> Value {
+    let settings = registry.settings();
+    let (protocol, default_effort) = {
+        let guard = settings.read();
+        let protocol = guard
+            .as_ref()
+            .map(|s| domain::RequestProtocol::parse(&s.provider_type))
+            .unwrap_or(domain::RequestProtocol::OpenAiChat);
+        let default_effort = guard
+            .as_ref()
+            .map(|s| domain::normalize_thinking_effort(&s.default_reasoning_effort))
+            .unwrap_or_else(|| domain::DEFAULT_THINKING_EFFORT.to_string());
+        (protocol, default_effort)
+    };
+    let effort = request
+        .requested_model
+        .as_ref()
+        .and_then(|model| {
+            model
+                .parameters
+                .iter()
+                .find(|p| p.id == "effort" || p.id == "reasoning")
+                .map(|p| domain::normalize_thinking_effort(&p.value))
+        })
+        .unwrap_or(default_effort);
+    match protocol {
+        domain::RequestProtocol::Anthropic => {
+            let budget = match effort.as_str() {
+                "low" => 4_000,
+                "medium" => 8_000,
+                "high" => 16_000,
+                "xhigh" => 32_000,
+                "max" => 64_000,
+                _ => 16_000,
+            };
+            serde_json::json!({
+                "thinking": { "type": "enabled", "budget_tokens": budget }
+            })
+        }
+        _ => serde_json::json!({ "reasoning_effort": effort }),
+    }
 }
 
 fn extract_user_text(request: &pb::AgentRunRequest) -> String {

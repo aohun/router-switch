@@ -165,6 +165,7 @@ mod tests {
             api_key: "xai-12345".into(),
             base_url: "https://api.packy.ai/v1".into(),
             model: "grok-4.5".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let settings = parse_grok_form(form).unwrap();

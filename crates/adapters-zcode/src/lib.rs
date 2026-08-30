@@ -265,6 +265,7 @@ mod tests {
             api_key: "sk-zcode-mock-key-12345".into(),
             base_url: "https://cchost.ai".into(),
             model: "gemini-3.7-flash-high".into(),
+            request_protocol: String::new(),
             modality_text: true,
             modality_image: true,
             model_mappings: vec![],

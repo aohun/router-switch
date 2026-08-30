@@ -381,6 +381,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: sonnet,
+                    request_protocol: String::new(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -393,6 +394,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    request_protocol: String::new(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -405,6 +407,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    request_protocol: String::new(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -422,6 +425,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    request_protocol: String::new(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -439,6 +443,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    request_protocol: String::new(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -456,6 +461,7 @@ impl DeepLinkImportRequest {
                     base_url: primary_endpoint,
                     model: m,
                     provider_type,
+                    default_reasoning_effort: "high".into(),
                     model_mappings: Vec::new(),
                 })
             }
@@ -473,6 +479,7 @@ impl DeepLinkImportRequest {
                     api_key,
                     base_url: primary_endpoint,
                     model: m,
+                    request_protocol: String::new(),
                     modality_text: true,
                     modality_image: true,
                     model_mappings: Vec::new(),

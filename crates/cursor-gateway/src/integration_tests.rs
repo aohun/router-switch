@@ -38,6 +38,7 @@ fn third_party_settings() -> CursorSettings {
         base_url: "https://api.example.com/v1".into(),
         model: "mock-model".into(),
         provider_type: "openai-chat".into(),
+        default_reasoning_effort: "high".into(),
         options: json!({}),
         model_mappings: Vec::new(),
     }

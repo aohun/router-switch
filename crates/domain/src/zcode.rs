@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -64,6 +65,13 @@ impl ZCodeSettings {
             base_url,
             model,
             modality_text,
+            request_protocol: match self.provider_kind.as_str() {
+                "openai" | "openai-chat" => RequestProtocol::OpenAiChat.as_str().to_string(),
+                "openai-responses" | "responses" => {
+                    RequestProtocol::OpenAiResponses.as_str().to_string()
+                }
+                _ => RequestProtocol::Anthropic.as_str().to_string(),
+            },
             modality_image,
             model_mappings: self.model_mappings.clone(),
         }
@@ -79,6 +87,7 @@ pub struct ZCodeForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub modality_text: bool,
     pub modality_image: bool,
     pub model_mappings: Vec<ZCodeModelMapping>,
@@ -321,7 +330,13 @@ pub fn parse_zcode_form(form: ZCodeForm) -> Result<ZCodeSettings, DomainError> {
                 }
             }
 
-            let provider_kind = if form.provider_kind.trim().is_empty() {
+            let provider_kind = if !form.request_protocol.trim().is_empty() {
+                match RequestProtocol::parse(&form.request_protocol) {
+                    RequestProtocol::Anthropic => "anthropic".to_string(),
+                    RequestProtocol::OpenAiResponses => "openai-compatible".to_string(),
+                    RequestProtocol::OpenAiChat => "openai-compatible".to_string(),
+                }
+            } else if form.provider_kind.trim().is_empty() {
                 DEFAULT_ZCODE_PROVIDER_KIND.to_string()
             } else {
                 form.provider_kind.trim().to_string()

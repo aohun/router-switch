@@ -1168,6 +1168,7 @@ mod tests {
             api_key: "sk-live-test".into(),
             base_url: "https://www.packyapi.ai/v1".into(),
             model: "gpt-5.6-sol".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let provider = ws.save_codex_form(None, form).unwrap();
@@ -1192,6 +1193,7 @@ mod tests {
             api_key: "sk-or-test".into(),
             base_url: "https://openrouter.ai/api".into(),
             model: "anthropic/claude-3.7-sonnet".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let provider = ws.save_claude_form(None, form).unwrap();
@@ -1215,6 +1217,7 @@ mod tests {
             api_key: "xai-key".into(),
             base_url: "https://api.packy.ai/v1".into(),
             model: "grok-4.5".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let provider = ws.save_grok_form(None, form).unwrap();
@@ -1240,6 +1243,7 @@ mod tests {
             api_key: "sk-ds-key".into(),
             base_url: "https://api.deepseek.com/v1".into(),
             model: "deepseek-chat".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let provider = ws.save_opencode_form(None, form).unwrap();
@@ -1264,6 +1268,7 @@ mod tests {
             api_key: "sk-s2a-key".into(),
             base_url: "https://s2a.ii.sb/v1".into(),
             model: "grok-4.6".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let provider = ws.save_pi_form(None, form).unwrap();
@@ -1364,6 +1369,7 @@ mod tests {
             api_key: "sk-zcode-mock-key-12345".into(),
             base_url: "https://cchost.ai".into(),
             model: "gemini-3.7-flash-high".into(),
+            request_protocol: String::new(),
             modality_text: true,
             modality_image: true,
             model_mappings: Vec::new(),
@@ -1407,6 +1413,7 @@ mod tests {
             website_url: "https://packy.ai".into(),
             kind: CursorKind::ThirdParty,
             provider_type: "openai-chat".into(),
+            default_reasoning_effort: "high".into(),
             api_key: "sk-cursor-test".into(),
             base_url: "https://api.packy.ai/v1".into(),
             model: "gpt-4o".into(),

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::protocol::{normalize_thinking_effort, RequestProtocol, DEFAULT_THINKING_EFFORT};
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -43,6 +44,8 @@ pub struct CursorSettings {
     #[serde(default)]
     pub provider_type: String,
     #[serde(default)]
+    pub default_reasoning_effort: String,
+    #[serde(default)]
     pub options: Value,
     #[serde(default)]
     pub model_mappings: Vec<CursorModelMapping>,
@@ -66,6 +69,11 @@ impl CursorSettings {
             } else {
                 self.provider_type.clone()
             },
+            default_reasoning_effort: if self.default_reasoning_effort.is_empty() {
+                DEFAULT_THINKING_EFFORT.to_string()
+            } else {
+                self.default_reasoning_effort.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -80,6 +88,7 @@ pub struct CursorForm {
     pub base_url: String,
     pub model: String,
     pub provider_type: String,
+    pub default_reasoning_effort: String,
     pub model_mappings: Vec<CursorModelMapping>,
 }
 
@@ -201,18 +210,16 @@ pub fn parse_cursor_form(form: CursorForm) -> Result<CursorSettings, DomainError
             } else {
                 model
             };
-            let provider_type = form.provider_type.trim();
-            let provider_type = if provider_type.is_empty() {
-                "openai-chat"
-            } else {
-                provider_type
-            };
+            let provider_type = RequestProtocol::parse(&form.provider_type).as_str();
+            let default_reasoning_effort =
+                normalize_thinking_effort(&form.default_reasoning_effort);
 
             let options = json!({
                 "apiKey": api_key,
                 "baseURL": base_url,
                 "model": model,
                 "providerType": provider_type,
+                "reasoningEffort": default_reasoning_effort,
             });
 
             Ok(CursorSettings {
@@ -221,6 +228,7 @@ pub fn parse_cursor_form(form: CursorForm) -> Result<CursorSettings, DomainError
                 base_url: base_url.to_string(),
                 model: model.to_string(),
                 provider_type: provider_type.to_string(),
+                default_reasoning_effort,
                 options,
                 model_mappings: form.model_mappings,
             })
@@ -247,6 +255,7 @@ pub fn official_cursor_settings() -> CursorSettings {
         base_url: "https://api2.cursor.sh".into(),
         model: DEFAULT_CURSOR_MODEL.into(),
         provider_type: "official".into(),
+        default_reasoning_effort: DEFAULT_THINKING_EFFORT.into(),
         options: json!({}),
         model_mappings: Vec::new(),
     }

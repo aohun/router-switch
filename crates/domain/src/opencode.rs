@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -36,6 +37,8 @@ pub struct OpenCodeSettings {
     pub options: Value,
     pub models: Value,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub model_mappings: Vec<OpenCodeModelMapping>,
 }
 
@@ -53,6 +56,13 @@ impl OpenCodeSettings {
             api_key,
             base_url,
             model,
+            request_protocol: if self.request_protocol.is_empty() {
+                RequestProtocol::default_for_app(AppKind::OpenCode)
+                    .as_str()
+                    .to_string()
+            } else {
+                self.request_protocol.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -67,6 +77,7 @@ pub struct OpenCodeForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub model_mappings: Vec<OpenCodeModelMapping>,
 }
 
@@ -161,6 +172,7 @@ pub fn official_opencode_settings() -> OpenCodeSettings {
         npm: DEFAULT_OPENCODE_NPM.to_string(),
         options: json!({}),
         models: json!({}),
+        request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
         model_mappings: Vec::new(),
     }
 }
@@ -239,6 +251,9 @@ pub fn parse_opencode_form(form: OpenCodeForm) -> Result<OpenCodeSettings, Domai
                 npm,
                 options: Value::Object(options_map),
                 models: Value::Object(models_map),
+                request_protocol: RequestProtocol::parse(&form.request_protocol)
+                    .as_str()
+                    .into(),
                 model_mappings: form.model_mappings,
             })
         }

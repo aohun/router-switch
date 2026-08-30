@@ -13,6 +13,7 @@ mod error;
 mod grok;
 mod opencode;
 mod pi;
+mod protocol;
 mod provider;
 mod updater;
 mod workbuddy;
@@ -70,6 +71,9 @@ pub use pi::{
     generate_pi_models_json, generate_pi_settings_json, official_pi_provider, official_pi_settings,
     parse_pi_form, PiForm, PiKind, PiModelMapping, PiPreset, PiSettings, DEFAULT_PI_API_TYPE,
     DEFAULT_PI_MODEL, OFFICIAL_PI_ID, PI_PRESETS,
+};
+pub use protocol::{
+    normalize_thinking_effort, RequestProtocol, DEFAULT_THINKING_EFFORT, THINKING_EFFORTS,
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
 pub use updater::{check_app_update, parse_release_notes, sample_app_release, AppRelease};
@@ -149,6 +153,7 @@ mod tests {
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         })
         .unwrap_err();
@@ -164,6 +169,7 @@ mod tests {
             api_key: String::new(),
             base_url: String::new(),
             model: String::new(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         })
         .unwrap();
@@ -181,6 +187,7 @@ mod tests {
             api_key: "sk-ant-test".into(),
             base_url: "https://api.example.com".into(),
             model: "claude-3-7-sonnet-20250219".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let settings = parse_claude_form(form).unwrap();
@@ -211,6 +218,7 @@ mod tests {
             api_key: "xai-test-key".into(),
             base_url: "https://api.packy.ai/v1".into(),
             model: "grok-4.5".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let settings = parse_grok_form(form).unwrap();
@@ -232,6 +240,7 @@ mod tests {
             api_key: "sk-ds-123".into(),
             base_url: "https://api.deepseek.com/v1".into(),
             model: "deepseek-chat".into(),
+            request_protocol: String::new(),
             model_mappings: vec![OpenCodeModelMapping {
                 model_id: "deepseek-reasoner".into(),
                 display_name: "DeepSeek R1".into(),
@@ -267,6 +276,7 @@ mod tests {
             api_key: "sk-pk-123".into(),
             base_url: "https://www.packyapi.ai/v1".into(),
             model: "gpt-4o".into(),
+            request_protocol: String::new(),
             model_mappings: vec![PiModelMapping {
                 model_id: "claude-3-7-sonnet".into(),
                 display_name: "Claude Sonnet".into(),
@@ -296,6 +306,7 @@ mod tests {
             api_key: "sk-zcode-mock-key-12345".into(),
             base_url: "https://cchost.ai".into(),
             model: "gemini-3.7-flash-high".into(),
+            request_protocol: String::new(),
             modality_text: true,
             modality_image: true,
             model_mappings: vec![],
@@ -346,6 +357,7 @@ mod tests {
             api_key: "sk-ds-123".into(),
             base_url: "https://api.deepseek.com/v1".into(),
             model: "deepseek-chat".into(),
+            request_protocol: String::new(),
             modality_text: true,
             modality_image: false,
             model_mappings: vec![],

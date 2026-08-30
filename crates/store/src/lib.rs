@@ -137,8 +137,9 @@ pub struct AppSettings {
 
 fn default_main_apps() -> Vec<String> {
     vec![
-        "codex".into(),
         "claude".into(),
+        "codex".into(),
+        "cursor".into(),
         "grok".into(),
         "zcode".into(),
         "workbuddy".into(),
@@ -550,6 +551,7 @@ mod tests {
                     "https://www.packyapi.ai/v1",
                     "gpt-5.6-sol",
                 ),
+                request_protocol: String::new(),
                 model_mappings: Vec::new(),
             }),
             created_at: 1,

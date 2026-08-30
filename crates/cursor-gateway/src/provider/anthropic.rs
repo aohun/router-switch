@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::model::{FinishReason, ModelInvocation, Role, Usage};
 use crate::GatewayError;
 
-use super::{merge_extra_params, ModelEvent, Provider, ProviderStream};
+use super::{merge_extra_params, resolve_provider_url, ModelEvent, Provider, ProviderStream};
 
 pub struct AnthropicProvider {
     pub base_url: String,
@@ -25,18 +25,6 @@ impl AnthropicProvider {
             client: reqwest::Client::builder().build().unwrap_or_default(),
         }
     }
-}
-
-fn join_url(base: &str, path: &str) -> String {
-    format!(
-        "{}{}",
-        base.trim_end_matches('/'),
-        if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{path}")
-        }
-    )
 }
 
 fn anthropic_messages(invocation: &ModelInvocation) -> (String, Vec<Value>) {
@@ -92,7 +80,7 @@ impl Provider for AnthropicProvider {
         cancellation: CancellationToken,
     ) -> ProviderStream {
         let client = self.client.clone();
-        let url = join_url(&self.base_url, "/messages");
+        let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let model = if !invocation.model.is_empty() {
             invocation.model.clone()
@@ -101,6 +89,7 @@ impl Provider for AnthropicProvider {
         };
 
         Box::pin(try_stream! {
+            let url = resolve_provider_url(&base_url, "anthropic")?;
             let (system, messages) = anthropic_messages(&invocation);
             let mut body = json!({
                 "model": model,

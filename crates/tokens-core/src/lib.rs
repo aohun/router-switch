@@ -407,6 +407,18 @@ pub struct GraphResult {
     pub contributions: Vec<DailyContribution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_metrics: Option<sessionize::TimeMetrics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_points: Option<Vec<TimeBucketPoint>>,
+}
+
+/// One fixed-width time bucket of usage totals for rolling hour windows
+/// (e.g. last 6h/24h) where the daily granularity of [`DailyContribution`]
+/// is too coarse.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TimeBucketPoint {
+    pub start_ts_ms: i64,
+    pub cost: f64,
+    pub tokens: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -425,6 +437,10 @@ pub struct ReportOptions {
     /// files at the filesystem layer) and keep only today's messages. Powers the
     /// menu bar's fast "today" refresh. Opt-in; default false scans everything.
     pub today_only: bool,
+    /// When set, keep only messages whose timestamp is at or after this Unix
+    /// millisecond instant. Powers rolling hour windows (e.g. last 6h/24h)
+    /// where a calendar-date `since` bound is too coarse.
+    pub since_ts_ms: Option<i64>,
 }
 
 pub fn get_home_dir_string(home_dir_option: &Option<String>) -> Result<String, String> {
@@ -2096,6 +2112,51 @@ fn merge_workbuddy_messages(
     merged
 }
 
+/// Bucket already-filtered messages into fixed-width wall-clock time buckets
+/// for rolling hour windows. The timeline is dense: empty buckets between the
+/// window start and now are zero-filled so the UI can plot a continuous axis.
+/// Bucket width scales with the span (5 min up to 6h, 15 min up to 24h, then
+/// hourly); epoch-aligned buckets stay wall-clock aligned because real UTC
+/// offsets are multiples of 15 minutes.
+fn compute_time_buckets(messages: &[UnifiedMessage], since_ts_ms: i64) -> Vec<TimeBucketPoint> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let hour_ms: i64 = 60 * 60 * 1000;
+    let span_ms = (now_ms - since_ts_ms).max(0);
+    let bucket_ms: i64 = if span_ms <= 6 * hour_ms {
+        5 * 60 * 1000
+    } else if span_ms <= 24 * hour_ms {
+        15 * 60 * 1000
+    } else {
+        hour_ms
+    };
+
+    let start = (since_ts_ms / bucket_ms) * bucket_ms;
+    let end = (now_ms / bucket_ms) * bucket_ms;
+    let count = ((end - start) / bucket_ms + 1).max(1);
+
+    let mut buckets: Vec<TimeBucketPoint> = (0..count)
+        .map(|i| TimeBucketPoint {
+            start_ts_ms: start + i * bucket_ms,
+            cost: 0.0,
+            tokens: 0,
+        })
+        .collect();
+
+    for msg in messages {
+        if msg.timestamp < start || msg.timestamp > end {
+            continue;
+        }
+        let idx = ((msg.timestamp - start) / bucket_ms) as usize;
+        let Some(bucket) = buckets.get_mut(idx) else {
+            continue;
+        };
+        bucket.cost += msg.cost;
+        bucket.tokens = bucket.tokens.saturating_add(msg.tokens.total());
+    }
+
+    buckets
+}
+
 async fn generate_graph_with_loaded_pricing(
     options: ReportOptions,
     pricing: Option<&pricing::PricingService>,
@@ -2124,6 +2185,10 @@ async fn generate_graph_with_loaded_pricing(
 
     let filtered = filter_messages_for_report(all_messages, &options);
 
+    let time_points = options
+        .since_ts_ms
+        .map(|since_ts| compute_time_buckets(&filtered, since_ts));
+
     let intervals = sessionize::sessionize(&filtered, sessionize::DEFAULT_IDLE_GAP_MS);
     let time_metrics =
         sessionize::compute_time_metrics(&intervals, sessionize::DEFAULT_IDLE_GAP_MS);
@@ -2134,6 +2199,7 @@ async fn generate_graph_with_loaded_pricing(
     let processing_time_ms = start.elapsed().as_millis() as u32;
     let mut result = aggregator::generate_graph_result(contributions, processing_time_ms);
     result.time_metrics = Some(time_metrics);
+    result.time_points = time_points;
 
     for contribution in &mut result.contributions {
         if let Some(&ms) = daily_active_time.get(&contribution.date) {
@@ -2166,6 +2232,10 @@ fn filter_messages_for_report(
 
     if let Some(until) = &options.until {
         filtered.retain(|m| m.date.as_str() <= until.as_str());
+    }
+
+    if let Some(since_ts_ms) = options.since_ts_ms {
+        filtered.retain(|m| m.timestamp >= since_ts_ms);
     }
 
     if options.today_only {

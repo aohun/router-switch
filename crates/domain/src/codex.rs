@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -35,6 +36,8 @@ pub struct CodexSettings {
     pub auth: Value,
     pub config_toml: String,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub model_mappings: Vec<CodexModelMapping>,
 }
 
@@ -48,6 +51,13 @@ impl CodexSettings {
             base_url: extract_codex_base_url(&self.config_toml).unwrap_or_default(),
             model: extract_codex_model(&self.config_toml)
                 .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string()),
+            request_protocol: if self.request_protocol.is_empty() {
+                RequestProtocol::default_for_app(AppKind::Codex)
+                    .as_str()
+                    .to_string()
+            } else {
+                self.request_protocol.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -61,6 +71,7 @@ pub struct CodexForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub model_mappings: Vec<CodexModelMapping>,
 }
 
@@ -227,6 +238,7 @@ pub fn official_codex_settings() -> CodexSettings {
         kind: CodexKind::Official,
         auth: json!({}),
         config_toml: String::new(),
+        request_protocol: RequestProtocol::OpenAiResponses.as_str().into(),
         model_mappings: Vec::new(),
     }
 }
@@ -424,6 +436,9 @@ pub fn parse_codex_form(form: CodexForm) -> Result<CodexSettings, DomainError> {
                     model,
                     has_catalog,
                 ),
+                request_protocol: RequestProtocol::parse(&form.request_protocol)
+                    .as_str()
+                    .into(),
                 model_mappings: form.model_mappings,
             })
         }

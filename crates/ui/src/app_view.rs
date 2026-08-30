@@ -6,12 +6,13 @@ use domain::{
     ClaudeForm, ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind,
     CodexModelMapping, CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind,
     GrokModelMapping, OpenCodeForm, OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind,
-    PiModelMapping, Provider, ProviderForm, ProviderSettings, ToolEnvironmentStatus, WorkBuddyForm,
-    WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS,
-    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL,
-    DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
+    PiModelMapping, Provider, ProviderForm, ProviderSettings, RequestProtocol,
+    ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping,
+    CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
+    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
+    DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
     DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS,
-    RESPONSES_PRESETS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
+    RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
     div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
@@ -264,6 +265,51 @@ impl SelectItem for ModelSelectItem {
 pub struct ReasoningOptionItem {
     pub label: String,
     pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolSelectItem {
+    pub value: String,
+    pub label: String,
+}
+
+impl SelectItem for ProtocolSelectItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+
+    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .text_size(px(13.))
+            .text_color(cx.theme().foreground)
+            .child(self.label.clone())
+    }
+}
+
+fn protocol_items() -> Vec<ProtocolSelectItem> {
+    RequestProtocol::all()
+        .into_iter()
+        .map(|protocol| ProtocolSelectItem {
+            value: protocol.as_str().to_string(),
+            label: protocol.label().to_string(),
+        })
+        .collect()
+}
+
+fn thinking_effort_items() -> Vec<WorkBuddyReasoningEffortItem> {
+    THINKING_EFFORTS
+        .into_iter()
+        .map(|(value, label)| WorkBuddyReasoningEffortItem {
+            label: (*label).into(),
+            value: value.to_string(),
+        })
+        .collect()
 }
 
 impl SelectItem for ReasoningOptionItem {
@@ -878,6 +924,11 @@ struct FormDraft {
     is_fetching_models: bool,
     is_testing_connectivity: bool,
     connectivity_result: Option<domain::ConnectivityCheckResult>,
+    protocol_select: Entity<SelectState<Vec<ProtocolSelectItem>>>,
+    _protocol_sub: Option<Subscription>,
+    thinking_effort: String,
+    thinking_effort_select: Option<Entity<SelectState<Vec<WorkBuddyReasoningEffortItem>>>>,
+    _thinking_effort_sub: Option<Subscription>,
     _preset_sub: Option<Subscription>,
     _default_model_sub: Option<Subscription>,
     _workbuddy_reasoning_effort_sub: Option<Subscription>,
@@ -900,8 +951,12 @@ impl RouterApp {
 
         let window_items = vec![
             UsageWindowSelectItem {
-                choice: UsageWindowChoice::Today,
-                label: t!("usage.today").to_string(),
+                choice: UsageWindowChoice::Hours6,
+                label: t!("usage.hours_6").to_string(),
+            },
+            UsageWindowSelectItem {
+                choice: UsageWindowChoice::Hours24,
+                label: t!("usage.hours_24").to_string(),
             },
             UsageWindowSelectItem {
                 choice: UsageWindowChoice::Yesterday,
@@ -963,7 +1018,7 @@ impl RouterApp {
         let usage_refresh_select = cx.new(|cx| {
             SelectState::new(
                 refresh_items,
-                Some(gpui_component::IndexPath::default().row(2)),
+                Some(gpui_component::IndexPath::default().row(3)),
                 window,
                 cx,
             )
@@ -1055,8 +1110,9 @@ impl RouterApp {
             .collect();
         if main_apps.is_empty() {
             main_apps = vec![
-                "codex".into(),
                 "claude".into(),
+                "codex".into(),
+                "cursor".into(),
                 "grok".into(),
                 "zcode".into(),
                 "workbuddy".into(),
@@ -1079,9 +1135,9 @@ impl RouterApp {
             dashboard_data: None,
             is_loading_dashboard: false,
             usage_breakdown_tab: UsageBreakdownTab::Model,
-            usage_window: UsageWindowChoice::Today,
-            usage_metric: UsageMetric::Cost,
-            usage_refresh_interval: UsageRefreshInterval::Sec30,
+            usage_window: UsageWindowChoice::Hours6,
+            usage_metric: UsageMetric::Tokens,
+            usage_refresh_interval: UsageRefreshInterval::Sec60,
             usage_window_select,
             usage_refresh_select,
             _usage_window_sub: Some(usage_window_sub),
@@ -1309,8 +1365,12 @@ impl RouterApp {
 
         let window_items = vec![
             UsageWindowSelectItem {
-                choice: UsageWindowChoice::Today,
-                label: t!("usage.today").to_string(),
+                choice: UsageWindowChoice::Hours6,
+                label: t!("usage.hours_6").to_string(),
+            },
+            UsageWindowSelectItem {
+                choice: UsageWindowChoice::Hours24,
+                label: t!("usage.hours_24").to_string(),
             },
             UsageWindowSelectItem {
                 choice: UsageWindowChoice::Yesterday,
@@ -3033,57 +3093,89 @@ impl RouterApp {
         let default_data = DashboardUsageData::default();
         let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
 
-        // Y-axis tick labels computed from actual data
-        let (y_max_label, y_mid2_label, y_mid1_label, y_zero_label) =
-            if self.usage_metric == UsageMetric::Cost {
-                let max_c = (data.max_daily_cost * 1.15).max(1.0);
-                (
-                    format_currency(max_c),
-                    format_currency(max_c * 0.66),
-                    format_currency(max_c * 0.33),
-                    "$0.00".to_string(),
-                )
-            } else {
-                let max_t = ((data.max_daily_tokens as f64) * 1.15).max(1000.0) as i64;
-                (
-                    format_tokens(max_t),
-                    format_tokens((max_t as f64 * 0.66) as i64),
-                    format_tokens((max_t as f64 * 0.33) as i64),
-                    "0".to_string(),
-                )
-            };
-
-        // X-axis date labels matching the range
-        let x_labels: Vec<String> = if data.daily_points.is_empty() {
-            vec!["—".to_string()]
-        } else if data.daily_points.len() == 1 {
-            vec![data.daily_points[0].label.clone()]
-        } else if data.daily_points.len() <= 3 {
-            data.daily_points.iter().map(|p| p.label.clone()).collect()
+        // Rolling hour windows plot a dense HH:MM timeline; day windows plot days.
+        let time_mode = !data.time_points.is_empty();
+        let chart_points: Vec<(String, f64, i64)> = if time_mode {
+            data.time_points
+                .iter()
+                .map(|p| (p.label.clone(), p.cost, p.tokens))
+                .collect()
         } else {
-            let n = data.daily_points.len();
+            data.daily_points
+                .iter()
+                .map(|p| (p.label.clone(), p.cost, p.tokens))
+                .collect()
+        };
+        let metric = self.usage_metric;
+        let max_cost = if time_mode {
+            data.max_time_cost
+        } else {
+            data.max_daily_cost
+        };
+        let max_tokens = if time_mode {
+            data.max_time_tokens
+        } else {
+            data.max_daily_tokens
+        };
+
+        // Y-axis tick labels: quarters of the scaled peak
+        let y_tick_label = |v: f64| {
+            if metric == UsageMetric::Cost {
+                format_currency(v)
+            } else {
+                format_tokens(v as i64)
+            }
+        };
+        let max_val = if metric == UsageMetric::Cost {
+            (max_cost * 1.25).max(1.0)
+        } else {
+            ((max_tokens as f64) * 1.25).max(1000.0)
+        };
+        let y_labels = [
+            y_tick_label(max_val),
+            y_tick_label(max_val * 0.75),
+            y_tick_label(max_val * 0.5),
+            y_tick_label(max_val * 0.25),
+            if metric == UsageMetric::Cost {
+                "$0.00".to_string()
+            } else {
+                "0".to_string()
+            },
+        ];
+
+        // X-axis labels: ~6 evenly spaced ticks, first & last inclusive
+        let x_labels: Vec<String> = if chart_points.is_empty() {
+            vec!["—".to_string()]
+        } else if chart_points.len() == 1 {
+            vec![chart_points[0].0.clone()]
+        } else if time_mode {
+            let n = chart_points.len();
+            let mut labels: Vec<String> = Vec::new();
+            for i in [0usize, n / 5, 2 * n / 5, 3 * n / 5, 4 * n / 5, n - 1] {
+                let label = chart_points[i].0.clone();
+                if labels.last() != Some(&label) {
+                    labels.push(label);
+                }
+            }
+            labels
+        } else if chart_points.len() <= 3 {
+            chart_points.iter().map(|p| p.0.clone()).collect()
+        } else {
+            let n = chart_points.len();
             vec![
-                data.daily_points[0].label.clone(),
-                data.daily_points[n / 2].label.clone(),
-                data.daily_points[n - 1].label.clone(),
+                chart_points[0].0.clone(),
+                chart_points[n / 2].0.clone(),
+                chart_points[n - 1].0.clone(),
             ]
         };
 
-        let daily_points = data.daily_points.clone();
-        let metric = self.usage_metric;
-        let max_val = if metric == UsageMetric::Cost {
-            (data.max_daily_cost * 1.15).max(1.0)
-        } else {
-            ((data.max_daily_tokens as f64) * 1.15).max(1000.0)
-        };
-
-        let stroke_color = rgb(0x10A37F);
+        let stroke_color = rgb(0x4F46E5);
 
         theme::tile(cx).w_full().child(
             v_flex()
                 .w_full()
                 .gap(px(12.))
-                // 1. Chart Top Bar (Title + [费用 | 令牌] Switcher + Legend)
+                // 1. Chart Top Bar (Title + [费用 | Tokens] Switcher + Legend)
                 .child(
                     h_flex()
                         .w_full()
@@ -3094,7 +3186,13 @@ impl RouterApp {
                                 .text_size(px(14.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.foreground)
-                                .child(if self.usage_metric == UsageMetric::Cost {
+                                .child(if time_mode {
+                                    if metric == UsageMetric::Cost {
+                                        t!("usage.trend_cost").to_string()
+                                    } else {
+                                        t!("usage.trend_tokens").to_string()
+                                    }
+                                } else if metric == UsageMetric::Cost {
                                     t!("usage.daily_cost").to_string()
                                 } else {
                                     t!("usage.daily_tokens").to_string()
@@ -3104,7 +3202,7 @@ impl RouterApp {
                             h_flex()
                                 .items_center()
                                 .gap(px(16.))
-                                // Segmented Switcher [ 费用 | 令牌 ]
+                                // Segmented Switcher [ Tokens | 费用 ]
                                 .child(
                                     h_flex()
                                         .p(px(2.))
@@ -3114,17 +3212,6 @@ impl RouterApp {
                                         .border_color(theme.border)
                                         .gap(px(2.))
                                         .child(
-                                            Button::new("chart-metric-cost")
-                                                .ghost()
-                                                .xsmall()
-                                                .selected(self.usage_metric == UsageMetric::Cost)
-                                                .label(t!("usage.metric_cost_btn").to_string())
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.usage_metric = UsageMetric::Cost;
-                                                    this.refresh_dashboard_data(cx);
-                                                })),
-                                        )
-                                        .child(
                                             Button::new("chart-metric-tokens")
                                                 .ghost()
                                                 .xsmall()
@@ -3132,6 +3219,17 @@ impl RouterApp {
                                                 .label(t!("usage.metric_tokens_btn").to_string())
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.usage_metric = UsageMetric::Tokens;
+                                                    this.refresh_dashboard_data(cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("chart-metric-cost")
+                                                .ghost()
+                                                .xsmall()
+                                                .selected(self.usage_metric == UsageMetric::Cost)
+                                                .label(t!("usage.metric_cost_btn").to_string())
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.usage_metric = UsageMetric::Cost;
                                                     this.refresh_dashboard_data(cx);
                                                 })),
                                         ),
@@ -3267,10 +3365,7 @@ impl RouterApp {
                                 .items_end()
                                 .text_size(px(11.5))
                                 .text_color(theme.muted_foreground)
-                                .child(div().child(y_max_label))
-                                .child(div().child(y_mid2_label))
-                                .child(div().child(y_mid1_label))
-                                .child(div().child(y_zero_label)),
+                                .children(y_labels.iter().map(|label| div().child(label.clone()))),
                         )
                         // Chart Canvas Area
                         .child(
@@ -3298,22 +3393,20 @@ impl RouterApp {
                                             div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)),
                                         )
                                         .child(
-                                            div()
-                                                .w_full()
-                                                .h(px(1.5))
-                                                .bg(theme.foreground.opacity(0.85)),
-                                        ),
+                                            div().w_full().h(px(1.)).bg(theme.border.opacity(0.45)),
+                                        )
+                                        .child(div().w_full().h(px(1.)).bg(theme.border)),
                                 )
-                                // Dynamic Vector Spline Area Curve Canvas
+                                // Dynamic Vector Spline Curve Canvas
                                 .child(
                                     gpui::canvas(
                                         |_bounds, _window, _cx| (),
                                         move |bounds, _state, window, _cx| {
-                                            if daily_points.is_empty() {
+                                            if chart_points.is_empty() {
                                                 return;
                                             }
 
-                                            let n = daily_points.len();
+                                            let n = chart_points.len();
                                             let top_pad = 10.0;
                                             let bot_pad = 10.0;
                                             let width_f32 = f32::from(bounds.size.width);
@@ -3322,7 +3415,7 @@ impl RouterApp {
 
                                             let mut pts: Vec<gpui::Point<gpui::Pixels>> =
                                                 Vec::with_capacity(n);
-                                            for (i, pt) in daily_points.iter().enumerate() {
+                                            for (i, pt) in chart_points.iter().enumerate() {
                                                 let x_norm = if n > 1 {
                                                     i as f32 / (n - 1) as f32
                                                 } else {
@@ -3331,9 +3424,9 @@ impl RouterApp {
                                                 let x =
                                                     bounds.origin.x + gpui::px(x_norm * width_f32);
                                                 let val = if metric == UsageMetric::Cost {
-                                                    pt.cost
+                                                    pt.1
                                                 } else {
-                                                    pt.tokens as f64
+                                                    pt.2 as f64
                                                 };
                                                 let y_norm = (val / max_val).clamp(0.0, 1.0) as f32;
                                                 let y = bounds.origin.y
@@ -3356,33 +3449,6 @@ impl RouterApp {
                                                 return;
                                             }
 
-                                            // Draw Area Fill under curve
-                                            let mut fill_builder = gpui::PathBuilder::fill();
-                                            let bottom_y = bounds.origin.y + bounds.size.height;
-                                            fill_builder.move_to(gpui::point(pts[0].x, bottom_y));
-                                            fill_builder.line_to(pts[0]);
-
-                                            for i in 0..pts.len() - 1 {
-                                                let p0 = pts[i];
-                                                let p1 = pts[i + 1];
-                                                let mid = gpui::point(
-                                                    (p0.x + p1.x) / 2.0,
-                                                    (p0.y + p1.y) / 2.0,
-                                                );
-                                                fill_builder.curve_to(mid, p0);
-                                                fill_builder.curve_to(p1, mid);
-                                            }
-
-                                            fill_builder.line_to(gpui::point(
-                                                pts[pts.len() - 1].x,
-                                                bottom_y,
-                                            ));
-                                            fill_builder.line_to(gpui::point(pts[0].x, bottom_y));
-
-                                            if let Ok(fill_path) = fill_builder.build() {
-                                                window.paint_path(fill_path, rgba(0x10A37F25));
-                                            }
-
                                             // Draw Stroke Curve
                                             let mut stroke_builder =
                                                 gpui::PathBuilder::stroke(gpui::px(2.0));
@@ -3401,18 +3467,23 @@ impl RouterApp {
                                                 window.paint_path(stroke_path, stroke_color);
                                             }
 
-                                            // Draw Points
-                                            for p in &pts {
-                                                window.paint_quad(gpui::fill(
-                                                    gpui::Bounds::new(
-                                                        *p - gpui::point(
-                                                            gpui::px(2.5),
-                                                            gpui::px(2.5),
+                                            // Point markers only for sparse (daily) series
+                                            if pts.len() <= 40 {
+                                                for p in &pts {
+                                                    window.paint_quad(gpui::fill(
+                                                        gpui::Bounds::new(
+                                                            *p - gpui::point(
+                                                                gpui::px(2.5),
+                                                                gpui::px(2.5),
+                                                            ),
+                                                            gpui::size(
+                                                                gpui::px(5.0),
+                                                                gpui::px(5.0),
+                                                            ),
                                                         ),
-                                                        gpui::size(gpui::px(5.0), gpui::px(5.0)),
-                                                    ),
-                                                    stroke_color,
-                                                ));
+                                                        stroke_color,
+                                                    ));
+                                                }
                                             }
                                         },
                                     )
@@ -4886,7 +4957,7 @@ impl RouterApp {
                                     .child(self.render_app_toggle_chip("claude", "Claude Code", CustomIcon::Claude, rgb(0xD97757).into(), cx))
                                     .child(self.render_app_toggle_chip("claude-desktop", "Claude Desktop", CustomIcon::Claude, rgb(0xD97757).into(), cx))
                                     .child(self.render_app_toggle_chip("codex", "Codex", CustomIcon::OpenAI, rgb(0x10A37F).into(), cx))
-                                    .child(self.render_app_toggle_chip("cursor", "Cursor CLI", CustomIcon::Cursor, rgb(0x6366F1).into(), cx))
+                                    .child(self.render_app_toggle_chip("cursor", "Cursor", CustomIcon::Cursor, rgb(0x6366F1).into(), cx))
                                     .child(self.render_app_toggle_chip("deepseek", "DeepSeek Harness", CustomIcon::DeepSeek, rgb(0x3B82F6).into(), cx))
                                     .child(self.render_app_toggle_chip("fx", "Fx", CustomIcon::Fx, rgb(0x4B5563).into(), cx))
                                     .child(self.render_app_toggle_chip("opencode", "OpenCode", CustomIcon::OpenCode, rgb(0x0284C7).into(), cx))
@@ -6495,6 +6566,20 @@ impl RouterApp {
                                                 })),
                                         ),
                                 )
+                                .child(
+                                    v_flex()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.foreground)
+                                                .child(t!("provider.request_protocol").to_string()),
+                                        )
+                                        .child(Select::new(&form.protocol_select).placeholder(
+                                            t!("provider.request_protocol_placeholder").to_string(),
+                                        )),
+                                )
                                 .when_some(form.connectivity_result.as_ref(), |this, res| {
                                     let (tag_text, is_success, is_warn) = match res.status {
                                         domain::HealthStatus::Operational => (
@@ -6578,6 +6663,24 @@ impl RouterApp {
                                         ),
                                 ),
                         )
+                        .when(form.app == AppKind::Cursor, |this| {
+                            this.when_some(form.thinking_effort_select.as_ref(), |this, select| {
+                                this.child(
+                                    v_flex()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.foreground)
+                                                .child(t!("provider.thinking_effort").to_string()),
+                                        )
+                                        .child(Select::new(select).placeholder(
+                                            t!("provider.thinking_effort_placeholder").to_string(),
+                                        )),
+                                )
+                            })
+                        })
                         .when(form.app == AppKind::WorkBuddy, |this| {
                             let tool_checked = form.workbuddy_supports_tool_call;
                             let image_checked = form.workbuddy_supports_images;
@@ -7505,6 +7608,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_CODEX_MODEL.to_string(),
+                request_protocol: RequestProtocol::OpenAiResponses.as_str().into(),
                 model_mappings: Vec::new(),
             }),
             AppKind::Claude => ProviderForm::Claude(ClaudeForm {
@@ -7514,6 +7618,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_CLAUDE_MODEL.to_string(),
+                request_protocol: RequestProtocol::Anthropic.as_str().into(),
                 model_mappings: Vec::new(),
             }),
             AppKind::Grok => ProviderForm::Grok(GrokForm {
@@ -7523,6 +7628,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_GROK_MODEL.to_string(),
+                request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
                 model_mappings: Vec::new(),
             }),
             AppKind::OpenCode => ProviderForm::OpenCode(OpenCodeForm {
@@ -7533,6 +7639,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_OPENCODE_MODEL.to_string(),
+                request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
                 model_mappings: Vec::new(),
             }),
             AppKind::Pi => ProviderForm::Pi(PiForm {
@@ -7543,6 +7650,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_PI_MODEL.to_string(),
+                request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
                 model_mappings: Vec::new(),
             }),
             AppKind::Cursor => ProviderForm::Cursor(CursorForm {
@@ -7550,6 +7658,7 @@ impl FormDraft {
                 website_url: String::new(),
                 kind: CursorKind::ThirdParty,
                 provider_type: domain::DEFAULT_CURSOR_PROVIDER_TYPE.to_string(),
+                default_reasoning_effort: DEFAULT_THINKING_EFFORT.to_string(),
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_CURSOR_MODEL.to_string(),
@@ -7563,6 +7672,7 @@ impl FormDraft {
                 api_key: String::new(),
                 base_url: String::new(),
                 model: DEFAULT_ZCODE_MODEL.to_string(),
+                request_protocol: RequestProtocol::Anthropic.as_str().into(),
                 modality_text: true,
                 modality_image: true,
                 model_mappings: Vec::new(),
@@ -7742,6 +7852,30 @@ impl FormDraft {
                 f.kind.is_official(),
                 Vec::new(),
             ),
+        };
+
+        let protocol = match &form {
+            ProviderForm::Cursor(f) => f.provider_type.clone(),
+            ProviderForm::Claude(f) => f.request_protocol.clone(),
+            ProviderForm::Codex(f) => f.request_protocol.clone(),
+            ProviderForm::Grok(f) => f.request_protocol.clone(),
+            ProviderForm::OpenCode(f) => f.request_protocol.clone(),
+            ProviderForm::Pi(f) => f.request_protocol.clone(),
+            ProviderForm::ZCode(f) => f.request_protocol.clone(),
+            ProviderForm::WorkBuddy(_) => RequestProtocol::default_for_app(AppKind::WorkBuddy)
+                .as_str()
+                .to_string(),
+        };
+        let protocol = if protocol.trim().is_empty() {
+            RequestProtocol::default_for_app(app).as_str().to_string()
+        } else {
+            RequestProtocol::parse(&protocol).as_str().to_string()
+        };
+        let thinking_effort = match &form {
+            ProviderForm::Cursor(f) if !f.default_reasoning_effort.trim().is_empty() => {
+                f.default_reasoning_effort.clone()
+            }
+            _ => DEFAULT_THINKING_EFFORT.to_string(),
         };
 
         let selected_index = if editing_id.is_none() {
@@ -7924,6 +8058,43 @@ impl FormDraft {
             (None, None)
         };
 
+        let protocol_items = protocol_items();
+        let protocol_idx = protocol_items
+            .iter()
+            .position(|item| item.value == protocol)
+            .map(|i| gpui_component::IndexPath::default().row(i));
+        let protocol_select =
+            cx.new(|cx| SelectState::new(protocol_items, protocol_idx, window, cx));
+
+        let (thinking_effort_select, _thinking_effort_sub) = if app == AppKind::Cursor {
+            let options = thinking_effort_items();
+            let idx = options
+                .iter()
+                .position(|item| item.value == thinking_effort)
+                .or(Some(2))
+                .map(|i| gpui_component::IndexPath::default().row(i));
+            let select = cx.new(|cx| SelectState::new(options, idx, window, cx));
+            let view = cx.entity();
+            let sub = window.subscribe(
+                &select,
+                cx,
+                move |_, event: &SelectEvent<Vec<WorkBuddyReasoningEffortItem>>, _window, cx| {
+                    if let SelectEvent::Confirm(Some(value)) = event {
+                        let effort = value.clone();
+                        view.update(cx, |this, cx| {
+                            if let Some(form) = this.form.as_mut() {
+                                form.thinking_effort = effort;
+                                cx.notify();
+                            }
+                        });
+                    }
+                },
+            );
+            (Some(select), Some(sub))
+        } else {
+            (None, None)
+        };
+
         Self {
             app,
             editing_id,
@@ -7972,6 +8143,11 @@ impl FormDraft {
             is_fetching_models: false,
             is_testing_connectivity: false,
             connectivity_result: None,
+            protocol_select,
+            _protocol_sub: None,
+            thinking_effort,
+            thinking_effort_select,
+            _thinking_effort_sub,
             _preset_sub: Some(_preset_sub),
             _default_model_sub: None,
             _workbuddy_reasoning_effort_sub,
@@ -8041,6 +8217,21 @@ impl FormDraft {
         let api_key = self.api_key.read(cx).value().to_string();
         let base_url = self.base_url.read(cx).value().to_string();
         let model = self.model.read(cx).value().to_string();
+        let request_protocol = self
+            .protocol_select
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or_else(|| {
+                RequestProtocol::default_for_app(self.app)
+                    .as_str()
+                    .to_string()
+            });
+        let default_reasoning_effort = if self.thinking_effort.trim().is_empty() {
+            DEFAULT_THINKING_EFFORT.to_string()
+        } else {
+            self.thinking_effort.clone()
+        };
 
         match self.app {
             AppKind::Codex => {
@@ -8060,6 +8251,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     model_mappings,
                 })
             }
@@ -8080,6 +8272,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     model_mappings,
                 })
             }
@@ -8100,6 +8293,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     model_mappings,
                 })
             }
@@ -8121,6 +8315,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     model_mappings,
                 })
             }
@@ -8142,6 +8337,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     model_mappings,
                 })
             }
@@ -8159,7 +8355,8 @@ impl FormDraft {
                     } else {
                         CursorKind::ThirdParty
                     },
-                    provider_type: domain::DEFAULT_CURSOR_PROVIDER_TYPE.to_string(),
+                    provider_type: request_protocol,
+                    default_reasoning_effort,
                     api_key,
                     base_url,
                     model,
@@ -8184,6 +8381,7 @@ impl FormDraft {
                     api_key,
                     base_url,
                     model,
+                    request_protocol,
                     modality_text: self.zcode_modality_text,
                     modality_image: self.zcode_modality_image,
                     model_mappings,

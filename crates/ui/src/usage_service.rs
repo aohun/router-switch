@@ -1,4 +1,4 @@
-use chrono::{Datelike, Duration, Local, NaiveDate};
+use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
 use domain::AppKind;
 use gpui::{rgb, Hsla};
 use std::collections::HashMap;
@@ -9,7 +9,8 @@ use crate::assets::CustomIcon;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageWindowChoice {
     #[default]
-    Today,
+    Hours6,
+    Hours24,
     Yesterday,
     Days7,
     Days30,
@@ -20,15 +21,15 @@ pub enum UsageWindowChoice {
 pub enum UsageRefreshInterval {
     Off,
     Sec10,
-    #[default]
     Sec30,
+    #[default]
     Sec60,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageMetric {
-    #[default]
     Cost,
+    #[default]
     Tokens,
 }
 
@@ -42,6 +43,14 @@ pub enum UsageBreakdownTab {
 #[derive(Debug, Clone)]
 pub struct DashboardDailyPoint {
     pub date: String,
+    pub label: String,
+    pub cost: f64,
+    pub tokens: i64,
+}
+
+/// One bucket of the rolling-window timeline (HH:MM label, local time).
+#[derive(Debug, Clone)]
+pub struct DashboardTimePoint {
     pub label: String,
     pub cost: f64,
     pub tokens: i64,
@@ -98,6 +107,9 @@ pub struct DashboardUsageData {
     pub observed_input_share_percent: f64,
     pub observed_input_share_formatted: String,
     pub daily_points: Vec<DashboardDailyPoint>,
+    pub time_points: Vec<DashboardTimePoint>,
+    pub max_time_cost: f64,
+    pub max_time_tokens: i64,
     pub model_rows: Vec<DashboardModelRow>,
     pub day_rows: Vec<DashboardDayRow>,
     pub active_clients: Vec<String>,
@@ -132,6 +144,9 @@ impl Default for DashboardUsageData {
             observed_input_share_percent: 0.0,
             observed_input_share_formatted: "0.0%".to_string(),
             daily_points: Vec::new(),
+            time_points: Vec::new(),
+            max_time_cost: 0.0,
+            max_time_tokens: 0,
             model_rows: Vec::new(),
             day_rows: Vec::new(),
             active_clients: Vec::new(),
@@ -234,23 +249,24 @@ pub async fn load_dashboard_usage(
     metric: UsageMetric,
 ) -> DashboardUsageData {
     let today = Local::now().date_naive();
-    let (since_date, until_date, today_only) = match window_choice {
-        UsageWindowChoice::Today => (today, today, true),
+    let (since_date, until_date, since_ts_ms) = match window_choice {
+        UsageWindowChoice::Hours6 => {
+            let cutoff = Local::now() - Duration::hours(6);
+            (cutoff.date_naive(), today, Some(cutoff.timestamp_millis()))
+        }
+        UsageWindowChoice::Hours24 => {
+            let cutoff = Local::now() - Duration::hours(24);
+            (cutoff.date_naive(), today, Some(cutoff.timestamp_millis()))
+        }
         UsageWindowChoice::Yesterday => {
             let y = today - Duration::days(1);
-            (y, y, false)
+            (y, y, None)
         }
-        UsageWindowChoice::Days7 => {
-            let start = today - Duration::days(6);
-            (start, today, false)
-        }
-        UsageWindowChoice::Days30 => {
-            let start = today - Duration::days(29);
-            (start, today, false)
-        }
+        UsageWindowChoice::Days7 => (today - Duration::days(6), today, None),
+        UsageWindowChoice::Days30 => (today - Duration::days(29), today, None),
         UsageWindowChoice::Month => {
             let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
-            (start, today, false)
+            (start, today, None)
         }
     };
 
@@ -278,7 +294,8 @@ pub async fn load_dashboard_usage(
         year: None,
         group_by: GroupBy::ClientModel,
         scanner_settings: Default::default(),
-        today_only,
+        today_only: false,
+        since_ts_ms,
     };
 
     let graph_result = match session::tokio_runtime()
@@ -298,6 +315,23 @@ pub async fn load_dashboard_usage(
 
     let contributions = graph_result.contributions;
     let summary = graph_result.summary;
+
+    let time_points: Vec<DashboardTimePoint> = graph_result
+        .time_points
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| DashboardTimePoint {
+            label: Local
+                .timestamp_millis_opt(p.start_ts_ms)
+                .single()
+                .map(|t| t.format("%H:%M").to_string())
+                .unwrap_or_default(),
+            cost: p.cost,
+            tokens: p.tokens,
+        })
+        .collect();
+    let max_time_cost = time_points.iter().map(|p| p.cost).fold(0.0, f64::max);
+    let max_time_tokens = time_points.iter().map(|p| p.tokens).fold(0i64, i64::max);
 
     let mut cached_input_tokens: i64 = 0;
     let mut uncached_input_tokens: i64 = 0;
@@ -534,6 +568,9 @@ pub async fn load_dashboard_usage(
         observed_input_share_percent,
         observed_input_share_formatted: format!("{:.1}%", observed_input_share_percent),
         daily_points,
+        time_points,
+        max_time_cost,
+        max_time_tokens,
         model_rows,
         day_rows,
         active_clients: summary.clients,

@@ -258,6 +258,7 @@ mod tests {
                 "https://www.packyapi.ai/v1",
                 "gpt-5.6-sol",
             ),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         }
     }

@@ -121,6 +121,8 @@ pub mod catalog {
         pub server_model_name: Option<String>,
         #[prost(bool, optional, tag = "19")]
         pub supports_non_max_mode: Option<bool>,
+        #[prost(message, optional, tag = "20")]
+        pub tooltip_data_for_max_mode: Option<TooltipData>,
         #[prost(bool, optional, tag = "21")]
         pub is_recommended_for_background_composer: Option<bool>,
         #[prost(bool, optional, tag = "22")]
@@ -131,8 +133,120 @@ pub mod catalog {
         pub supports_sandboxing: Option<bool>,
         #[prost(bool, optional, tag = "26")]
         pub supports_cmd_k: Option<bool>,
+        #[prost(message, repeated, tag = "29")]
+        pub parameter_definitions: Vec<ModelParameterDefinition>,
+        #[prost(message, repeated, tag = "30")]
+        pub variants: Vec<ModelVariant>,
+        #[prost(string, repeated, tag = "36")]
+        pub legacy_slugs: Vec<String>,
+        #[prost(int32, optional, tag = "38")]
+        pub named_model_section_index: Option<i32>,
         #[prost(string, optional, tag = "41")]
         pub vendor_name: Option<String>,
+        #[prost(message, optional, tag = "42")]
+        pub vendor: Option<AvailableModelVendor>,
+        #[prost(message, repeated, tag = "48")]
+        pub model_picker_badges: Vec<ModelPickerBadge>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ModelParameterDefinition {
+        #[prost(string, tag = "1")]
+        pub id: String,
+        #[prost(string, tag = "2")]
+        pub name: String,
+        #[prost(string, optional, tag = "3")]
+        pub markdown_tooltip: Option<String>,
+        #[prost(message, optional, tag = "4")]
+        pub parameter_type: Option<ModelParameterType>,
+        #[prost(bool, optional, tag = "5")]
+        pub is_cycleable_by_hotkey: Option<bool>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ModelParameterType {
+        #[prost(message, optional, tag = "1")]
+        pub boolean_parameter: Option<BooleanParameter>,
+        #[prost(message, optional, tag = "2")]
+        pub enum_parameter: Option<EnumParameter>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct BooleanParameter {
+        #[prost(message, repeated, tag = "1")]
+        pub values: Vec<BooleanParameterValue>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct BooleanParameterValue {
+        #[prost(string, tag = "1")]
+        pub value: String,
+        #[prost(string, optional, tag = "2")]
+        pub display_name: Option<String>,
+        #[prost(bool, optional, tag = "3")]
+        pub increases_model_cost: Option<bool>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct EnumParameter {
+        #[prost(message, repeated, tag = "1")]
+        pub values: Vec<EnumParameterValue>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct EnumParameterValue {
+        #[prost(string, tag = "1")]
+        pub value: String,
+        #[prost(string, optional, tag = "2")]
+        pub display_name: Option<String>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ModelVariant {
+        #[prost(message, repeated, tag = "1")]
+        pub parameter_values: Vec<ModelParameterValue>,
+        #[prost(string, tag = "2")]
+        pub display_name: String,
+        #[prost(bool, tag = "3")]
+        pub is_max_mode: bool,
+        #[prost(bool, optional, tag = "4")]
+        pub is_default_max_config: Option<bool>,
+        #[prost(bool, optional, tag = "5")]
+        pub is_default_non_max_config: Option<bool>,
+        #[prost(message, optional, tag = "6")]
+        pub tooltip_data: Option<TooltipData>,
+        #[prost(string, optional, tag = "8")]
+        pub display_name_outside_picker: Option<String>,
+        #[prost(string, optional, tag = "9")]
+        pub variant_string_representation: Option<String>,
+        #[prost(string, optional, tag = "11")]
+        pub legacy_slug: Option<String>,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ModelParameterValue {
+        #[prost(string, tag = "1")]
+        pub id: String,
+        #[prost(string, tag = "2")]
+        pub value: String,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ModelPickerBadge {
+        #[prost(string, tag = "1")]
+        pub label: String,
+        #[prost(int32, tag = "2")]
+        pub variant: i32,
+        #[prost(bool, tag = "3")]
+        pub dismiss_on_selection: bool,
+    }
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct AvailableModelVendor {
+        #[prost(int32, tag = "1")]
+        pub id: i32,
+        #[prost(string, tag = "2")]
+        pub display_name: String,
     }
 
     #[derive(Clone, PartialEq, ::prost::Message)]

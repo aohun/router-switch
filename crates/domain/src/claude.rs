@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::protocol::RequestProtocol;
 use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
@@ -33,6 +34,8 @@ pub struct ClaudeSettings {
     pub kind: ClaudeKind,
     pub env: Value,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub model_mappings: Vec<ClaudeModelMapping>,
 }
 
@@ -46,6 +49,13 @@ impl ClaudeSettings {
             base_url: extract_claude_base_url(&self.env).unwrap_or_default(),
             model: extract_claude_model(&self.env)
                 .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_string()),
+            request_protocol: if self.request_protocol.is_empty() {
+                RequestProtocol::default_for_app(AppKind::Claude)
+                    .as_str()
+                    .to_string()
+            } else {
+                self.request_protocol.clone()
+            },
             model_mappings: self.model_mappings.clone(),
         }
     }
@@ -59,6 +69,7 @@ pub struct ClaudeForm {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    pub request_protocol: String,
     pub model_mappings: Vec<ClaudeModelMapping>,
 }
 
@@ -152,6 +163,7 @@ pub fn official_claude_settings() -> ClaudeSettings {
     ClaudeSettings {
         kind: ClaudeKind::Official,
         env: json!({}),
+        request_protocol: RequestProtocol::Anthropic.as_str().into(),
         model_mappings: Vec::new(),
     }
 }
@@ -177,6 +189,7 @@ pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError
         ClaudeKind::Official => Ok(ClaudeSettings {
             kind: ClaudeKind::Official,
             env: json!({}),
+            request_protocol: RequestProtocol::Anthropic.as_str().into(),
             model_mappings: Vec::new(),
         }),
         ClaudeKind::ThirdParty => {
@@ -202,6 +215,9 @@ pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError
             Ok(ClaudeSettings {
                 kind: ClaudeKind::ThirdParty,
                 env,
+                request_protocol: RequestProtocol::parse(&form.request_protocol)
+                    .as_str()
+                    .into(),
                 model_mappings: form.model_mappings,
             })
         }

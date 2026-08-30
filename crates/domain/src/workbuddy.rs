@@ -118,6 +118,8 @@ pub struct WorkBuddySettings {
     #[serde(default)]
     pub use_custom_protocol: bool,
     #[serde(default)]
+    pub request_protocol: String,
+    #[serde(default)]
     pub max_input_tokens: Option<u64>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
@@ -214,6 +216,7 @@ impl WorkBuddySettings {
                 reasoning_only,
                 can_disable_reasoning,
                 use_custom_protocol: item.use_custom_protocol,
+                request_protocol: String::new(),
                 max_input_tokens: item.max_input_tokens,
                 max_output_tokens: item.max_output_tokens,
                 reasoning_effort,
@@ -459,6 +462,7 @@ pub fn official_workbuddy_settings() -> WorkBuddySettings {
         reasoning_only: false,
         can_disable_reasoning: true,
         use_custom_protocol: false,
+        request_protocol: String::new(),
         max_input_tokens: None,
         max_output_tokens: None,
         reasoning_effort: None,
@@ -533,6 +537,7 @@ pub fn parse_workbuddy_form(form: WorkBuddyForm) -> Result<WorkBuddySettings, Do
                 reasoning_only: form.reasoning_only,
                 can_disable_reasoning: form.can_disable_reasoning,
                 use_custom_protocol: form.use_custom_protocol,
+                request_protocol: String::new(),
                 max_input_tokens: form.max_input_tokens,
                 max_output_tokens: form.max_output_tokens,
                 reasoning_effort,

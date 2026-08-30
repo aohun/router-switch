@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::model::{FinishReason, ModelInvocation, Role, Usage};
 use crate::{GatewayError, Result};
 
-use super::{merge_extra_params, ModelEvent, Provider, ProviderStream};
+use super::{merge_extra_params, resolve_provider_url, ModelEvent, Provider, ProviderStream};
 
 #[derive(Default)]
 struct ChatToolState {
@@ -35,18 +35,6 @@ impl OpenAiChatProvider {
             client: reqwest::Client::builder().build().unwrap_or_default(),
         }
     }
-}
-
-fn join_url(base: &str, path: &str) -> String {
-    format!(
-        "{}{}",
-        base.trim_end_matches('/'),
-        if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{path}")
-        }
-    )
 }
 
 fn openai_messages(invocation: &ModelInvocation) -> Result<Vec<Value>> {
@@ -113,7 +101,7 @@ impl Provider for OpenAiChatProvider {
         cancellation: CancellationToken,
     ) -> ProviderStream {
         let client = self.client.clone();
-        let url = join_url(&self.base_url, "/chat/completions");
+        let base_url = self.base_url.clone();
         let api_key = self.api_key.clone();
         let model = if !invocation.model.is_empty() {
             invocation.model.clone()
@@ -122,6 +110,7 @@ impl Provider for OpenAiChatProvider {
         };
 
         Box::pin(try_stream! {
+            let url = resolve_provider_url(&base_url, "openai-chat")?;
             let messages = openai_messages(&invocation)?;
             let mut body = json!({
                 "model": model,

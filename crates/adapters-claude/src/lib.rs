@@ -239,6 +239,7 @@ mod tests {
             api_key: "sk-ant-test".into(),
             base_url: "https://api.packy.ai".into(),
             model: "claude-3-7-sonnet-20250219".into(),
+            request_protocol: String::new(),
             model_mappings: Vec::new(),
         };
         let settings = parse_claude_form(form).unwrap();
