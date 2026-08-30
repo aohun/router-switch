@@ -870,7 +870,8 @@ pub struct RouterApp {
     usage_code: Entity<InputState>,
     usage_querying: bool,
     usage_last_result: Option<domain::UsageQueryResult>,
-    usage_badges: std::collections::HashMap<String, domain::UsageQueryResult>,
+    usage_badges: std::collections::HashMap<String, (domain::UsageQueryResult, i64)>,
+    usage_refreshing: std::collections::HashSet<String>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
@@ -1115,6 +1116,7 @@ impl RouterApp {
             usage_querying: false,
             usage_last_result: None,
             usage_badges: std::collections::HashMap::new(),
+            usage_refreshing: std::collections::HashSet::new(),
             usage_refresh_select,
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
@@ -1276,10 +1278,67 @@ impl RouterApp {
                 if !config.enabled {
                     return None;
                 }
-                let result = self.workspace.usage_result(&id).ok().flatten()?.0;
-                Some((id, result))
+                let (result, fetched_at) = self.workspace.usage_result(&id).ok().flatten()?;
+                Some((id, (result, fetched_at)))
             })
             .collect();
+    }
+
+    /// 从服务商卡片直接发起一次用量刷新
+    fn start_usage_refresh(
+        &mut self,
+        provider_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.usage_refreshing.contains(provider_id) {
+            return;
+        }
+        let prepared = match self.workspace.prepare_usage_query(provider_id) {
+            Ok(prepared) => prepared,
+            Err(_) => return,
+        };
+        self.usage_refreshing.insert(provider_id.to_string());
+        cx.notify();
+
+        let view = cx.entity().downgrade();
+        let target = provider_id.to_string();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let outcome = session::tokio_runtime()
+                        .spawn(prepared.run())
+                        .await
+                        .map_err(|e| usage_query::UsageQueryError(format!("任务失败: {e}")))
+                        .and_then(|inner| inner);
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.usage_refreshing.remove(&target);
+                            let result = this.workspace.complete_usage_query(&target, outcome);
+                            this.reload_usage_badges();
+                            match &result {
+                                r if r.success => {
+                                    window.push_notification(
+                                        Notification::success(usage_summary_text(r)),
+                                        cx,
+                                    );
+                                }
+                                r => {
+                                    window.push_notification(
+                                        Notification::error(
+                                            r.error.clone().unwrap_or_else(|| "查询失败".into()),
+                                        ),
+                                        cx,
+                                    );
+                                }
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
     }
 
     /// 打开用量查询配置页
@@ -4918,17 +4977,6 @@ impl RouterApp {
                                         .child(
                                             Tag::secondary().small().outline().child(login_type),
                                         ),
-                                )
-                                .when_some(
-                                    self.usage_badges.get(&provider.id).cloned(),
-                                    |this, result| {
-                                        let text = usage_badge_text(&result);
-                                        this.child(if result.success {
-                                            Tag::success().small().child(text)
-                                        } else {
-                                            Tag::danger().small().child(text)
-                                        })
-                                    },
                                 ),
                         ),
                 )
@@ -4936,6 +4984,57 @@ impl RouterApp {
                     h_flex()
                         .items_center()
                         .gap(px(6.))
+                        .when_some(
+                            self.usage_badges.get(&provider.id).cloned(),
+                            |this, (result, fetched_at)| {
+                                let muted = cx.theme().muted_foreground;
+                                let refresh_id = provider.id.clone();
+                                let refreshing = self.usage_refreshing.contains(&provider.id);
+                                let now_secs = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                this.child(
+                                    v_flex()
+                                        .items_end()
+                                        .gap(px(2.))
+                                        .child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .text_color(muted)
+                                                        .child(relative_time_text(
+                                                            now_secs - fetched_at,
+                                                            self.language,
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "usage-refresh-{}",
+                                                        provider.id
+                                                    )))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(CustomIcon::RotateCw)
+                                                    .disabled(refreshing)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.start_usage_refresh(
+                                                                &refresh_id,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                ),
+                                        )
+                                        .child(usage_value_line(&result, muted)),
+                                )
+                            },
+                        )
                         .when(!is_direct_write_app, |this| {
                             this.child(
                                 Button::new(SharedString::from(format!("enable-{}", provider.id)))
@@ -8951,6 +9050,99 @@ fn field_label(label: String, cx: &App) -> impl IntoElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(cx.theme().foreground)
         .child(label)
+}
+
+/// 相对时间文案(卡片用量块)
+fn relative_time_text(seconds_ago: i64, language: AppLanguage) -> String {
+    let seconds = seconds_ago.max(0);
+    if language == AppLanguage::En {
+        if seconds < 60 {
+            "just now".to_string()
+        } else if seconds < 3600 {
+            format!("{}m ago", seconds / 60)
+        } else if seconds < 86400 {
+            format!("{}h ago", seconds / 3600)
+        } else {
+            format!("{}d ago", seconds / 86400)
+        }
+    } else if seconds < 60 {
+        "刚刚".to_string()
+    } else if seconds < 3600 {
+        format!("{} 分钟前", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{} 小时前", seconds / 3600)
+    } else {
+        format!("{} 天前", seconds / 86400)
+    }
+}
+
+/// 卡片用量块的余额行: "剩余: 6.90 USD" / 套餐名 / 查询失败
+fn usage_value_line(
+    result: &domain::UsageQueryResult,
+    muted_foreground: gpui::Hsla,
+) -> impl gpui::IntoElement {
+    if !result.success {
+        return h_flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(muted_foreground)
+                    .child("剩余:"),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(rgb(0xDC2626))
+                    .child("查询失败"),
+            )
+            .into_any_element();
+    }
+    let Some(item) = result.data.first() else {
+        return h_flex()
+            .items_center()
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(muted_foreground)
+                    .child("已启用"),
+            )
+            .into_any_element();
+    };
+    let unit = item.unit.clone().unwrap_or_else(|| "USD".into());
+    h_flex()
+        .items_center()
+        .gap(px(4.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(muted_foreground)
+                .child("剩余:"),
+        )
+        .when_some(item.remaining, |this, remaining| {
+            this.child(
+                div()
+                    .text_size(px(11.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x16A34A))
+                    .child(format!("{remaining:.2}")),
+            )
+        })
+        .children(item.plan_name.clone().map(|name| {
+            div()
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(0x16A34A))
+                .child(name)
+        }))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(muted_foreground)
+                .child(unit),
+        )
+        .into_any_element()
 }
 
 /// 用量结果的简短摘要(通知用)
