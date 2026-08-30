@@ -15,8 +15,8 @@ use domain::{
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, ClickEvent, Context, Entity,
-    FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
 };
 use gpui_component::{
@@ -715,22 +715,6 @@ pub enum SettingsTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageWindowSelectItem {
-    pub choice: UsageWindowChoice,
-    pub label: String,
-}
-
-impl SelectItem for UsageWindowSelectItem {
-    type Value = UsageWindowChoice;
-    fn title(&self) -> SharedString {
-        self.label.clone().into()
-    }
-    fn value(&self) -> &Self::Value {
-        &self.choice
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageRefreshSelectItem {
     pub interval: UsageRefreshInterval,
     pub label: String,
@@ -867,9 +851,7 @@ pub struct RouterApp {
     usage_window: UsageWindowChoice,
     usage_metric: UsageMetric,
     usage_refresh_interval: UsageRefreshInterval,
-    usage_window_select: Entity<SelectState<Vec<UsageWindowSelectItem>>>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
-    _usage_window_sub: Option<Subscription>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
     log_level_select: Entity<SelectState<Vec<LogLevelSelectItem>>>,
@@ -948,54 +930,6 @@ impl RouterApp {
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("settings.search_placeholder").to_string())
         });
-
-        let window_items = vec![
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Hours6,
-                label: t!("usage.hours_6").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Hours24,
-                label: t!("usage.hours_24").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Yesterday,
-                label: t!("usage.yesterday").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days7,
-                label: t!("usage.days_7").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days30,
-                label: t!("usage.days_30").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Month,
-                label: t!("usage.this_month").to_string(),
-            },
-        ];
-        let usage_window_select = cx.new(|cx| {
-            SelectState::new(
-                window_items,
-                Some(gpui_component::IndexPath::default().row(0)),
-                window,
-                cx,
-            )
-        });
-
-        let usage_window_sub = cx.subscribe(
-            &usage_window_select,
-            |this: &mut RouterApp,
-             _emitter: Entity<SelectState<Vec<UsageWindowSelectItem>>>,
-             event: &SelectEvent<Vec<UsageWindowSelectItem>>,
-             cx: &mut Context<Self>| {
-                if let SelectEvent::Confirm(Some(choice)) = event {
-                    this.usage_window = *choice;
-                    this.refresh_dashboard_data(cx);
-                }
-            },
-        );
 
         let refresh_items = vec![
             UsageRefreshSelectItem {
@@ -1138,9 +1072,7 @@ impl RouterApp {
             usage_window: UsageWindowChoice::Hours6,
             usage_metric: UsageMetric::Tokens,
             usage_refresh_interval: UsageRefreshInterval::Sec60,
-            usage_window_select,
             usage_refresh_select,
-            _usage_window_sub: Some(usage_window_sub),
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
             log_level_select,
@@ -1362,36 +1294,6 @@ impl RouterApp {
             self.fail(err, window, cx);
             return;
         }
-
-        let window_items = vec![
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Hours6,
-                label: t!("usage.hours_6").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Hours24,
-                label: t!("usage.hours_24").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Yesterday,
-                label: t!("usage.yesterday").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days7,
-                label: t!("usage.days_7").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Days30,
-                label: t!("usage.days_30").to_string(),
-            },
-            UsageWindowSelectItem {
-                choice: UsageWindowChoice::Month,
-                label: t!("usage.this_month").to_string(),
-            },
-        ];
-        self.usage_window_select.update(cx, |this, cx| {
-            this.set_items(window_items, window, cx);
-        });
 
         let refresh_items = vec![
             UsageRefreshSelectItem {
@@ -3088,55 +2990,6 @@ impl RouterApp {
             )
     }
 
-    fn render_dashboard_filter_chip(
-        &self,
-        id: &'static str,
-        icon: Option<CustomIcon>,
-        color: Hsla,
-        label: String,
-        selected: bool,
-        cx: &mut Context<Self>,
-        on_click: impl Fn(&mut RouterApp, &mut Window, &mut Context<RouterApp>) + 'static,
-    ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let mut chip = div()
-            .id(id)
-            .h(px(26.))
-            .px(px(10.))
-            .rounded(px(13.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .cursor_pointer()
-            .text_size(px(12.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(if selected {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            })
-            .when(selected, |this| {
-                this.bg(theme.background)
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_xs()
-            })
-            .when(!selected, |this| {
-                this.hover(|this| this.bg(theme.background.opacity(0.6)))
-            });
-        if let Some(icon) = icon {
-            chip = chip.child(Icon::new(icon).size(px(14.)).text_color(color));
-        }
-        chip.child(label).on_click(cx.listener(
-            move |this: &mut RouterApp,
-                  _: &ClickEvent,
-                  window: &mut Window,
-                  cx: &mut Context<RouterApp>| {
-                on_click(this, window, cx);
-            },
-        ))
-    }
-
     fn render_usage_line_chart(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let default_data = DashboardUsageData::default();
@@ -3567,192 +3420,70 @@ impl RouterApp {
                 h_flex()
                     .w_full()
                     .items_center()
-                    .justify_between()
+                    .justify_end()
                     .p(px(8.))
                     .rounded(px(10.))
                     .bg(theme.secondary.opacity(0.35))
                     .border_1()
                     .border_color(theme.border)
                     .child(
-                        // Left: Multi-App Brand Chips
+                        // Time window: segmented control
                         h_flex()
-                            .items_center()
-                            .gap(px(6.))
-                            // All
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-all",
-                                None,
-                                Hsla::default(),
-                                t!("usage.app_all").to_string(),
-                                self.dashboard_app_filter.is_none(),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter = None;
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-claude",
-                                Some(CustomIcon::Claude),
-                                rgb(0xD97757).into(),
-                                "Claude".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::Claude),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::Claude) {
-                                            None
-                                        } else {
-                                            Some(AppKind::Claude)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-codex",
-                                Some(CustomIcon::OpenAI),
-                                rgb(0x10A37F).into(),
-                                "Codex".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::Codex),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::Codex) {
-                                            None
-                                        } else {
-                                            Some(AppKind::Codex)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-gemini",
-                                Some(CustomIcon::DeepSeek),
-                                rgb(0x3B82F6).into(),
-                                "Gemini".to_string(),
-                                false,
-                                cx,
-                                |_, window, cx| {
-                                    notify_info("Gemini 暂无近期用量记录", window, cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-grok",
-                                Some(CustomIcon::Grok),
-                                rgb(0x8B5CF6).into(),
-                                "Grok".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::Grok),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::Grok) {
-                                            None
-                                        } else {
-                                            Some(AppKind::Grok)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-opencode",
-                                Some(CustomIcon::OpenCode),
-                                rgb(0x6366F1).into(),
-                                "OpenCode".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::OpenCode),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::OpenCode) {
-                                            None
-                                        } else {
-                                            Some(AppKind::OpenCode)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-pi",
-                                Some(CustomIcon::Pi),
-                                rgb(0x10B981).into(),
-                                "Pi".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::Pi),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::Pi) {
-                                            None
-                                        } else {
-                                            Some(AppKind::Pi)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-zcode",
-                                Some(CustomIcon::ZCode),
-                                rgb(0x06B6D4).into(),
-                                "ZCode".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::ZCode),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::ZCode) {
-                                            None
-                                        } else {
-                                            Some(AppKind::ZCode)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            ))
-                            .child(self.render_dashboard_filter_chip(
-                                "filter-app-workbuddy",
-                                Some(CustomIcon::WorkBuddy),
-                                rgb(0xF59E0B).into(),
-                                "WorkBuddy".to_string(),
-                                self.dashboard_app_filter == Some(AppKind::WorkBuddy),
-                                cx,
-                                |this, _, cx| {
-                                    this.dashboard_app_filter =
-                                        if this.dashboard_app_filter == Some(AppKind::WorkBuddy) {
-                                            None
-                                        } else {
-                                            Some(AppKind::WorkBuddy)
-                                        };
-                                    this.refresh_dashboard_data(cx);
-                                },
-                            )),
+                            .p(px(2.))
+                            .rounded(px(8.))
+                            .bg(theme.background)
+                            .border_1()
+                            .border_color(theme.border)
+                            .gap(px(2.))
+                            .children(
+                                [
+                                    (UsageWindowChoice::Hours6, t!("usage.hours_6").to_string()),
+                                    (UsageWindowChoice::Hours24, t!("usage.hours_24").to_string()),
+                                    (
+                                        UsageWindowChoice::Yesterday,
+                                        t!("usage.yesterday").to_string(),
+                                    ),
+                                    (UsageWindowChoice::Days7, t!("usage.days_7").to_string()),
+                                    (UsageWindowChoice::Days30, t!("usage.days_30").to_string()),
+                                    (UsageWindowChoice::Month, t!("usage.this_month").to_string()),
+                                ]
+                                .into_iter()
+                                .map(|(choice, label)| {
+                                    Button::new(SharedString::from(format!(
+                                        "usage-window-{:?}",
+                                        choice
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .selected(self.usage_window == choice)
+                                    .label(label)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.usage_window = choice;
+                                        this.refresh_dashboard_data(cx);
+                                    }))
+                                }),
+                            ),
                     )
                     .child(
-                        // Right: Date Selector first, then Refresh Selector, and Refresh button
-                        h_flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .w(px(115.))
-                                    .child(Select::new(&self.usage_window_select).small()),
-                            )
-                            .child(
-                                div()
-                                    .w(px(80.))
-                                    .child(Select::new(&self.usage_refresh_select).small()),
-                            )
-                            .child(
-                                Button::new("dash-refresh-btn")
-                                    .outline()
-                                    .small()
-                                    .icon(CustomIcon::RotateCw)
-                                    .tooltip(t!("about.refresh").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_dashboard_data(cx);
-                                        let msg = if this.language == AppLanguage::En {
-                                            "Dashboard stats refreshed"
-                                        } else {
-                                            "仪表盘数据已刷新"
-                                        };
-                                        notify_success(msg, window, cx);
-                                    })),
-                            ),
+                        div()
+                            .w(px(80.))
+                            .child(Select::new(&self.usage_refresh_select).small()),
+                    )
+                    .child(
+                        Button::new("dash-refresh-btn")
+                            .outline()
+                            .small()
+                            .icon(CustomIcon::RotateCw)
+                            .tooltip(t!("about.refresh").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_dashboard_data(cx);
+                                let msg = if this.language == AppLanguage::En {
+                                    "Dashboard stats refreshed"
+                                } else {
+                                    "仪表盘数据已刷新"
+                                };
+                                notify_success(msg, window, cx);
+                            })),
                     ),
             )
             // 2. 5-Tile Metric Strip (Processed, Cached Input, Uncached Input, Output, Cache Savings)
