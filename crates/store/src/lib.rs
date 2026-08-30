@@ -377,6 +377,35 @@ impl Store {
         Ok(())
     }
 
+    /// 通用 KV 写入(认证凭据等)
+    pub fn kv_set(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT INTO kv (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map_err(StoreError::from)?;
+        Ok(())
+    }
+
+    /// 通用 KV 读取
+    pub fn kv_get(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT value FROM kv WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(row.get(0)?));
+        }
+        Ok(None)
+    }
+
+    pub fn kv_delete(&self, key: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM kv WHERE key = ?1", rusqlite::params![key])
+            .map_err(StoreError::from)?;
+        Ok(())
+    }
+
     /// 保存服务商的用量查询配置(保留已缓存的结果)
     pub fn save_usage_script(
         &self,

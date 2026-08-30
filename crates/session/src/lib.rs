@@ -34,6 +34,7 @@ use adapters_zcode::{
     resolve_zcode_paths, write_live_for_provider as write_zcode_live, ZCodeAdapterError,
     ZCodePaths,
 };
+pub use auth_native::NativeAuthStatus;
 pub use cursor_gateway::{CaState, LoadedCa};
 use cursor_gateway::{
     CompatGateway, CompatTarget, CursorGatewayRuntime, GatewayError, COMPAT_DEFAULT_PORT,
@@ -48,6 +49,10 @@ use domain::{
     OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
     OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
+pub use oauth::{
+    codex_start_device_flow, xai_start_device_flow, AuthTokens, DeviceCodeStart, DevicePollStatus,
+    CODEX_PROVIDER, CODEX_VERIFICATION_URL, XAI_PROVIDER,
+};
 use parking_lot::Mutex;
 use serde_json::json;
 use std::sync::OnceLock;
@@ -56,6 +61,9 @@ pub use store::{
 };
 use thiserror::Error;
 pub use usage_query::UsageQueryError;
+
+mod auth_native;
+pub mod oauth;
 
 static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -94,6 +102,29 @@ impl PreparedUsageQuery {
         )
         .await
     }
+}
+
+/// 轮询一次设备码状态(不落库, 供后台循环调用)
+pub fn oauth_poll_once(
+    provider: &'static str,
+    device_code: &str,
+    user_code: &str,
+    token_endpoint: Option<&str>,
+) -> Result<oauth::DevicePollStatus, SessionError> {
+    let rt = tokio_runtime();
+    rt.block_on(async move {
+        match provider {
+            oauth::CODEX_PROVIDER => oauth::codex_poll_device(device_code, user_code).await,
+            oauth::XAI_PROVIDER => {
+                let endpoint = token_endpoint
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| "缺少 token endpoint".to_string())?;
+                oauth::xai_poll_device(device_code, endpoint).await
+            }
+            other => Err(format!("不支持的认证提供方: {other}")),
+        }
+    })
+    .map_err(SessionError::Message)
 }
 
 fn codex_model_mappings(mappings: &[domain::CodexModelMapping]) -> Vec<(String, String)> {
@@ -1032,6 +1063,44 @@ impl Workspace {
         Ok(copy)
     }
 
+    /// OAuth 认证状态(读原生配置/本地存储, 不发起网络请求)
+    pub fn oauth_status(
+        &self,
+        provider: &str,
+    ) -> Result<crate::auth_native::NativeAuthStatus, SessionError> {
+        crate::auth_native::read_status(provider, &self.store, &self.codex_paths)
+    }
+
+    /// 启动设备码登录(短网络调用, 内部 block_on)
+    pub fn oauth_start_login(
+        &self,
+        provider: &str,
+    ) -> Result<oauth::DeviceCodeStart, SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(async move {
+            match provider {
+                oauth::CODEX_PROVIDER => oauth::codex_start_device_flow().await,
+                oauth::XAI_PROVIDER => oauth::xai_start_device_flow().await,
+                other => Err(format!("不支持的认证提供方: {other}")),
+            }
+        })
+        .map_err(SessionError::Message)
+    }
+
+    /// 授权完成后持久化凭据(Codex 另写原生 auth.json)
+    pub fn oauth_complete(
+        &self,
+        provider: &str,
+        tokens: &oauth::AuthTokens,
+    ) -> Result<(), SessionError> {
+        crate::auth_native::persist_tokens(provider, tokens, &self.store, &self.codex_paths)
+    }
+
+    /// 退出登录(清除本地存储的凭据; Codex 原生 auth.json 一并移除)
+    pub fn oauth_logout(&self, provider: &str) -> Result<(), SessionError> {
+        crate::auth_native::clear_credentials(provider, &self.store, &self.codex_paths)
+    }
+
     /// 保存用量查询配置
     pub fn save_usage_script(
         &self,
@@ -1663,6 +1732,50 @@ mod tests {
             .config_toml
             .contains(&format!("http://127.0.0.1:{port}/v1")));
         assert!(!live.config_toml.contains("https://api.example.com"));
+    }
+
+    #[test]
+    fn oauth_status_roundtrip() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_codex_home(Some(temp.path().join("codex")))
+            .unwrap();
+
+        // 初始未认证
+        assert!(!ws.oauth_status(CODEX_PROVIDER).unwrap().authenticated);
+        assert!(!ws.oauth_status(XAI_PROVIDER).unwrap().authenticated);
+
+        let tokens = AuthTokens {
+            access_token: "at".into(),
+            refresh_token: Some("rt".into()),
+            // payload = {"email":"me@example.com"}
+            id_token: Some("eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6Im1lQGV4YW1wbGUuY29tIn0.x".into()),
+            account_id: Some("acct-1".into()),
+            email: Some("me@example.com".into()),
+        };
+
+        // Codex: 写原生 auth.json 并可读回
+        ws.oauth_complete(CODEX_PROVIDER, &tokens).unwrap();
+        let status = ws.oauth_status(CODEX_PROVIDER).unwrap();
+        assert!(status.authenticated);
+        assert_eq!(status.account.as_deref(), Some("me@example.com"));
+        let auth_json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("codex/auth.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(auth_json["auth_mode"], "chatgpt");
+        assert_eq!(auth_json["tokens"]["account_id"], "acct-1");
+
+        // xAI: 存本地 kv
+        ws.oauth_complete(XAI_PROVIDER, &tokens).unwrap();
+        let status = ws.oauth_status(XAI_PROVIDER).unwrap();
+        assert!(status.authenticated);
+        assert_eq!(status.account.as_deref(), Some("me@example.com"));
+
+        // 登出清除凭据
+        ws.oauth_logout(XAI_PROVIDER).unwrap();
+        assert!(!ws.oauth_status(XAI_PROVIDER).unwrap().authenticated);
     }
 
     #[test]

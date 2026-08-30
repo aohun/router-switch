@@ -7,6 +7,7 @@ Execution order is top to bottom. Status: TODO, IN PROGRESS, DONE, BLOCKED.
 | [001](001-cursor-agent-gateway.md) | Rewrite Cursor Agent gateway from scratch | DONE | P1 | L | none |
 | [002](002-auto-routing-gateway.md) | Auto-routing gateway for cross-protocol providers | DONE | P1 | M | 001 |
 | [003](003-usage-query.md) | Provider usage (balance) query | DONE | P2 | L | none |
+| [004](004-auth-oauth.md) | Authentication center (ChatGPT / xAI OAuth) | DONE | P2 | M | none |
 
 ## Notes
 

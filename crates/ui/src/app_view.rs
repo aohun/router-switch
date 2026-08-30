@@ -717,8 +717,22 @@ pub enum Route {
 pub enum SettingsTab {
     #[default]
     General,
+    Auth,
     Advanced,
     About,
+}
+
+/// 进行中的 OAuth 设备码登录
+#[derive(Debug, Clone)]
+struct OngoingLogin {
+    provider: &'static str,
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    token_endpoint: Option<String>,
+    /// 轮询截止(unix 秒)
+    deadline: i64,
+    interval_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -872,6 +886,9 @@ pub struct RouterApp {
     usage_last_result: Option<domain::UsageQueryResult>,
     usage_badges: std::collections::HashMap<String, (domain::UsageQueryResult, i64)>,
     usage_refreshing: std::collections::HashSet<String>,
+    codex_oauth_status: Option<session::NativeAuthStatus>,
+    xai_oauth_status: Option<session::NativeAuthStatus>,
+    oauth_pending: Option<OngoingLogin>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
@@ -1117,6 +1134,9 @@ impl RouterApp {
             usage_last_result: None,
             usage_badges: std::collections::HashMap::new(),
             usage_refreshing: std::collections::HashSet::new(),
+            codex_oauth_status: None,
+            xai_oauth_status: None,
+            oauth_pending: None,
             usage_refresh_select,
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
@@ -1138,6 +1158,7 @@ impl RouterApp {
             provider_health: std::collections::HashMap::new(),
         };
         app.reload();
+        app.reload_oauth_statuses();
         app.reload_usage_badges();
         app.refresh_dashboard_data(cx);
 
@@ -1265,6 +1286,171 @@ impl RouterApp {
             .detach();
 
         app
+    }
+
+    fn reload_oauth_statuses(&mut self) {
+        self.codex_oauth_status = self.workspace.oauth_status(session::CODEX_PROVIDER).ok();
+        self.xai_oauth_status = self.workspace.oauth_status(session::XAI_PROVIDER).ok();
+    }
+
+    fn start_oauth_login(
+        &mut self,
+        provider: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.oauth_pending.is_some() {
+            notify_info("已有登录流程进行中, 请先完成或等待超时", window, cx);
+            return;
+        }
+        let start = match self.workspace.oauth_start_login(provider) {
+            Ok(start) => start,
+            Err(err) => {
+                self.fail(err, window, cx);
+                return;
+            }
+        };
+        cx.open_url(&start.verification_uri);
+        notify_info(
+            t!("auth.open_browser", code = start.user_code.as_str()).to_string(),
+            window,
+            cx,
+        );
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.oauth_pending = Some(OngoingLogin {
+            provider,
+            device_code: start.device_code.clone(),
+            user_code: start.user_code.clone(),
+            verification_uri: start.verification_uri.clone(),
+            token_endpoint: start.token_endpoint.clone(),
+            deadline: now + start.expires_in as i64,
+            interval_secs: start.interval_secs.max(2),
+        });
+        cx.notify();
+
+        // 自包含轮询循环: Pending 继续轮, 终态退出
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    loop {
+                        let Some(login) = view
+                            .update(&mut cx, |this, _| this.oauth_pending.clone())
+                            .ok()
+                            .flatten()
+                        else {
+                            break;
+                        };
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        if now >= login.deadline {
+                            let _ = view.update(&mut cx, |this, cx| {
+                                this.oauth_pending = None;
+                                cx.notify();
+                            });
+                            let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                                window.push_notification(
+                                    Notification::warning(t!("auth.login_expired").to_string()),
+                                    cx,
+                                );
+                            });
+                            break;
+                        }
+
+                        let status = cx
+                            .background_executor()
+                            .spawn(async move {
+                                session::oauth_poll_once(
+                                    login.provider,
+                                    &login.device_code,
+                                    &login.user_code,
+                                    login.token_endpoint.as_deref(),
+                                )
+                            })
+                            .await
+                            .unwrap_or_else(|e| session::DevicePollStatus::Failed {
+                                message: format!("任务失败: {e}"),
+                            });
+
+                        match status {
+                            session::DevicePollStatus::Pending => {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_secs(
+                                        login.interval_secs.max(2),
+                                    ))
+                                    .await;
+                            }
+                            session::DevicePollStatus::Complete(tokens) => {
+                                let save = view
+                                    .update(&mut cx, |this, _| {
+                                        this.workspace.oauth_complete(login.provider, &tokens)
+                                    })
+                                    .map(|inner| inner);
+                                let _ = view.update(&mut cx, |this, cx| {
+                                    this.oauth_pending = None;
+                                    this.reload_oauth_statuses();
+                                    cx.notify();
+                                });
+                                let _ = cx.update(|window: &mut Window, cx: &mut App| match save {
+                                    Ok(Ok(())) => window.push_notification(
+                                        Notification::success(t!("auth.login_success").to_string()),
+                                        cx,
+                                    ),
+                                    Ok(Err(err)) => window.push_notification(
+                                        Notification::error(err.to_string()),
+                                        cx,
+                                    ),
+                                    Err(err) => window.push_notification(
+                                        Notification::error(err.to_string()),
+                                        cx,
+                                    ),
+                                });
+                                break;
+                            }
+                            session::DevicePollStatus::Expired
+                            | session::DevicePollStatus::AccessDenied => {
+                                let _ = view.update(&mut cx, |this, cx| {
+                                    this.oauth_pending = None;
+                                    cx.notify();
+                                });
+                                let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                                    window.push_notification(
+                                        Notification::warning(match status {
+                                            session::DevicePollStatus::Expired => {
+                                                t!("auth.login_expired").to_string()
+                                            }
+                                            _ => t!("auth.login_denied").to_string(),
+                                        }),
+                                        cx,
+                                    );
+                                });
+                                break;
+                            }
+                            session::DevicePollStatus::Failed { message } => {
+                                let _ = view.update(&mut cx, |this, cx| {
+                                    this.oauth_pending = None;
+                                    cx.notify();
+                                });
+                                let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                                    window.push_notification(
+                                        Notification::error(format!("登录失败: {message}")),
+                                        cx,
+                                    );
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .detach();
     }
 
     /// 刷新服务商卡片的用量徽标缓存
@@ -4355,6 +4541,144 @@ impl RouterApp {
             })
     }
 
+    fn render_auth_card(
+        &self,
+        id: &'static str,
+        icon: CustomIcon,
+        icon_color: Hsla,
+        title: &'static str,
+        subtitle: &'static str,
+        status_label: &'static str,
+        login_label: String,
+        status: Option<&session::NativeAuthStatus>,
+        provider: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let authenticated = status.is_some_and(|status| status.authenticated);
+        let account = status.and_then(|status| status.account.clone());
+        let pending = self
+            .oauth_pending
+            .as_ref()
+            .is_some_and(|login| login.provider == provider);
+
+        theme::tile(cx).child(
+            v_flex()
+                .w_full()
+                .gap(px(12.))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .size(px(36.))
+                                .rounded(px(10.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(theme.secondary.opacity(0.6))
+                                .child(Icon::new(icon).size(px(20.)).text_color(icon_color)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.foreground)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(subtitle),
+                                ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(status_label),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .children(account.clone().map(|account| {
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(account)
+                                }))
+                                .child(if authenticated {
+                                    Tag::success()
+                                        .small()
+                                        .child(t!("auth.status_ok").to_string())
+                                } else {
+                                    Tag::secondary()
+                                        .small()
+                                        .child(t!("auth.status_none").to_string())
+                                }),
+                        ),
+                )
+                .child(
+                    Button::new(id)
+                        .outline()
+                        .w_full()
+                        .icon(CustomIcon::ChartCurve)
+                        .label(if pending {
+                            t!("auth.waiting").to_string()
+                        } else {
+                            login_label
+                        })
+                        .disabled(pending)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.start_oauth_login(provider, window, cx);
+                        })),
+                ),
+        )
+    }
+
+    fn render_auth_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap(px(16.))
+            .child(self.render_auth_card(
+                "auth-codex",
+                CustomIcon::OpenAI,
+                rgb(0x10A37F).into(),
+                "ChatGPT (Codex OAuth)",
+                t!("auth.codex_subtitle").to_string().leak(),
+                t!("auth.codex_status").to_string().leak(),
+                t!("auth.login_codex").to_string(),
+                self.codex_oauth_status.as_ref(),
+                session::CODEX_PROVIDER,
+                cx,
+            ))
+            .child(self.render_auth_card(
+                "auth-xai",
+                CustomIcon::Grok,
+                rgb(0x8B5CF6).into(),
+                "xAI (Grok OAuth)",
+                t!("auth.xai_subtitle").to_string().leak(),
+                t!("auth.xai_status").to_string().leak(),
+                t!("auth.login_xai").to_string(),
+                self.xai_oauth_status.as_ref(),
+                session::XAI_PROVIDER,
+                cx,
+            ))
+    }
+
     fn render_usage_script_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let provider = self
@@ -5163,6 +5487,10 @@ impl RouterApp {
             || "通用 general 界面 语言 简体中文 english language 外观 主题 浅色 深色 跟随系统 theme light dark system 主页面 显示 claude codex gemini grok opencode openclaw hermes pi amp cursor deepseek zcode fx kimi ohmypi 窗口行为 开机自启 startup 托盘 minimize tray"
                 .contains(&query);
 
+        let auth_matches = query.is_empty()
+            || "认证 auth oauth 登录 login chatgpt codex openai xai grok 账号 account"
+                .contains(&query);
+
         let advanced_matches = query.is_empty()
             || "高级 advanced 诊断 日志 diagnostic log 级别 level 留存 retention 目录 清理 调试 debug trace info warn error"
                 .contains(&query);
@@ -5221,6 +5549,14 @@ impl RouterApp {
                             cx,
                         ))
                     })
+                    .when(auth_matches, |this| {
+                        this.child(self.render_settings_sidebar_item(
+                            SettingsTab::Auth,
+                            IconName::CircleUser,
+                            t!("settings.auth").to_string(),
+                            cx,
+                        ))
+                    })
                     .when(advanced_matches, |this| {
                         this.child(self.render_settings_sidebar_item(
                             SettingsTab::Advanced,
@@ -5238,7 +5574,7 @@ impl RouterApp {
                         ))
                     })
                     .when(
-                        !general_matches && !advanced_matches && !about_matches,
+                        !general_matches && !auth_matches && !advanced_matches && !about_matches,
                         |this| {
                             this.child(
                                 div()
@@ -5296,6 +5632,9 @@ impl RouterApp {
             .child(div().flex_1().truncate().child(label_str))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.settings_tab = tab;
+                if tab == SettingsTab::Auth {
+                    this.reload_oauth_statuses();
+                }
                 if tab == SettingsTab::About && this.env_tools.is_empty() && !this.is_inspecting_env
                 {
                     this.refresh_env(window, cx);
@@ -6885,6 +7224,7 @@ impl RouterApp {
     fn render_settings_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(match self.settings_tab {
             SettingsTab::General => self.render_general_settings(cx).into_any_element(),
+            SettingsTab::Auth => self.render_auth_settings(cx).into_any_element(),
             SettingsTab::Advanced => self.render_advanced_settings(cx).into_any_element(),
             SettingsTab::About => self.render_about_settings(cx).into_any_element(),
         })
