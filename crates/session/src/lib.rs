@@ -64,6 +64,7 @@ pub use usage_query::UsageQueryError;
 
 mod auth_native;
 pub mod oauth;
+pub mod sessions;
 
 static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -1099,6 +1100,42 @@ impl Workspace {
     /// 退出登录(清除本地存储的凭据; Codex 原生 auth.json 一并移除)
     pub fn oauth_logout(&self, provider: &str) -> Result<(), SessionError> {
         crate::auth_native::clear_credentials(provider, &self.store, &self.codex_paths)
+    }
+
+    /// 会话根目录: (codex_roots, claude_root)
+    pub fn session_roots(&self) -> (Vec<PathBuf>, PathBuf) {
+        (
+            vec![
+                self.codex_paths.home.join("sessions"),
+                self.codex_paths.home.join("archived_sessions"),
+            ],
+            self.claude_paths.home.join("projects"),
+        )
+    }
+
+    /// 扫描全部会话(最近活跃优先)
+    pub fn scan_sessions(&self) -> Vec<sessions::SessionMeta> {
+        let (codex_roots, claude_root) = self.session_roots();
+        sessions::scan_sessions(&codex_roots, &claude_root)
+    }
+
+    /// 加载会话消息预览
+    pub fn load_session_messages(
+        &self,
+        provider_id: &str,
+        source_path: &str,
+    ) -> Result<Vec<sessions::SessionMessage>, String> {
+        let (codex_roots, claude_root) = self.session_roots();
+        sessions::load_messages(provider_id, source_path, &codex_roots, &claude_root)
+    }
+
+    /// 批量删除会话
+    pub fn delete_sessions(
+        &self,
+        requests: &[sessions::DeleteSessionRequest],
+    ) -> Vec<sessions::DeleteSessionOutcome> {
+        let (codex_roots, claude_root) = self.session_roots();
+        sessions::delete_sessions(requests, &codex_roots, &claude_root)
     }
 
     /// 保存用量查询配置
