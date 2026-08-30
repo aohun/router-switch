@@ -4,6 +4,7 @@ pub mod agent;
 pub mod analytics;
 pub mod bidi_append;
 pub mod chat;
+pub mod compat;
 pub mod connect;
 pub mod error;
 pub mod handlers;
@@ -23,6 +24,7 @@ pub mod server;
 pub mod sessions;
 pub mod web;
 
+pub use compat::{CompatGateway, CompatRegistry, CompatTarget, COMPAT_DEFAULT_PORT};
 pub use error::{GatewayError, Result};
 pub use handlers::build_router;
 pub use harness::{

@@ -35,18 +35,21 @@ use adapters_zcode::{
     ZCodePaths,
 };
 pub use cursor_gateway::{CaState, LoadedCa};
-use cursor_gateway::{CursorGatewayRuntime, GatewayError};
+use cursor_gateway::{
+    CompatGateway, CompatTarget, CursorGatewayRuntime, GatewayError, COMPAT_DEFAULT_PORT,
+};
 use domain::{
     backfill_claude_settings, backfill_codex_settings, backfill_cursor_settings,
     backfill_grok_settings, inspect_all_tools, inspect_tool_environment, new_provider_id,
     parse_claude_form, parse_codex_form, parse_cursor_form, parse_grok_form, parse_opencode_form,
     parse_pi_form, parse_workbuddy_form, parse_zcode_form, AppKind, ClaudeForm, CodexForm,
     CursorForm, DomainError, GrokForm, OpenCodeForm, PiForm, Provider, ProviderForm,
-    ProviderSettings, WorkBuddyForm, WorkBuddySettings, ZCodeForm, OFFICIAL_CLAUDE_ID,
-    OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
-    OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
+    ProviderSettings, RequestProtocol, WorkBuddyForm, WorkBuddySettings, ZCodeForm,
+    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
+    OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
 use parking_lot::Mutex;
+use serde_json::json;
 use std::sync::OnceLock;
 pub use store::{
     AppLanguage, AppSettings, LogConfig, LogLevel, Store, StoreError, ThemePreference,
@@ -62,6 +65,13 @@ pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("failed to initialize tokio runtime for cursor gateway")
     })
+}
+
+fn codex_model_mappings(mappings: &[domain::CodexModelMapping]) -> Vec<(String, String)> {
+    mappings
+        .iter()
+        .map(|mapping| (mapping.display_name.clone(), mapping.model.clone()))
+        .collect()
 }
 
 #[derive(Debug, Error)]
@@ -102,6 +112,7 @@ pub struct Workspace {
     zcode_paths: ZCodePaths,
     workbuddy_paths: WorkBuddyPaths,
     cursor_gateway: Arc<Mutex<Option<CursorGatewayRuntime>>>,
+    compat_gateway: Arc<Mutex<CompatGateway>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,10 +159,14 @@ impl Workspace {
             zcode_paths,
             workbuddy_paths,
             cursor_gateway,
+            compat_gateway: Arc::new(Mutex::new(CompatGateway::new())),
         };
         let _ = ws.sync_zcode_from_live();
         let _ = ws.sync_workbuddy_from_live();
         let _ = ws.prune_logs(settings.log_config.retention_days);
+        // Tools whose live config points at the compat gateway (a previous
+        // session routed them) must find it listening again after a restart.
+        ws.restore_routing_gateways();
         ws.write_diagnostic_log(
             LogLevel::Info,
             "workspace",
@@ -973,19 +988,152 @@ impl Workspace {
     fn write_live(&self, provider: &Provider) -> Result<(), SessionError> {
         match &provider.settings {
             ProviderSettings::Codex(settings) => {
-                write_codex_live(&self.codex_paths, settings)?;
+                let mut settings = settings.clone();
+                match self.routing_plan(AppKind::Codex, provider) {
+                    Some(upstream) => {
+                        let base_url = domain::extract_codex_base_url(&settings.config_toml)
+                            .unwrap_or_default();
+                        let port = self.register_compat_target(CompatTarget {
+                            app: AppKind::Codex,
+                            model_mappings: codex_model_mappings(&settings.model_mappings),
+                            base_url: base_url.clone(),
+                            api_key: domain::extract_codex_api_key(&settings.auth)
+                                .unwrap_or_default(),
+                            model: domain::extract_codex_model(&settings.config_toml)
+                                .unwrap_or_default(),
+                            protocol: upstream,
+                        })?;
+                        if !base_url.is_empty() {
+                            settings.config_toml = settings
+                                .config_toml
+                                .replace(&base_url, &format!("http://127.0.0.1:{port}"));
+                        }
+                    }
+                    None => self.unregister_compat_target(AppKind::Codex),
+                }
+                write_codex_live(&self.codex_paths, &settings)?;
             }
             ProviderSettings::Claude(settings) => {
-                write_claude_live(&self.claude_paths, settings)?;
+                let mut settings = settings.clone();
+                match self.routing_plan(AppKind::Claude, provider) {
+                    Some(upstream) => {
+                        let port = self.register_compat_target(CompatTarget {
+                            app: AppKind::Claude,
+                            base_url: domain::extract_claude_base_url(&settings.env)
+                                .unwrap_or_default(),
+                            api_key: domain::extract_claude_api_key(&settings.env)
+                                .unwrap_or_default(),
+                            model: domain::extract_claude_model(&settings.env).unwrap_or_default(),
+                            protocol: upstream,
+                            model_mappings: settings
+                                .model_mappings
+                                .iter()
+                                .map(|m| (m.display_name.clone(), m.model.clone()))
+                                .collect(),
+                        })?;
+                        if let Some(env) = settings.env.as_object_mut() {
+                            env.insert(
+                                "ANTHROPIC_BASE_URL".into(),
+                                json!(format!("http://127.0.0.1:{port}")),
+                            );
+                        }
+                    }
+                    None => self.unregister_compat_target(AppKind::Claude),
+                }
+                write_claude_live(&self.claude_paths, &settings)?;
             }
             ProviderSettings::Grok(settings) => {
-                write_grok_live(&self.grok_paths, settings)?;
+                let mut settings = settings.clone();
+                match self.routing_plan(AppKind::Grok, provider) {
+                    Some(upstream) => {
+                        let base_url = domain::extract_grok_base_url(&settings.config_toml)
+                            .unwrap_or_default();
+                        let port = self.register_compat_target(CompatTarget {
+                            app: AppKind::Grok,
+                            base_url: base_url.clone(),
+                            api_key: domain::extract_grok_api_key(&settings.config_toml)
+                                .unwrap_or_default(),
+                            model: domain::extract_grok_model(&settings.config_toml)
+                                .unwrap_or_default(),
+                            protocol: upstream,
+                            model_mappings: settings
+                                .model_mappings
+                                .iter()
+                                .map(|m| (m.display_name.clone(), m.model.clone()))
+                                .collect(),
+                        })?;
+                        if !base_url.is_empty() {
+                            settings.config_toml = settings
+                                .config_toml
+                                .replace(&base_url, &format!("http://127.0.0.1:{port}"));
+                        }
+                    }
+                    None => self.unregister_compat_target(AppKind::Grok),
+                }
+                write_grok_live(&self.grok_paths, &settings)?;
             }
             ProviderSettings::OpenCode(settings) => {
-                write_opencode_live(&self.opencode_paths, &provider.id, &provider.name, settings)?;
+                let mut settings = settings.clone();
+                match self.routing_plan(AppKind::OpenCode, provider) {
+                    Some(upstream) => {
+                        let base_url = domain::extract_opencode_base_url(&settings.options)
+                            .unwrap_or_default();
+                        let port = self.register_compat_target(CompatTarget {
+                            app: AppKind::OpenCode,
+                            base_url: base_url.clone(),
+                            api_key: domain::extract_opencode_api_key(&settings.options)
+                                .unwrap_or_default(),
+                            model: domain::extract_opencode_model(&settings.models)
+                                .unwrap_or_default(),
+                            protocol: upstream,
+                            model_mappings: settings
+                                .model_mappings
+                                .iter()
+                                .map(|m| (m.display_name.clone(), m.model_id.clone()))
+                                .collect(),
+                        })?;
+                        if let Some(options) = settings.options.as_object_mut() {
+                            options.insert(
+                                "baseURL".into(),
+                                json!(format!("http://127.0.0.1:{port}")),
+                            );
+                        }
+                    }
+                    None => self.unregister_compat_target(AppKind::OpenCode),
+                }
+                write_opencode_live(
+                    &self.opencode_paths,
+                    &provider.id,
+                    &provider.name,
+                    &settings,
+                )?;
             }
             ProviderSettings::Pi(settings) => {
-                write_pi_live(&self.pi_paths, &provider.id, settings)?;
+                let mut settings = settings.clone();
+                match self.routing_plan(AppKind::Pi, provider) {
+                    Some(upstream) => {
+                        let port = self.register_compat_target(CompatTarget {
+                            app: AppKind::Pi,
+                            base_url: settings.base_url.clone(),
+                            api_key: settings.api_key.clone(),
+                            model: settings.model.clone(),
+                            protocol: upstream,
+                            model_mappings: settings
+                                .model_mappings
+                                .iter()
+                                .map(|m| (m.display_name.clone(), m.model_id.clone()))
+                                .collect(),
+                        })?;
+                        settings.base_url = format!("http://127.0.0.1:{port}");
+                    }
+                    None => self.unregister_compat_target(AppKind::Pi),
+                }
+                write_pi_live(&self.pi_paths, &provider.id, &settings)?;
+            }
+            // ZCode natively switches protocols via its provider_kind, and
+            // WorkBuddy has no protocol choice — neither needs the gateway.
+            ProviderSettings::ZCode(settings) => {
+                write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, settings)?;
             }
             ProviderSettings::Cursor(settings) => {
                 if let Some(guard) = self.cursor_gateway.try_lock() {
@@ -1000,9 +1148,6 @@ impl Workspace {
                     write_workbuddy_live(&self.workbuddy_paths, None, &item)?;
                 }
             }
-            ProviderSettings::ZCode(settings) => {
-                write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, settings)?;
-            }
             ProviderSettings::Unsupported { app } => {
                 return Err(SessionError::Message(format!(
                     "暂不支持应用 {} 的切换操作",
@@ -1011,6 +1156,84 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+
+    /// Apps whose live configs can be routed through the compat gateway.
+    const ROUTABLE_APPS: [AppKind; 5] = [
+        AppKind::Claude,
+        AppKind::Codex,
+        AppKind::Grok,
+        AppKind::OpenCode,
+        AppKind::Pi,
+    ];
+
+    /// Some(upstream protocol) when the provider's configured request protocol
+    /// differs from the tool's native dialect — i.e. traffic must be converted
+    /// by the compat gateway instead of written through as a direct connection.
+    fn routing_plan(&self, app: AppKind, provider: &Provider) -> Option<RequestProtocol> {
+        let protocol_raw = match &provider.settings {
+            ProviderSettings::Claude(settings) => &settings.request_protocol,
+            ProviderSettings::Codex(settings) => &settings.request_protocol,
+            ProviderSettings::Grok(settings) => &settings.request_protocol,
+            ProviderSettings::OpenCode(settings) => &settings.request_protocol,
+            ProviderSettings::Pi(settings) => &settings.request_protocol,
+            _ => return None,
+        };
+        let configured = RequestProtocol::parse(protocol_raw);
+        let native = RequestProtocol::default_for_app(app);
+        (configured != native).then_some(configured)
+    }
+
+    fn register_compat_target(&self, target: CompatTarget) -> Result<u16, SessionError> {
+        self.compat_gateway.lock().registry().set_target(target);
+        self.ensure_compat_gateway()
+    }
+
+    fn unregister_compat_target(&self, app: AppKind) {
+        self.compat_gateway.lock().registry().remove_target(app);
+    }
+
+    /// Start the compat listener if it is not running yet, returning its port.
+    pub fn ensure_compat_gateway(&self) -> Result<u16, SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(async {
+            let mut guard = self.compat_gateway.lock();
+            if !guard.is_running() {
+                guard.start(COMPAT_DEFAULT_PORT).await?;
+            }
+            Ok(guard.port().unwrap_or(COMPAT_DEFAULT_PORT))
+        })
+    }
+
+    pub fn compat_gateway_port(&self) -> Option<u16> {
+        self.compat_gateway.lock().port()
+    }
+
+    pub fn compat_target_for_app(&self, app: AppKind) -> Option<CompatTarget> {
+        self.compat_gateway.lock().registry().target_for_app(app)
+    }
+
+    pub fn compat_routed_apps(&self) -> Vec<AppKind> {
+        self.compat_gateway.lock().registry().routed_apps()
+    }
+
+    /// Re-apply the live config of every currently-selected provider that
+    /// needs routing, so the gateway is listening again after an app restart
+    /// even though nothing was switched in this run.
+    fn restore_routing_gateways(&self) {
+        for app in Self::ROUTABLE_APPS {
+            let Ok(Some(current_id)) = self.store.current_id(app) else {
+                continue;
+            };
+            let Ok(Some(provider)) = self.store.get_provider(&current_id) else {
+                continue;
+            };
+            if self.routing_plan(app, &provider).is_some() {
+                if let Err(err) = self.write_live(&provider) {
+                    tracing::warn!(%err, app = ?app, "could not restore routed live config");
+                }
+            }
+        }
     }
 
     pub fn start_cursor_gateway(
@@ -1201,6 +1424,94 @@ mod tests {
 
         let snapshot = ws.snapshot_for(AppKind::Claude).unwrap();
         assert_eq!(snapshot.current_id.as_deref(), Some(provider.id.as_str()));
+    }
+
+    #[test]
+    fn non_native_protocol_routes_live_config_through_gateway() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude")))
+            .unwrap();
+
+        // Claude Code natively speaks Anthropic Messages; a Chat Completions
+        // provider must be routed through the local compat gateway.
+        let form = ClaudeForm {
+            name: "ChatOnly".into(),
+            website_url: "https://api.example.com".into(),
+            kind: ClaudeKind::ThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "gpt-5.6-sol".into(),
+            request_protocol: "openai-chat".into(),
+            model_mappings: Vec::new(),
+        };
+        let routed = ws.save_claude_form(None, form).unwrap();
+        ws.enable(&routed.id).unwrap();
+
+        let port = ws.compat_gateway_port().expect("gateway auto-started");
+        let target = ws.compat_target_for_app(AppKind::Claude).unwrap();
+        assert_eq!(target.base_url, "https://api.example.com/v1");
+        assert_eq!(target.protocol, RequestProtocol::OpenAiChat);
+        assert_eq!(target.api_key, "sk-mock-key-12345");
+
+        let live = read_claude_live(&ws.claude_paths).unwrap();
+        let base_url = live.settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
+        assert_eq!(base_url, format!("http://127.0.0.1:{port}"));
+        assert_eq!(
+            live.settings["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "sk-mock-key-12345"
+        );
+
+        // Reopening the workspace must bring the gateway back so the tool's
+        // already-rewritten live config keeps working.
+        drop(ws);
+        let reopened = Workspace::open(&db_path, None).unwrap();
+        assert!(reopened.compat_gateway_port().is_some());
+        assert!(reopened.compat_target_for_app(AppKind::Claude).is_some());
+    }
+
+    #[test]
+    fn switching_back_to_native_protocol_restores_direct_connection() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_home(Some(temp.path().join("claude")))
+            .unwrap();
+
+        let routed_form = ClaudeForm {
+            name: "ChatOnly".into(),
+            website_url: "https://api.example.com".into(),
+            kind: ClaudeKind::ThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "gpt-5.6-sol".into(),
+            request_protocol: "openai-chat".into(),
+            model_mappings: Vec::new(),
+        };
+        let routed = ws.save_claude_form(None, routed_form).unwrap();
+        ws.enable(&routed.id).unwrap();
+        assert!(ws.compat_target_for_app(AppKind::Claude).is_some());
+
+        let native_form = ClaudeForm {
+            name: "AnthropicNative".into(),
+            website_url: "https://api.example.com".into(),
+            kind: ClaudeKind::ThirdParty,
+            api_key: "sk-ant-test".into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "claude-sonnet-4-5".into(),
+            request_protocol: "anthropic".into(),
+            model_mappings: Vec::new(),
+        };
+        let native = ws.save_claude_form(None, native_form).unwrap();
+        ws.enable(&native.id).unwrap();
+
+        assert!(ws.compat_target_for_app(AppKind::Claude).is_none());
+        let live = read_claude_live(&ws.claude_paths).unwrap();
+        assert_eq!(
+            live.settings["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.example.com/v1"
+        );
     }
 
     #[test]
