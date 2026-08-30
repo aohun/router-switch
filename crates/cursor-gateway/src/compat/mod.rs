@@ -199,8 +199,37 @@ pub fn build_compat_router(registry: CompatRegistry) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses))
         .route("/v1/models", get(list_models))
+        // Tools build request URLs from their configured base URL, which does
+        // not always carry a `/v1` prefix — accept the bare forms too.
+        .route("/messages", post(anthropic_messages))
+        .route("/chat/completions", post(chat_completions))
+        .route("/responses", post(responses))
+        .route("/models", get(list_models))
+        .fallback(compat_fallback)
         .layer(DefaultBodyLimit::disable())
         .with_state(registry)
+}
+
+async fn compat_fallback(
+    State(registry): State<CompatRegistry>,
+    request: Request<Body>,
+) -> Result<Response<Body>> {
+    // Some tools sit behind provider URLs with custom prefixes
+    // (`https://host/api/v1`); dispatch on the endpoint suffix so the
+    // preserved path still lands on the right dialect.
+    let dialect = if request.uri().path().ends_with("/messages") {
+        InboundDialect::Anthropic
+    } else if request.uri().path().ends_with("/chat/completions") {
+        InboundDialect::Chat
+    } else if request.uri().path().ends_with("/responses") {
+        InboundDialect::Responses
+    } else {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"error": {"message": "unknown compat endpoint"}}),
+        ));
+    };
+    route_compat(registry, request, dialect).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -784,6 +813,44 @@ mod tests {
             .collect();
         assert!(ids.contains(&"claude-sonnet-4-5"));
         assert!(ids.contains(&"gpt-test"));
+    }
+
+    #[tokio::test]
+    async fn bare_and_prefixed_endpoint_paths_are_accepted() {
+        let upstream = spawn_chat_upstream(false).await;
+        let mut gateway = routed_gateway(upstream);
+        let port = gateway.start(0).await.unwrap();
+        let client = reqwest::Client::new();
+
+        // Codex posts to `<base>/responses` when its base URL has no /v1.
+        let bare = client
+            .post(format!("http://127.0.0.1:{port}/responses"))
+            .bearer_auth("sk-mock-key-12345")
+            .json(&json!({"model": "gpt-5.3", "stream": false, "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert!(bare.status().is_success());
+        assert_eq!(bare.json::<Value>().await.unwrap()["object"], "response");
+
+        // A preserved custom prefix (e.g. `https://host/api/v1`) still lands.
+        let prefixed = client
+            .post(format!("http://127.0.0.1:{port}/api/v1/messages"))
+            .header("x-api-key", "sk-mock-key-12345")
+            .json(&anthropic_request(false))
+            .send()
+            .await
+            .unwrap();
+        assert!(prefixed.status().is_success());
+        assert_eq!(prefixed.json::<Value>().await.unwrap()["type"], "message");
+
+        let unknown = client
+            .post(format!("http://127.0.0.1:{port}/nope"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
     }
 
     #[test]

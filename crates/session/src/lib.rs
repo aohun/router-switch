@@ -74,6 +74,24 @@ fn codex_model_mappings(mappings: &[domain::CodexModelMapping]) -> Vec<(String, 
         .collect()
 }
 
+/// Local base URL that preserves the original provider URL's path (usually
+/// `/v1`): tools append their own endpoint suffix (`/responses`,
+/// `/chat/completions`, `/v1/messages`), so dropping the path would 404.
+fn gateway_base_url(port: u16, original_base_url: &str) -> String {
+    let trimmed = original_base_url.trim().trim_end_matches('/');
+    let path = match trimmed.find("://") {
+        Some(scheme_end) => {
+            let rest = &trimmed[scheme_end + 3..];
+            match rest.find('/') {
+                Some(slash) => &rest[slash..],
+                None => "",
+            }
+        }
+        None => "",
+    };
+    format!("http://127.0.0.1:{port}{path}")
+}
+
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error(transparent)]
@@ -1006,7 +1024,7 @@ impl Workspace {
                         if !base_url.is_empty() {
                             settings.config_toml = settings
                                 .config_toml
-                                .replace(&base_url, &format!("http://127.0.0.1:{port}"));
+                                .replace(&base_url, &gateway_base_url(port, &base_url));
                         }
                     }
                     None => self.unregister_compat_target(AppKind::Codex),
@@ -1031,10 +1049,12 @@ impl Workspace {
                                 .map(|m| (m.display_name.clone(), m.model.clone()))
                                 .collect(),
                         })?;
+                        let claude_base =
+                            domain::extract_claude_base_url(&settings.env).unwrap_or_default();
                         if let Some(env) = settings.env.as_object_mut() {
                             env.insert(
                                 "ANTHROPIC_BASE_URL".into(),
-                                json!(format!("http://127.0.0.1:{port}")),
+                                json!(gateway_base_url(port, &claude_base)),
                             );
                         }
                     }
@@ -1065,7 +1085,7 @@ impl Workspace {
                         if !base_url.is_empty() {
                             settings.config_toml = settings
                                 .config_toml
-                                .replace(&base_url, &format!("http://127.0.0.1:{port}"));
+                                .replace(&base_url, &gateway_base_url(port, &base_url));
                         }
                     }
                     None => self.unregister_compat_target(AppKind::Grok),
@@ -1093,10 +1113,8 @@ impl Workspace {
                                 .collect(),
                         })?;
                         if let Some(options) = settings.options.as_object_mut() {
-                            options.insert(
-                                "baseURL".into(),
-                                json!(format!("http://127.0.0.1:{port}")),
-                            );
+                            options
+                                .insert("baseURL".into(), json!(gateway_base_url(port, &base_url)));
                         }
                     }
                     None => self.unregister_compat_target(AppKind::OpenCode),
@@ -1124,7 +1142,7 @@ impl Workspace {
                                 .map(|m| (m.display_name.clone(), m.model_id.clone()))
                                 .collect(),
                         })?;
-                        settings.base_url = format!("http://127.0.0.1:{port}");
+                        settings.base_url = gateway_base_url(port, &settings.base_url);
                     }
                     None => self.unregister_compat_target(AppKind::Pi),
                 }
@@ -1457,7 +1475,9 @@ mod tests {
 
         let live = read_claude_live(&ws.claude_paths).unwrap();
         let base_url = live.settings["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap();
-        assert_eq!(base_url, format!("http://127.0.0.1:{port}"));
+        // The provider URL's /v1 path is preserved so the tool's appended
+        // endpoint suffix still lands on the gateway.
+        assert_eq!(base_url, format!("http://127.0.0.1:{port}/v1"));
         assert_eq!(
             live.settings["env"]["ANTHROPIC_AUTH_TOKEN"],
             "sk-mock-key-12345"
@@ -1469,6 +1489,42 @@ mod tests {
         let reopened = Workspace::open(&db_path, None).unwrap();
         assert!(reopened.compat_gateway_port().is_some());
         assert!(reopened.compat_target_for_app(AppKind::Claude).is_some());
+    }
+
+    #[test]
+    fn routed_codex_provider_keeps_base_url_path() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_codex_home(Some(temp.path().join("codex")))
+            .unwrap();
+
+        // Codex natively speaks Responses; an Anthropic upstream must route
+        // through the gateway and keep the /v1 path so Codex's appended
+        // `/responses` hits `/v1/responses`.
+        let form = CodexForm {
+            name: "AnthropicUpstream".into(),
+            website_url: "https://api.example.com".into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "claude-sonnet-4-5".into(),
+            request_protocol: "anthropic".into(),
+            model_mappings: Vec::new(),
+        };
+        let routed = ws.save_codex_form(None, form).unwrap();
+        ws.enable(&routed.id).unwrap();
+
+        let port = ws.compat_gateway_port().expect("gateway auto-started");
+        let target = ws.compat_target_for_app(AppKind::Codex).unwrap();
+        assert_eq!(target.base_url, "https://api.example.com/v1");
+        assert_eq!(target.protocol, RequestProtocol::Anthropic);
+
+        let live = read_codex_live(&ws.codex_paths).unwrap();
+        assert!(live
+            .config_toml
+            .contains(&format!("http://127.0.0.1:{port}/v1")));
+        assert!(!live.config_toml.contains("https://api.example.com"));
     }
 
     #[test]
