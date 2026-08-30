@@ -4539,7 +4539,16 @@ impl RouterApp {
                                         .child(t!("usage_script.code_hint").to_string()),
                                 ),
                         )
-                        .child(div().h(px(300.)).child(Input::new(&self.usage_code))),
+                        .child(
+                            div()
+                                .h(px(420.))
+                                .font_family("Menlo")
+                                .border_1()
+                                .border_color(theme.border)
+                                .rounded(px(8.))
+                                .overflow_hidden()
+                                .child(Input::new(&self.usage_code).h_full()),
+                        ),
                 ),
             )
             // Script guide
