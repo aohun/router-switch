@@ -14,6 +14,10 @@ const ACTIVITY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
   <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
 </svg>"#;
 
+const GEMINI_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="currentColor" d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.627 12 12 0-6.627 5.627-12 12-12-6.627 0-12-5.627-12-12Z"/>
+</svg>"#;
+
 use gpui::{AssetSource, SharedString};
 use gpui_component::IconNamed;
 use std::borrow::Cow;
@@ -79,6 +83,12 @@ const ARROW_LEFT_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox=
   <path fill="currentColor" d="M6.238 28c0 .586.258 1.125.727 1.57l15.562 15.54c.492.445.985.656 1.524.656c1.172 0 2.062-.844 2.062-2.016c0-.562-.21-1.125-.586-1.477l-5.226-5.343l-7.922-7.196l5.695.352H47.7c1.219 0 2.063-.867 2.063-2.086s-.844-2.086-2.063-2.086H18.074l-5.672.352l7.899-7.196l5.226-5.343c.399-.376.586-.915.586-1.477c0-1.172-.89-2.016-2.062-2.016c-.54 0-1.055.188-1.57.704L6.964 26.43c-.469.445-.727.984-.727 1.57"/>
 </svg>"#;
 
+const HISTORY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+  <path d="M3 3v5h5"/>
+  <path d="M12 7v5l4 2"/>
+</svg>"#;
+
 const MONITOR_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <rect width="20" height="14" x="2" y="3" rx="2"/>
   <line x1="8" x2="16" y1="21" y2="21"/>
@@ -117,9 +127,11 @@ pub enum CustomIcon {
     DeepSeek,
     Fx,
     OhMyPi,
+    Gemini,
     RotateCw,
     ArrowLeft,
     Monitor,
+    History,
     ChartCurve,
     Activity,
 }
@@ -140,9 +152,11 @@ impl IconNamed for CustomIcon {
             Self::DeepSeek => "icons/custom/deepseek.svg",
             Self::Fx => "icons/custom/fx.svg",
             Self::OhMyPi => "icons/custom/ohmypi.svg",
+            Self::Gemini => "icons/custom/gemini.svg",
             Self::RotateCw => "icons/custom/rotate-cw.svg",
             Self::ArrowLeft => "icons/custom/arrow-left.svg",
             Self::Monitor => "icons/custom/monitor.svg",
+            Self::History => "icons/custom/history.svg",
             Self::ChartCurve => "icons/custom/chart-curve.svg",
             Self::Activity => "icons/custom/activity.svg",
         }
@@ -166,9 +180,11 @@ impl AssetSource for AppAssets {
             "icons/custom/deepseek.svg" => Ok(Some(Cow::Borrowed(DEEPSEEK_SVG.as_bytes()))),
             "icons/custom/fx.svg" => Ok(Some(Cow::Borrowed(FX_SVG.as_bytes()))),
             "icons/custom/ohmypi.svg" => Ok(Some(Cow::Borrowed(OHMYPI_SVG.as_bytes()))),
+            "icons/custom/gemini.svg" => Ok(Some(Cow::Borrowed(GEMINI_SVG.as_bytes()))),
             "icons/custom/rotate-cw.svg" => Ok(Some(Cow::Borrowed(ROTATE_CW_SVG.as_bytes()))),
             "icons/custom/arrow-left.svg" => Ok(Some(Cow::Borrowed(ARROW_LEFT_SVG.as_bytes()))),
             "icons/custom/monitor.svg" => Ok(Some(Cow::Borrowed(MONITOR_SVG.as_bytes()))),
+            "icons/custom/history.svg" => Ok(Some(Cow::Borrowed(HISTORY_SVG.as_bytes()))),
             "icons/custom/chart-curve.svg" => Ok(Some(Cow::Borrowed(CHART_CURVE_SVG.as_bytes()))),
             "icons/custom/activity.svg" => Ok(Some(Cow::Borrowed(ACTIVITY_SVG.as_bytes()))),
             _ => gpui_component_assets::Assets.load(path),

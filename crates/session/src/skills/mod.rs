@@ -5,6 +5,10 @@
 //! Grok Build `~/.grok/skills`, OpenCode `~/.config/opencode/skills`,
 //! Pi `~/.pi/agent/skills`)。安装 = 从任一已有副本递归拷贝到目标应用;
 //! 移除 = 删除该应用下的副本(仅当其它应用仍有副本时)。
+//!
+//! 中心库(hub)与仓库发现/备份/更新见 [`hub`]。
+
+pub mod hub;
 
 use serde::Serialize;
 use std::fs;
@@ -89,7 +93,7 @@ fn app_from_str(app: &str) -> &'static str {
 }
 
 /// 扫描单个应用的 skills 目录: (dir_name, frontmatter name, description)
-fn scan_app_dir(dir: &Path) -> Vec<(String, Option<String>, Option<String>)> {
+pub(crate) fn scan_app_dir(dir: &Path) -> Vec<(String, Option<String>, Option<String>)> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return out;
@@ -112,7 +116,7 @@ fn scan_app_dir(dir: &Path) -> Vec<(String, Option<String>, Option<String>)> {
 }
 
 /// 解析 SKILL.md frontmatter 中的 name / description(容错: 单行键值)
-fn parse_skill_metadata(skill_dir: &Path) -> (Option<String>, Option<String>) {
+pub(crate) fn parse_skill_metadata(skill_dir: &Path) -> (Option<String>, Option<String>) {
     let Ok(content) = fs::read_to_string(skill_dir.join("SKILL.md")) else {
         return (None, None);
     };
@@ -176,7 +180,7 @@ pub fn remove_skill(path: &Path) -> Result<(), String> {
     fs::remove_dir_all(path).map_err(|e| format!("移除 Skill 失败: {e}"))
 }
 
-fn copy_dir_recursive(source: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir_recursive(source: &Path, target: &Path) -> std::io::Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;

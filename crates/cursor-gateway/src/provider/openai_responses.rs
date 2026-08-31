@@ -140,6 +140,9 @@ impl Provider for OpenAiResponsesProvider {
             }
             let mut event_stream = response.bytes_stream().eventsource();
             let mut tool_index = 0usize;
+            // 是否有尚未收尾的 function_call(arguments.done 与 output_item.done
+            // 可能先后到达, 只在首次收到时结束该调用)
+            let mut tool_call_open = false;
             let mut finish = FinishReason::Stop;
             loop {
                 let event = tokio::select! {
@@ -169,7 +172,7 @@ impl Provider for OpenAiResponsesProvider {
                             }
                         }
                     }
-                    "response.output_item.added" | "response.output_item.done" => {
+                    "response.output_item.added" => {
                         let item = val.get("item").unwrap_or(&Value::Null);
                         if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
                             // 托管搜索在上游执行: 把搜索动作转成可见文本,
@@ -178,7 +181,7 @@ impl Provider for OpenAiResponsesProvider {
                                 .pointer("/action/query")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default();
-                            if event_type == "response.output_item.added" && !query.is_empty() {
+                            if !query.is_empty() {
                                 yield ModelEvent::TextDelta(format!(
                                     "\n[Web Search: {query}]\n"
                                 ));
@@ -198,6 +201,7 @@ impl Provider for OpenAiResponsesProvider {
                                 call_id,
                                 name,
                             };
+                            tool_call_open = true;
                             finish = FinishReason::ToolUse;
                         }
                     }
@@ -211,11 +215,13 @@ impl Provider for OpenAiResponsesProvider {
                     }
                     "response.function_call_arguments.done" | "response.output_item.done" => {
                         let item = val.get("item").unwrap_or(&Value::Null);
-                        if item.get("type").and_then(Value::as_str) == Some("function_call")
-                            || event_type == "response.function_call_arguments.done"
-                        {
+                        let is_function_call =
+                            item.get("type").and_then(Value::as_str) == Some("function_call")
+                                || event_type == "response.function_call_arguments.done";
+                        if is_function_call && tool_call_open {
                             yield ModelEvent::ToolCallEnd { index: tool_index };
                             tool_index += 1;
+                            tool_call_open = false;
                         }
                     }
                     "response.completed" => {

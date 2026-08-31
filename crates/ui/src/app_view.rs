@@ -15,12 +15,14 @@ use domain::{
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, App, AppContext, Context, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, WindowControlArea,
+    div, prelude::FluentBuilder, px, rgb, rgba, uniform_list, AnyElement, App, AppContext, Context,
+    Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, PathPromptOptions,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
     notification::Notification,
@@ -32,6 +34,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 use session::Workspace;
+use std::path::PathBuf;
 use store::{AppLanguage, ThemePreference};
 
 use crate::assets::CustomIcon;
@@ -729,13 +732,47 @@ pub enum SettingsTab {
     About,
 }
 
+/// Skills 页视图: 已安装列表 / 发现技能
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SkillsView {
+    #[default]
+    Installed,
+    Discover,
+}
+
+/// 发现技能的来源
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SkillsDiscoverSource {
+    #[default]
+    Repos,
+    SkillsSh,
+}
+
+/// 发现列表的安装状态筛选
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SkillsDiscoverFilter {
+    #[default]
+    All,
+    Installed,
+    Uninstalled,
+}
+
+/// 未纳管的应用侧 Skill(存在于应用目录但中心库没有)
+#[derive(Debug, Clone)]
+struct SkillsUnmanaged {
+    app: String,
+    path: PathBuf,
+    dir_name: String,
+    name: Option<String>,
+    description: Option<String>,
+}
+
 /// 进行中的 OAuth 设备码登录
 #[derive(Debug, Clone)]
 struct OngoingLogin {
     provider: &'static str,
     device_code: String,
     user_code: String,
-    verification_uri: String,
     token_endpoint: Option<String>,
     /// 轮询截止(unix 秒)
     deadline: i64,
@@ -903,7 +940,6 @@ pub struct RouterApp {
     session_messages: Vec<session::sessions::SessionMessage>,
     session_messages_loading: bool,
     session_checked: std::collections::HashSet<String>,
-    session_expanded: std::collections::HashSet<String>,
     sessions_search: Entity<InputState>,
     sessions_batch_mode: bool,
     sessions_search_open: bool,
@@ -911,6 +947,27 @@ pub struct RouterApp {
     skills_list: Vec<session::skills::SkillEntry>,
     skills_loading: bool,
     skills_search: Entity<InputState>,
+    // Skills 扩展(对齐 cc-switch): 中心库 / 发现 / 备份 / 更新
+    skills_view: SkillsView,
+    skills_discover_source: SkillsDiscoverSource,
+    skills_discover_filter: SkillsDiscoverFilter,
+    skills_discover_list: Vec<session::skills::hub::DiscoverableSkill>,
+    skills_discover_loading: bool,
+    skills_discover_search: Entity<InputState>,
+    skills_skills_sh_list: Vec<session::skills::hub::DiscoverableSkill>,
+    skills_skills_sh_query: String,
+    skills_skills_sh_offset: usize,
+    skills_skills_sh_total: usize,
+    skills_skills_sh_loading: bool,
+    skills_repos: Vec<session::skills::hub::SkillRepo>,
+    skills_repo_owner: Entity<InputState>,
+    skills_repo_name: Entity<InputState>,
+    skills_repo_branch: Entity<InputState>,
+    skills_managed_names: Vec<String>,
+    skills_unmanaged: Vec<SkillsUnmanaged>,
+    skills_import_selected: std::collections::HashSet<String>,
+    skills_checking_updates: bool,
+    skills_installing_key: Option<String>,
     usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
@@ -937,6 +994,10 @@ struct FormDraft {
     editing_id: Option<String>,
     is_official: bool,
     name: Entity<InputState>,
+    notes: Entity<InputState>,
+    website_url: Entity<InputState>,
+    codex_auth_mode: String,
+    codex_auth_dropdown_open: bool,
     api_key: Entity<InputState>,
     base_url: Entity<InputState>,
     model: Entity<InputState>,
@@ -1107,7 +1168,9 @@ impl RouterApp {
                 "claude".into(),
                 "codex".into(),
                 "cursor".into(),
+                "opencode".into(),
                 "grok".into(),
+                "pi".into(),
                 "zcode".into(),
                 "workbuddy".into(),
             ];
@@ -1126,6 +1189,12 @@ impl RouterApp {
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("sessions.search").to_string()));
         let skills_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("skills.search").to_string()));
+        let skills_discover_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("skills.discover_search").to_string())
+        });
+        let skills_repo_owner = cx.new(|cx| InputState::new(window, cx).placeholder("anthropics"));
+        let skills_repo_name = cx.new(|cx| InputState::new(window, cx).placeholder("skills"));
+        let skills_repo_branch = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
 
         let mut app = Self {
             workspace,
@@ -1170,7 +1239,6 @@ impl RouterApp {
             session_messages: Vec::new(),
             session_messages_loading: false,
             session_checked: std::collections::HashSet::new(),
-            session_expanded: std::collections::HashSet::new(),
             sessions_search: sessions_search,
             sessions_batch_mode: false,
             sessions_search_open: true,
@@ -1178,6 +1246,26 @@ impl RouterApp {
             skills_list: Vec::new(),
             skills_loading: false,
             skills_search: skills_search,
+            skills_view: SkillsView::Installed,
+            skills_discover_source: SkillsDiscoverSource::Repos,
+            skills_discover_filter: SkillsDiscoverFilter::All,
+            skills_discover_list: Vec::new(),
+            skills_discover_loading: false,
+            skills_discover_search: skills_discover_search,
+            skills_skills_sh_list: Vec::new(),
+            skills_skills_sh_query: String::new(),
+            skills_skills_sh_offset: 0,
+            skills_skills_sh_total: 0,
+            skills_skills_sh_loading: false,
+            skills_repos: Vec::new(),
+            skills_repo_owner: skills_repo_owner,
+            skills_repo_name: skills_repo_name,
+            skills_repo_branch: skills_repo_branch,
+            skills_managed_names: Vec::new(),
+            skills_unmanaged: Vec::new(),
+            skills_import_selected: std::collections::HashSet::new(),
+            skills_checking_updates: false,
+            skills_installing_key: None,
             usage_refresh_select,
             _usage_refresh_sub: Some(usage_refresh_sub),
             log_config,
@@ -1366,7 +1454,6 @@ impl RouterApp {
             provider,
             device_code: start.device_code.clone(),
             user_code: start.user_code.clone(),
-            verification_uri: start.verification_uri.clone(),
             token_endpoint: start.token_endpoint.clone(),
             deadline: now + start.expires_in as i64,
             interval_secs: start.interval_secs.max(2),
@@ -2781,6 +2868,9 @@ impl RouterApp {
         form.is_official = preset.is_official;
         form.name
             .update(cx, |input, cx| input.set_value(preset.name, window, cx));
+        form.website_url.update(cx, |input, cx| {
+            input.set_value(preset.website_url, window, cx)
+        });
         form.base_url
             .update(cx, |input, cx| input.set_value(preset.base_url, window, cx));
         form.model
@@ -3513,7 +3603,7 @@ impl RouterApp {
             ))
             .child(self.nav_item(
                 "nav-sessions",
-                CustomIcon::ChartCurve,
+                CustomIcon::History,
                 Some(rgb(0x8B5CF6).into()), // Violet
                 t!("nav.sessions").to_string(),
                 Route::Sessions,
@@ -4778,16 +4868,36 @@ impl RouterApp {
         self.skills_loading = true;
         cx.notify();
         let roots = self.workspace.skills_roots();
+        let hub = self.workspace.skills_hub_dir();
         cx.spawn(
             move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut cx = cx.clone();
                 async move {
-                    let skills = session::tokio_runtime()
-                        .spawn(async move { session::skills::scan_skills(&roots) })
+                    let (skills, managed, unmanaged) = session::tokio_runtime()
+                        .spawn(async move {
+                            let skills = session::skills::scan_skills(&roots);
+                            let managed = session::skills::hub::managed_dir_names(&hub);
+                            let unmanaged: Vec<SkillsUnmanaged> =
+                                session::skills::hub::scan_unmanaged(&roots, &hub)
+                                    .into_iter()
+                                    .map(|(app, path, dir_name, name, description)| {
+                                        SkillsUnmanaged {
+                                            app,
+                                            path,
+                                            dir_name,
+                                            name,
+                                            description,
+                                        }
+                                    })
+                                    .collect();
+                            (skills, managed, unmanaged)
+                        })
                         .await
                         .unwrap_or_default();
                     let _ = this.update(&mut cx, |this, cx| {
                         this.skills_list = skills;
+                        this.skills_managed_names = managed;
+                        this.skills_unmanaged = unmanaged;
                         this.skills_loading = false;
                         cx.notify();
                     });
@@ -4809,14 +4919,28 @@ impl RouterApp {
             .installs
             .iter()
             .find(|install| install.app == target_app);
+        let is_managed = self
+            .skills_managed_names
+            .iter()
+            .any(|name| name == &entry.dir_name);
         match existing {
             Some(install) => {
-                // 仅当其它应用仍有副本时才允许移除
-                if entry.installs.len() <= 1 {
+                // 非受管 Skill: 仅当其它应用仍有副本时才允许移除;
+                // 受管 Skill 中心库保留主副本, 移除前先备份
+                if !is_managed && entry.installs.len() <= 1 {
                     notify_info(t!("skills.last_copy").to_string(), window, cx);
                     return;
                 }
-                match self.workspace.remove_skill(&install.path) {
+                let backup_dir = self.workspace.skills_backup_dir();
+                let path = install.path.clone();
+                let remove_result = {
+                    let backup = session::skills::hub::create_backup(&path, &backup_dir, "remove");
+                    match backup {
+                        Ok(_) => self.workspace.remove_skill(&path),
+                        Err(err) => Err(err),
+                    }
+                };
+                match remove_result {
                     Ok(()) => {
                         notify_success(t!("skills.removed").to_string(), window, cx);
                         self.refresh_skills(cx);
@@ -4838,6 +4962,1205 @@ impl RouterApp {
                 }
             }
         }
+    }
+
+    /// Skills 页工具栏(对齐 cc-switch): 检查更新 / 从备份中恢复 / 从 ZIP 安装 /
+    /// 导入已有(有未纳管技能时带绿点) / 发现技能
+    fn render_skills_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let checking = self.skills_checking_updates;
+        let has_unmanaged = !self.skills_unmanaged.is_empty();
+        h_flex()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                Button::new("skills-check-updates")
+                    .ghost()
+                    .small()
+                    .icon(if checking {
+                        Icon::new(IconName::LoaderCircle)
+                    } else {
+                        Icon::new(CustomIcon::RotateCw)
+                    })
+                    .label(if checking {
+                        t!("skills.checking_updates").to_string()
+                    } else {
+                        t!("skills.check_updates").to_string()
+                    })
+                    .disabled(checking || self.skills_managed_names.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.check_skills_updates(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("skills-restore-backup")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Undo)
+                    .label(t!("skills.restore_backup").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_backups_dialog(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("skills-install-zip")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Folder)
+                    .label(t!("skills.install_zip").to_string())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.install_skills_zip(window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .relative()
+                    .child(
+                        Button::new("skills-import-existing")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowDown)
+                            .label(t!("skills.import_existing").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_import_dialog(window, cx);
+                            })),
+                    )
+                    .when(has_unmanaged, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top(px(4.))
+                                .right(px(4.))
+                                .size(px(7.))
+                                .rounded_full()
+                                .bg(rgb(0x22C55E)),
+                        )
+                    }),
+            )
+            .child(
+                Button::new("skills-discover")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Search)
+                    .label(t!("skills.discover").to_string())
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.enter_skills_discover(cx);
+                    })),
+            )
+    }
+
+    /// 发现技能页(仓库 / skills.sh)
+    fn render_skills_discover_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let search_value = self.skills_discover_search.read(cx).value().to_lowercase();
+        let search = search_value.trim().to_lowercase();
+        let source = self.skills_discover_source;
+        let filter = self.skills_discover_filter;
+        let loading = match source {
+            SkillsDiscoverSource::Repos => self.skills_discover_loading,
+            SkillsDiscoverSource::SkillsSh => self.skills_skills_sh_loading,
+        };
+
+        let visible: Vec<session::skills::hub::DiscoverableSkill> = {
+            let all: Vec<session::skills::hub::DiscoverableSkill> = match source {
+                SkillsDiscoverSource::Repos => self.skills_discover_list.clone(),
+                SkillsDiscoverSource::SkillsSh => self.skills_skills_sh_list.clone(),
+            };
+            all.into_iter()
+                .filter(|skill| {
+                    let installed = self.is_skill_managed(&skill.directory);
+                    match filter {
+                        SkillsDiscoverFilter::All => true,
+                        SkillsDiscoverFilter::Installed => installed,
+                        SkillsDiscoverFilter::Uninstalled => !installed,
+                    }
+                })
+                .filter(|skill| {
+                    search.is_empty()
+                        || skill.name.to_lowercase().contains(&search)
+                        || skill.description.to_lowercase().contains(&search)
+                        || format!("{}/{}", skill.repo_owner, skill.repo_name)
+                            .to_lowercase()
+                            .contains(&search)
+                })
+                .collect()
+        };
+
+        let source_toggle = h_flex()
+            .items_center()
+            .gap(px(4.))
+            .p(px(3.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .child(
+                Button::new("skills-source-repos")
+                    .xsmall()
+                    .selected(source == SkillsDiscoverSource::Repos)
+                    .label(t!("skills.source_repos").to_string())
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.set_skills_discover_source(SkillsDiscoverSource::Repos, cx);
+                    })),
+            )
+            .child(
+                Button::new("skills-source-skillssh")
+                    .xsmall()
+                    .selected(source == SkillsDiscoverSource::SkillsSh)
+                    .label("skills.sh")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.set_skills_discover_source(SkillsDiscoverSource::SkillsSh, cx);
+                    })),
+            );
+
+        let filter_toggle = h_flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                Button::new("skills-filter-all")
+                    .ghost()
+                    .xsmall()
+                    .selected(filter == SkillsDiscoverFilter::All)
+                    .label(t!("skills.filter_all").to_string())
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.skills_discover_filter = SkillsDiscoverFilter::All;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("skills-filter-installed")
+                    .ghost()
+                    .xsmall()
+                    .selected(filter == SkillsDiscoverFilter::Installed)
+                    .label(t!("skills.filter_installed").to_string())
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.skills_discover_filter = SkillsDiscoverFilter::Installed;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("skills-filter-uninstalled")
+                    .ghost()
+                    .xsmall()
+                    .selected(filter == SkillsDiscoverFilter::Uninstalled)
+                    .label(t!("skills.filter_uninstalled").to_string())
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.skills_discover_filter = SkillsDiscoverFilter::Uninstalled;
+                        cx.notify();
+                    })),
+            );
+
+        let mut controls = h_flex().items_center().gap(px(8.)).child(source_toggle);
+        controls = controls.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(&self.skills_discover_search)),
+        );
+        if source == SkillsDiscoverSource::SkillsSh {
+            controls = controls.child(
+                Button::new("skills-sh-search")
+                    .primary()
+                    .small()
+                    .icon(IconName::Search)
+                    .label(t!("skills.search_btn").to_string())
+                    .disabled(self.skills_skills_sh_loading)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.search_skills_sh(cx);
+                    })),
+            );
+        }
+        if source == SkillsDiscoverSource::Repos {
+            controls = controls.child(filter_toggle);
+        }
+
+        let mut page = v_flex()
+            .w_full()
+            .p(px(24.))
+            .gap(px(16.))
+            // Header
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        Button::new("skills-discover-back")
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.skills_view = SkillsView::Installed;
+                                this.refresh_skills(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .child(t!("skills.discover_title").to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("skills-repo-manager")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Settings)
+                            .label(t!("skills.repo_manager").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_repo_manager_dialog(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("skills-discover-refresh")
+                            .ghost()
+                            .small()
+                            .icon(if loading {
+                                Icon::new(IconName::LoaderCircle)
+                            } else {
+                                Icon::new(CustomIcon::RotateCw)
+                            })
+                            .label(t!("sessions.refresh").to_string())
+                            .disabled(loading)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                match this.skills_discover_source {
+                                    SkillsDiscoverSource::Repos => this.refresh_discover_skills(cx),
+                                    SkillsDiscoverSource::SkillsSh => this.search_skills_sh(cx),
+                                }
+                            })),
+                    ),
+            )
+            .child(controls);
+
+        // 列表
+        if loading && visible.is_empty() {
+            page = page.child(
+                div()
+                    .w_full()
+                    .py(px(48.))
+                    .flex()
+                    .justify_center()
+                    .text_color(theme.muted_foreground)
+                    .child(t!("skills.discover_loading").to_string()),
+            );
+        } else if visible.is_empty() {
+            let hint = match source {
+                SkillsDiscoverSource::Repos => {
+                    if self.skills_discover_list.is_empty() {
+                        t!("skills.discover_empty_repos").to_string()
+                    } else {
+                        t!("skills.no_results").to_string()
+                    }
+                }
+                SkillsDiscoverSource::SkillsSh => {
+                    if self.skills_skills_sh_query.is_empty() {
+                        t!("skills.skillssh_hint").to_string()
+                    } else {
+                        t!("skills.no_results").to_string()
+                    }
+                }
+            };
+            page = page.child(
+                div()
+                    .w_full()
+                    .py(px(48.))
+                    .flex()
+                    .justify_center()
+                    .text_color(theme.muted_foreground)
+                    .child(hint),
+            );
+        } else {
+            let rows: Vec<_> = visible
+                .iter()
+                .enumerate()
+                .map(|(idx, skill)| self.render_discover_row(skill, idx, cx).into_any_element())
+                .collect();
+            page = page.child(
+                v_flex()
+                    .id("skills-discover-list")
+                    .w_full()
+                    .max_h(px(640.))
+                    .overflow_y_scroll()
+                    .gap(px(8.))
+                    .children(rows),
+            );
+        }
+
+        // skills.sh 底部: 加载更多 + 署名
+        if source == SkillsDiscoverSource::SkillsSh && !self.skills_skills_sh_list.is_empty() {
+            let has_more = self.skills_skills_sh_list.len() < self.skills_skills_sh_total;
+            page = page.child(
+                v_flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(has_more.then(|| {
+                        Button::new("skills-sh-more")
+                            .outline()
+                            .small()
+                            .label(t!("skills.load_more").to_string())
+                            .disabled(self.skills_skills_sh_loading)
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.load_more_skills_sh(cx);
+                            }))
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(theme.muted_foreground)
+                            .child(t!("skills.powered_by").to_string()),
+                    ),
+            );
+        }
+        page
+    }
+
+    fn render_discover_row(
+        &self,
+        skill: &session::skills::hub::DiscoverableSkill,
+        idx: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let installed = self.is_skill_managed(&skill.directory);
+        let installing = self
+            .skills_installing_key
+            .as_deref()
+            .is_some_and(|key| key == skill.key);
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(px(12.))
+            .p(px(12.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .child(skill.name.clone()),
+                            )
+                            .child(
+                                Tag::secondary()
+                                    .small()
+                                    .child(format!("{}/{}", skill.repo_owner, skill.repo_name)),
+                            )
+                            .children(
+                                skill
+                                    .installs
+                                    .map(|n| Tag::secondary().small().child(format!("⬇ {n}"))),
+                            )
+                            .children(installed.then(|| {
+                                Tag::secondary()
+                                    .small()
+                                    .child(t!("skills.badge_installed").to_string())
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme.muted_foreground)
+                            .max_w_full()
+                            .truncate()
+                            .child(if skill.description.is_empty() {
+                                skill.directory.clone()
+                            } else {
+                                skill.description.clone()
+                            }),
+                    ),
+            )
+            .child(if installed {
+                Button::new(SharedString::from(format!("skill-installed-{idx}")))
+                    .outline()
+                    .xsmall()
+                    .label(t!("skills.badge_installed").to_string())
+                    .disabled(true)
+                    .into_any_element()
+            } else {
+                Button::new(SharedString::from(format!("skill-install-{idx}")))
+                    .primary()
+                    .xsmall()
+                    .label(if installing {
+                        t!("skills.installing").to_string()
+                    } else {
+                        t!("skills.install_action").to_string()
+                    })
+                    .disabled(installing)
+                    .on_click(cx.listener({
+                        let skill = skill.clone();
+                        move |this, _, window, cx| {
+                            this.install_discovered_skill(skill.clone(), window, cx);
+                        }
+                    }))
+                    .into_any_element()
+            })
+    }
+
+    fn is_skill_managed(&self, directory: &str) -> bool {
+        let name = directory
+            .rsplit('/')
+            .next()
+            .unwrap_or(directory)
+            .to_lowercase();
+        self.skills_managed_names
+            .iter()
+            .any(|managed| managed.to_lowercase() == name)
+    }
+
+    /// 进入发现技能页: 读取仓库配置, 首次自动发现
+    fn enter_skills_discover(&mut self, cx: &mut Context<Self>) {
+        self.skills_view = SkillsView::Discover;
+        self.skills_repos = session::skills::hub::load_repos(&self.workspace.skills_hub_dir());
+        cx.notify();
+        if self.skills_discover_source == SkillsDiscoverSource::Repos
+            && self.skills_discover_list.is_empty()
+        {
+            self.refresh_discover_skills(cx);
+        }
+    }
+
+    fn set_skills_discover_source(&mut self, source: SkillsDiscoverSource, cx: &mut Context<Self>) {
+        if self.skills_discover_source == source {
+            return;
+        }
+        self.skills_discover_source = source;
+        cx.notify();
+        match source {
+            SkillsDiscoverSource::Repos => {
+                if self.skills_discover_list.is_empty() {
+                    self.refresh_discover_skills(cx);
+                }
+            }
+            SkillsDiscoverSource::SkillsSh => {}
+        }
+    }
+
+    /// 从全部启用仓库拉取可发现技能(后台下载归档并扫描)
+    fn refresh_discover_skills(&mut self, cx: &mut Context<Self>) {
+        self.skills_repos = session::skills::hub::load_repos(&self.workspace.skills_hub_dir());
+        if self.skills_discover_loading {
+            return;
+        }
+        let repos = self.skills_repos.clone();
+        self.skills_discover_loading = true;
+        cx.notify();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let skills = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::discover_available(&client, &repos).await
+                        })
+                        .await
+                        .unwrap_or_default();
+                    let _ = this.update(&mut cx, |this, cx| {
+                        this.skills_discover_list = skills;
+                        this.skills_discover_loading = false;
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// 提交 skills.sh 搜索
+    fn search_skills_sh(&mut self, cx: &mut Context<Self>) {
+        let query = self
+            .skills_discover_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if query.chars().count() < 2 {
+            return;
+        }
+        if self.skills_skills_sh_loading {
+            return;
+        }
+        self.skills_skills_sh_query = query.clone();
+        self.skills_skills_sh_offset = 0;
+        self.skills_skills_sh_loading = true;
+        cx.notify();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let result = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::search_skills_sh(&client, &query, 20, 0).await
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("任务失败: {e}")));
+                    let _ = this.update(&mut cx, |this, cx| {
+                        this.skills_skills_sh_loading = false;
+                        match result {
+                            Ok(result) => {
+                                this.skills_skills_sh_total = result.total_count;
+                                this.skills_skills_sh_list = result.skills;
+                            }
+                            Err(err) => this.last_error = Some(err.into()),
+                        }
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    fn load_more_skills_sh(&mut self, cx: &mut Context<Self>) {
+        if self.skills_skills_sh_loading {
+            return;
+        }
+        let query = self.skills_skills_sh_query.clone();
+        let offset = self.skills_skills_sh_offset + 20;
+        self.skills_skills_sh_offset = offset;
+        self.skills_skills_sh_loading = true;
+        cx.notify();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let result = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::search_skills_sh(&client, &query, 20, offset)
+                                .await
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("任务失败: {e}")));
+                    let _ = this.update(&mut cx, |this, cx| {
+                        this.skills_skills_sh_loading = false;
+                        match result {
+                            Ok(result) => {
+                                this.skills_skills_sh_total = result.total_count;
+                                let known: std::collections::HashSet<String> = this
+                                    .skills_skills_sh_list
+                                    .iter()
+                                    .map(|s| s.key.clone())
+                                    .collect();
+                                this.skills_skills_sh_list.extend(
+                                    result
+                                        .skills
+                                        .into_iter()
+                                        .filter(|s| !known.contains(&s.key)),
+                                );
+                            }
+                            Err(err) => this.last_error = Some(err.into()),
+                        }
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// 安装一个发现的技能: 中心库 + 全部应用目录
+    fn install_discovered_skill(
+        &mut self,
+        skill: session::skills::hub::DiscoverableSkill,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.skills_installing_key.is_some() {
+            return;
+        }
+        self.skills_installing_key = Some(skill.key.clone());
+        cx.notify();
+        let hub = self.workspace.skills_hub_dir();
+        let backup_dir = self.workspace.skills_backup_dir();
+        let app_dirs = self.workspace.skills_roots();
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let result = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::install_discovered(
+                                &client,
+                                &skill,
+                                &hub,
+                                &app_dirs,
+                                &backup_dir,
+                            )
+                            .await
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("任务失败: {e}")));
+                    let outcome = view.update(&mut cx, |this, cx| {
+                        this.skills_installing_key = None;
+                        let outcome = match result {
+                            Ok(synced) => {
+                                this.refresh_skills(cx);
+                                Ok(synced)
+                            }
+                            Err(err) => Err(err),
+                        };
+                        cx.notify();
+                        outcome
+                    });
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| match outcome {
+                        Ok(Ok(synced)) => window.push_notification(
+                            Notification::success(
+                                t!("skills.install_done", count = synced).to_string(),
+                            ),
+                            cx,
+                        ),
+                        Ok(Err(err)) => window.push_notification(Notification::error(err), cx),
+                        Err(err) => {
+                            window.push_notification(Notification::error(err.to_string()), cx)
+                        }
+                    });
+                }
+            })
+            .detach();
+    }
+
+    /// 检查全部受管技能的更新, 有更新时弹出列表对话框
+    fn check_skills_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.skills_checking_updates {
+            return;
+        }
+        self.skills_checking_updates = true;
+        cx.notify();
+        let hub = self.workspace.skills_hub_dir();
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let updates = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::check_updates(&client, &hub).await
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("任务失败: {e}")));
+                    let outcome = view.update(&mut cx, |this, cx| {
+                        this.skills_checking_updates = false;
+                        cx.notify();
+                        updates
+                    });
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| match outcome {
+                        Ok(Ok(list)) if list.is_empty() => window.push_notification(
+                            Notification::success(t!("skills.up_to_date").to_string()),
+                            cx,
+                        ),
+                        Ok(Ok(list)) => {
+                            let on_update = {
+                                let view = view.clone();
+                                move |dir_name: String, window: &mut Window, cx: &mut App| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.update_managed_skill(dir_name, window, cx);
+                                    });
+                                }
+                            };
+                            open_skills_updates_dialog(window, cx, list, on_update);
+                        }
+                        Ok(Err(err)) => window.push_notification(Notification::error(err), cx),
+                        Err(err) => {
+                            window.push_notification(Notification::error(err.to_string()), cx)
+                        }
+                    });
+                }
+            })
+            .detach();
+    }
+
+    /// 更新单个受管技能(重新下载并同步)
+    fn update_managed_skill(
+        &mut self,
+        dir_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hub = self.workspace.skills_hub_dir();
+        let backup_dir = self.workspace.skills_backup_dir();
+        let app_dirs = self.workspace.skills_roots();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let result = session::tokio_runtime()
+                        .spawn(async move {
+                            let client = session::skills::hub::http_client();
+                            session::skills::hub::update_skill(
+                                &client,
+                                &dir_name,
+                                &hub,
+                                &app_dirs,
+                                &backup_dir,
+                            )
+                            .await
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("任务失败: {e}")));
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| match result {
+                        Ok(synced) => window.push_notification(
+                            Notification::success(
+                                t!("skills.update_done", count = synced).to_string(),
+                            ),
+                            cx,
+                        ),
+                        Err(err) => window.push_notification(Notification::error(err), cx),
+                    });
+                }
+            })
+            .detach();
+    }
+
+    /// 备份列表对话框
+    fn open_backups_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let backup_dir = self.workspace.skills_backup_dir();
+        let backups = session::skills::hub::list_backups(&backup_dir);
+        if backups.is_empty() {
+            notify_info(t!("skills.backup_empty").to_string(), window, cx);
+            return;
+        }
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let rows: Vec<_> = backups
+                .iter()
+                .map(|entry| render_backup_row(entry, view.clone(), cx).into_any_element())
+                .collect();
+            dialog
+                .width(px(640.))
+                .title(t!("skills.backup_title").to_string())
+                .child(
+                    v_flex()
+                        .id("skills-backup-list")
+                        .w_full()
+                        .max_h(px(420.))
+                        .overflow_y_scroll()
+                        .gap(px(8.))
+                        .children(rows),
+                )
+        });
+    }
+
+    fn restore_skill_backup(
+        &mut self,
+        entry: session::skills::hub::SkillBackupEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let backup_dir = self.workspace.skills_backup_dir();
+        let hub = self.workspace.skills_hub_dir();
+        match session::skills::hub::restore_backup(&entry, &backup_dir, &hub) {
+            Ok(()) => {
+                window.close_dialog(cx);
+                notify_success(t!("skills.backup_restored").to_string(), window, cx);
+                self.refresh_skills(cx);
+            }
+            Err(err) => window.push_notification(Notification::error(err), cx),
+        }
+    }
+
+    fn delete_skill_backup(
+        &mut self,
+        backup_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let backup_dir = self.workspace.skills_backup_dir();
+        match session::skills::hub::delete_backup(&backup_dir, &backup_id) {
+            Ok(()) => {
+                window.close_dialog(cx);
+                notify_success(t!("skills.backup_deleted").to_string(), window, cx);
+            }
+            Err(err) => window.push_notification(Notification::error(err), cx),
+        }
+    }
+
+    /// 删除备份前的确认对话框
+    fn confirm_delete_backup(
+        &mut self,
+        backup_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let id = backup_id.clone();
+            dialog
+                .width(px(420.))
+                .title(t!("skills.backup_delete_title").to_string())
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(t!("skills.backup_delete_confirm").to_string()),
+                )
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    let view = view.clone();
+                    let id = id.clone();
+                    vec![h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("backup-delete-cancel")
+                                .ghost()
+                                .small()
+                                .label(t!("skills.cancel").to_string())
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("backup-delete-confirm")
+                                .primary()
+                                .small()
+                                .label(t!("skills.backup_delete").to_string())
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.delete_skill_backup(id.clone(), window, cx)
+                                    });
+                                }),
+                        )
+                        .into_any_element()]
+                })
+        });
+    }
+
+    /// 导入已有(未纳管)技能对话框
+    fn open_import_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.skills_unmanaged.is_empty() {
+            notify_info(t!("skills.import_empty").to_string(), window, cx);
+            return;
+        }
+        self.skills_import_selected = self
+            .skills_unmanaged
+            .iter()
+            .map(|s| s.dir_name.clone())
+            .collect();
+        let view = cx.entity().downgrade();
+        let unmanaged = self.skills_unmanaged.clone();
+        let selected = self.skills_import_selected.clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let selected = selected.clone();
+            let rows: Vec<_> = unmanaged
+                .iter()
+                .map(|item| {
+                    let is_selected = selected.contains(&item.dir_name);
+                    render_import_row(item, is_selected, view.clone(), cx).into_any_element()
+                })
+                .collect();
+            let confirm_view = view.clone();
+            dialog
+                .width(px(600.))
+                .title(t!("skills.import_title").to_string())
+                .child(
+                    v_flex()
+                        .id("skills-import-list")
+                        .w_full()
+                        .max_h(px(420.))
+                        .overflow_y_scroll()
+                        .gap(px(8.))
+                        .children(rows),
+                )
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    let confirm_view = confirm_view.clone();
+                    vec![h_flex()
+                        .w_full()
+                        .justify_end()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("skills-import-cancel")
+                                .ghost()
+                                .small()
+                                .label(t!("skills.cancel").to_string())
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("skills-import-confirm")
+                                .primary()
+                                .small()
+                                .label(t!("skills.import_confirm").to_string())
+                                .on_click(move |_, window, cx| {
+                                    let v = confirm_view.clone();
+                                    window.close_dialog(cx);
+                                    let _ = v.update(cx, |this, cx| {
+                                        this.import_selected_skills(window, cx);
+                                    });
+                                }),
+                        )
+                        .into_any_element()]
+                })
+        });
+    }
+
+    /// 把勾选的未纳管技能收编进中心库
+    fn import_selected_skills(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.skills_import_selected.clone();
+        let hub = self.workspace.skills_hub_dir();
+        let backup_dir = self.workspace.skills_backup_dir();
+        let items: Vec<SkillsUnmanaged> = self
+            .skills_unmanaged
+            .iter()
+            .filter(|s| selected.contains(&s.dir_name))
+            .cloned()
+            .collect();
+        let mut ok = 0usize;
+        let mut first_error = None;
+        for item in &items {
+            match session::skills::hub::import_to_hub(&item.path, &hub, &backup_dir) {
+                Ok(_) => ok += 1,
+                Err(err) => {
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+        if let Some(err) = first_error {
+            window.push_notification(Notification::error(err), cx);
+        } else {
+            notify_success(t!("skills.import_done", count = ok).to_string(), window, cx);
+        }
+        self.refresh_skills(cx);
+    }
+
+    /// 从 ZIP 安装: 选择文件 → 后台解压发现 → 入库并同步
+    fn install_skills_zip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("skills.zip_pick").to_string().into()),
+        });
+        let view = cx.entity().downgrade();
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let Ok(Ok(Some(paths))) = receiver.await else {
+                        return;
+                    };
+                    let Some(path) = paths.first().cloned() else {
+                        return;
+                    };
+                    let too_large = std::fs::metadata(&path)
+                        .map(|m| m.len() > session::skills::hub::MAX_DOWNLOAD_BYTES)
+                        .unwrap_or(true);
+                    if too_large {
+                        let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                            window.push_notification(
+                                Notification::error(t!("skills.zip_too_large").to_string()),
+                                cx,
+                            );
+                        });
+                        return;
+                    }
+                    let (hub, backup_dir, app_dirs) = view
+                        .update(&mut cx, |this, _| {
+                            (
+                                this.workspace.skills_hub_dir(),
+                                this.workspace.skills_backup_dir(),
+                                this.workspace.skills_roots(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    let result: Result<Vec<String>, String> = cx
+                        .background_executor()
+                        .spawn(async move {
+                            std::fs::read(&path)
+                                .map_err(|e| format!("读取 ZIP 失败: {e}"))
+                                .and_then(|bytes| {
+                                    session::skills::hub::install_from_zip_bytes(
+                                        bytes,
+                                        &hub,
+                                        &app_dirs,
+                                        &backup_dir,
+                                    )
+                                })
+                        })
+                        .await;
+                    let outcome = view.update(&mut cx, |this, cx| {
+                        let outcome = match result {
+                            Ok(names) => {
+                                this.refresh_skills(cx);
+                                Ok(names)
+                            }
+                            Err(err) => Err(err),
+                        };
+                        cx.notify();
+                        outcome
+                    });
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| match outcome {
+                        Ok(Ok(names)) => window.push_notification(
+                            Notification::success(
+                                t!("skills.zip_done", count = names.len()).to_string(),
+                            ),
+                            cx,
+                        ),
+                        Ok(Err(err)) => window.push_notification(Notification::error(err), cx),
+                        Err(err) => {
+                            window.push_notification(Notification::error(err.to_string()), cx)
+                        }
+                    });
+                }
+            })
+            .detach();
+    }
+
+    /// 仓库管理对话框: 启用/删除 + 新增
+    fn open_repo_manager_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.skills_repos = session::skills::hub::load_repos(&self.workspace.skills_hub_dir());
+        let view = cx.entity().downgrade();
+        let owner_input = self.skills_repo_owner.clone();
+        let name_input = self.skills_repo_name.clone();
+        let branch_input = self.skills_repo_branch.clone();
+        let repos = self.skills_repos.clone();
+        let theme = cx.theme().clone();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let (owner_input, name_input, branch_input) = (
+                owner_input.clone(),
+                name_input.clone(),
+                branch_input.clone(),
+            );
+            let rows: Vec<_> = repos
+                .iter()
+                .map(|repo| render_repo_row(repo, view.clone(), cx).into_any_element())
+                .collect();
+            let v_add = view.clone();
+            dialog
+                .width(px(620.))
+                .title(t!("skills.repo_title").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(10.))
+                        .children(rows)
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(div().w(px(150.)).child(Input::new(&owner_input)))
+                                .child(div().w(px(210.)).child(Input::new(&name_input)))
+                                .child(div().w(px(110.)).child(Input::new(&branch_input)))
+                                .child(
+                                    Button::new("skills-repo-add")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::Plus)
+                                        .label(t!("skills.repo_add").to_string())
+                                        .on_click(move |_, window, cx| {
+                                            let owner =
+                                                owner_input.read(cx).value().trim().to_string();
+                                            let name =
+                                                name_input.read(cx).value().trim().to_string();
+                                            let branch =
+                                                branch_input.read(cx).value().trim().to_string();
+                                            let view = v_add.clone();
+                                            let _ = view.update(cx, |this, cx| {
+                                                this.add_skill_repo(owner, name, branch, window, cx)
+                                            });
+                                        }),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("skills.repo_hint").to_string()),
+                        ),
+                )
+        });
+    }
+
+    fn add_skill_repo(
+        &mut self,
+        owner: String,
+        name: String,
+        branch: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let branch = if branch.is_empty() {
+            "main".to_string()
+        } else {
+            branch
+        };
+        if let Err(err) = session::skills::hub::validate_repo_ref(&owner, &name, &branch) {
+            window.push_notification(Notification::error(err), cx);
+            return;
+        }
+        if self
+            .skills_repos
+            .iter()
+            .any(|r| r.owner.eq_ignore_ascii_case(&owner) && r.name.eq_ignore_ascii_case(&name))
+        {
+            notify_info(t!("skills.repo_exists").to_string(), window, cx);
+            return;
+        }
+        self.skills_repos.push(session::skills::hub::SkillRepo {
+            owner,
+            name,
+            branch,
+            enabled: true,
+        });
+        if let Err(err) =
+            session::skills::hub::save_repos(&self.workspace.skills_hub_dir(), &self.skills_repos)
+        {
+            window.push_notification(Notification::error(err), cx);
+            return;
+        }
+        // 清空输入并刷新发现列表
+        let owner_input = self.skills_repo_owner.clone();
+        let name_input = self.skills_repo_name.clone();
+        let branch_input = self.skills_repo_branch.clone();
+        owner_input.update(cx, |state, cx| state.set_value("", window, cx));
+        name_input.update(cx, |state, cx| state.set_value("", window, cx));
+        branch_input.update(cx, |state, cx| state.set_value("", window, cx));
+        self.refresh_discover_skills(cx);
+    }
+
+    fn remove_skill_repo(&mut self, owner: String, name: String, cx: &mut Context<Self>) {
+        self.skills_repos
+            .retain(|r| !(r.owner == owner && r.name == name));
+        let _ =
+            session::skills::hub::save_repos(&self.workspace.skills_hub_dir(), &self.skills_repos);
+        self.refresh_discover_skills(cx);
+    }
+
+    fn toggle_skill_repo_enabled(
+        &mut self,
+        owner: String,
+        name: String,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        for repo in &mut self.skills_repos {
+            if repo.owner == owner && repo.name == name {
+                repo.enabled = enabled;
+            }
+        }
+        let _ =
+            session::skills::hub::save_repos(&self.workspace.skills_hub_dir(), &self.skills_repos);
+        self.refresh_discover_skills(cx);
     }
 
     fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
@@ -5008,7 +6331,10 @@ impl RouterApp {
         }
     }
 
-    fn render_skills_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_skills_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.skills_view == SkillsView::Discover {
+            return self.render_skills_discover_page(cx).into_any_element();
+        }
         let theme = cx.theme().clone();
         let search_value = self.skills_search.read(cx).value().to_lowercase();
         let search = search_value.trim().to_lowercase();
@@ -5113,6 +6439,9 @@ impl RouterApp {
                             .child(t!("skills.title").to_string()),
                     )
                     .child(div().flex_1())
+                    // 工具栏(对齐 cc-switch): 检查更新 / 从备份中恢复 / 从 ZIP 安装 /
+                    // 导入已有(有未纳管技能时带绿点) / 发现技能
+                    .child(self.render_skills_toolbar(cx))
                     .child(
                         Button::new("skills-refresh")
                             .ghost()
@@ -5176,6 +6505,7 @@ impl RouterApp {
                     ),
                 )
             })
+            .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5289,7 +6619,7 @@ impl RouterApp {
         let search_value = self.sessions_search.read(cx).value().to_lowercase();
         let search = search_value.trim().to_lowercase();
 
-        let visible: Vec<&session::sessions::SessionMeta> = self
+        let visible: Vec<session::sessions::SessionMeta> = self
             .sessions_list
             .iter()
             .filter(|meta| {
@@ -5313,17 +6643,18 @@ impl RouterApp {
                         .contains(&search)
                     || meta.session_id.contains(&search)
             })
+            .cloned()
             .collect();
 
-        let selected_path = self
-            .session_selected
-            .as_ref()
-            .and_then(|s| s.source_path.clone());
+        let visible_rc = std::rc::Rc::new(visible);
+        let visible_count = visible_rc.len();
+        let visible_for_list = visible_rc.clone();
 
         v_flex()
-            .w_full()
-            .p(px(24.))
+            .size_full()
+            .p(px(20.))
             .gap(px(16.))
+            .overflow_hidden()
             // Header
             .child(
                 h_flex()
@@ -5348,12 +6679,15 @@ impl RouterApp {
             .child(
                 h_flex()
                     .w_full()
-                    .items_start()
+                    .flex_1()
+                    .min_h_0()
                     .gap(px(16.))
-                    // 左栏: 会话列表
+                    // 左栏: 会话列表 (450px 宽，独立滚动)
                     .child(
                         v_flex()
-                            .w(px(400.))
+                            .w(px(450.))
+                            .h_full()
+                            .min_h_0()
                             .relative()
                             .gap(px(8.))
                             .child(
@@ -5374,7 +6708,7 @@ impl RouterApp {
                                             .child(
                                                 Tag::secondary()
                                                     .small()
-                                                    .child(format!("{}", visible.len())),
+                                                    .child(format!("{}", visible_count)),
                                             ),
                                     )
                                     // 图标工具栏: 批量选择 / 筛选 / 搜索 / 刷新
@@ -5410,8 +6744,32 @@ impl RouterApp {
                                                                 Some("codex") => {
                                                                     CustomIcon::OpenAI.into()
                                                                 }
+                                                                Some("grok") => {
+                                                                    CustomIcon::Grok.into()
+                                                                }
                                                                 Some("claude") => {
                                                                     CustomIcon::Claude.into()
+                                                                }
+                                                                Some("opencode") => {
+                                                                    CustomIcon::OpenCode.into()
+                                                                }
+                                                                Some("openclaw") => {
+                                                                    CustomIcon::OhMyPi.into()
+                                                                }
+                                                                Some("gemini") => {
+                                                                    CustomIcon::Gemini.into()
+                                                                }
+                                                                Some("pi") => {
+                                                                    CustomIcon::Pi.into()
+                                                                }
+                                                                Some("zcode") => {
+                                                                    CustomIcon::ZCode.into()
+                                                                }
+                                                                Some("workbuddy") => {
+                                                                    CustomIcon::WorkBuddy.into()
+                                                                }
+                                                                Some("cursor") => {
+                                                                    CustomIcon::Cursor.into()
                                                                 }
                                                                 _ => IconName::Asterisk.into(),
                                                             };
@@ -5559,14 +6917,240 @@ impl RouterApp {
                                     ),
                                 )
                             })
-                            // 应用筛选下拉菜单
+                            // 虚拟化会话列表 (通过 uniform_list + cx.processor 杜绝 300+ 条目缩放与滚动卡顿)
+                            .child(
+                                div()
+                                    .id("sessions-list-container")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .child(if visible_count == 0 {
+                                        v_flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .py(px(60.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("sessions.empty").to_string()),
+                                            )
+                                            .into_any_element()
+                                    } else {
+                                        uniform_list(
+                                            "sessions-uniform-list",
+                                            visible_count,
+                                            cx.processor(move |this: &mut Self, range: std::ops::Range<usize>, _window: &mut Window, cx: &mut Context<Self>| {
+                                                let theme = cx.theme().clone();
+                                                let dark = theme.is_dark();
+                                                let selected_path = this
+                                                    .session_selected
+                                                    .as_ref()
+                                                    .and_then(|s| s.source_path.clone());
+                                                let mut items = Vec::with_capacity(range.len());
+                                                for ix in range {
+                                                    if let Some(meta) = visible_for_list.get(ix) {
+                                                        let source = meta.source_path.clone().unwrap_or_default();
+                                                        let checked = this.session_checked.contains(&source);
+                                                        let is_selected = selected_path == meta.source_path;
+                                                        let (icon, icon_color) = match meta.provider_id.as_str() {
+                                                            "codex" => (CustomIcon::OpenAI, rgb(0x10A37F)),
+                                                            "grok" => (CustomIcon::Grok, rgb(0x8B5CF6)),
+                                                            "claude" => (CustomIcon::Claude, rgb(0xD97757)),
+                                                            "opencode" => (CustomIcon::OpenCode, rgb(0x0284C7)),
+                                                            "openclaw" => (CustomIcon::OhMyPi, rgb(0xEC4899)),
+                                                            "gemini" => (CustomIcon::Gemini, rgb(0x2563EB)),
+                                                            "pi" => (CustomIcon::Pi, rgb(0x3B82F6)),
+                                                            "zcode" => (CustomIcon::ZCode, rgb(0x3B82F6)),
+                                                            "workbuddy" => (CustomIcon::WorkBuddy, rgb(0x6366F1)),
+                                                            "cursor" => (CustomIcon::Cursor, if dark { rgb(0xFFFFFF) } else { rgb(0x000000) }),
+                                                            _ => (CustomIcon::OpenAI, rgb(0x10A37F)),
+                                                        };
+                                                        let now_secs = std::time::SystemTime::now()
+                                                            .duration_since(std::time::UNIX_EPOCH)
+                                                            .map(|d| d.as_secs() as i64)
+                                                            .unwrap_or(0);
+                                                        let relative = relative_time_text(
+                                                            now_secs
+                                                                - meta
+                                                                    .last_active_at
+                                                                    .or(meta.created_at)
+                                                                    .unwrap_or(0)
+                                                                    / 1000,
+                                                            this.language,
+                                                        );
+                                                        let title = meta
+                                                            .title
+                                                            .clone()
+                                                            .unwrap_or_else(|| meta.session_id.clone());
+                                                        let project_dir = meta.project_dir.as_deref().and_then(|d| {
+                                                            let clean = d.lines().next().unwrap_or("").trim();
+                                                            if clean.is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(clean.to_string())
+                                                            }
+                                                        });
+                                                        let source_toggle = source.clone();
+                                                        let meta_click = meta.clone();
+
+                                                        items.push(
+                                                            div()
+                                                                .id(SharedString::from(format!("session-item-{}", ix)))
+                                                                .h(px(68.))
+                                                                .py(px(3.))
+                                                                .child(
+                                                                    div()
+                                                                        .id(SharedString::from(format!("session-card-{}", ix)))
+                                                                        .w_full()
+                                                                        .h_full()
+                                                                        .p(px(10.))
+                                                                        .rounded(px(8.))
+                                                                        .border_1()
+                                                                        .border_color(if is_selected {
+                                                                            rgb(0x3B82F6).into()
+                                                                        } else {
+                                                                            theme.border.opacity(0.85)
+                                                                        })
+                                                                        .bg(if is_selected {
+                                                                            if dark {
+                                                                                gpui::Hsla::from(rgba(0x3B82F626))
+                                                                            } else {
+                                                                                gpui::Hsla::from(rgba(0x3B82F618))
+                                                                            }
+                                                                        } else {
+                                                                            theme.background
+                                                                        })
+                                                                        .cursor_pointer()
+                                                                        .overflow_hidden()
+                                                                        .hover(|style| {
+                                                                            if is_selected {
+                                                                                style
+                                                                            } else {
+                                                                                style.bg(theme.secondary.opacity(0.5))
+                                                                            }
+                                                                        })
+                                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                                            this.select_session(meta_click.clone(), cx);
+                                                                        }))
+                                                                        .child(
+                                                                            v_flex()
+                                                                                .w_full()
+                                                                                .h_full()
+                                                                                .justify_between()
+                                                                                .overflow_hidden()
+                                                                                .child(
+                                                                                    h_flex()
+                                                                                        .w_full()
+                                                                                        .items_center()
+                                                                                        .gap(px(8.))
+                                                                                        .when(this.sessions_batch_mode, |parent| {
+                                                                                            parent.child(
+                                                                                                div()
+                                                                                                    .id(SharedString::from(format!("chk-{}", source_toggle)))
+                                                                                                    .size(px(16.))
+                                                                                                    .rounded(px(4.))
+                                                                                                    .border_1()
+                                                                                                    .border_color(if checked {
+                                                                                                        gpui::Hsla::from(rgb(0x2563EB))
+                                                                                                    } else {
+                                                                                                        theme.border
+                                                                                                    })
+                                                                                                    .bg(if checked {
+                                                                                                        gpui::Hsla::from(rgb(0x2563EB))
+                                                                                                    } else {
+                                                                                                        gpui::transparent_black()
+                                                                                                    })
+                                                                                                    .flex()
+                                                                                                    .items_center()
+                                                                                                    .justify_center()
+                                                                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                                                                        this.toggle_session_checked(&source_toggle, cx);
+                                                                                                    }))
+                                                                                                    .when(checked, |chk| {
+                                                                                                        chk.child(
+                                                                                                            Icon::new(IconName::Check)
+                                                                                                                .size(px(10.))
+                                                                                                                .text_color(rgb(0xFFFFFF)),
+                                                                                                        )
+                                                                                                    }),
+                                                                                            )
+                                                                                        })
+                                                                                        .child(
+                                                                                            Icon::new(icon)
+                                                                                                .size(px(16.))
+                                                                                                .text_color(icon_color),
+                                                                                        )
+                                                                                        .child(
+                                                                                            div()
+                                                                                                .flex_1()
+                                                                                                .min_w_0()
+                                                                                                .truncate()
+                                                                                                .text_size(px(13.))
+                                                                                                .font_weight(FontWeight::MEDIUM)
+                                                                                                .text_color(theme.foreground)
+                                                                                                .child(title),
+                                                                                        )
+                                                                                        .child(
+                                                                                            Icon::new(IconName::ChevronRight)
+                                                                                                .size(px(13.))
+                                                                                                .text_color(theme.muted_foreground.opacity(0.6)),
+                                                                                        ),
+                                                                                )
+                                                                                .child(
+                                                                                    h_flex()
+                                                                                        .w_full()
+                                                                                        .items_center()
+                                                                                        .gap(px(6.))
+                                                                                        .overflow_hidden()
+                                                                                        .child(
+                                                                                            div()
+                                                                                                .text_size(px(11.))
+                                                                                                .text_color(theme.muted_foreground)
+                                                                                                .child(relative),
+                                                                                        )
+                                                                                        .children(project_dir.map(|dir| {
+                                                                                            div()
+                                                                                                .flex_1()
+                                                                                                .min_w_0()
+                                                                                                .truncate()
+                                                                                                .text_size(px(11.))
+                                                                                                .text_color(theme.muted_foreground.opacity(0.75))
+                                                                                                .child(dir)
+                                                                                        })),
+                                                                                ),
+                                                                        ),
+                                                                ),
+                                                        );
+                                                    }
+                                                }
+                                                items
+                                            }),
+                                        )
+                                        .h_full()
+                                        .into_any_element()
+                                    }),
+                            )
+                            // 应用筛选下拉菜单 (在 DOM 末尾渲染以确保绘制在最上层，避免被列表遮挡)
                             .when(self.sessions_filter_menu_open, |this| {
+                                let filter_options: [(Option<String>, &str, Option<CustomIcon>, Hsla); 10] = [
+                                    (None, "全部", None, theme.foreground),
+                                    (Some("codex".to_string()), "Codex", Some(CustomIcon::OpenAI), rgb(0x10A37F).into()),
+                                    (Some("grok".to_string()), "Grok Build", Some(CustomIcon::Grok), rgb(0x8B5CF6).into()),
+                                    (Some("claude".to_string()), "Claude Code", Some(CustomIcon::Claude), rgb(0xD97757).into()),
+                                    (Some("opencode".to_string()), "OpenCode", Some(CustomIcon::OpenCode), rgb(0x0284C7).into()),
+                                    (Some("openclaw".to_string()), "OpenClaw", Some(CustomIcon::OhMyPi), rgb(0xEC4899).into()),
+                                    (Some("gemini".to_string()), "Gemini CLI", Some(CustomIcon::Gemini), rgb(0x2563EB).into()),
+                                    (Some("pi".to_string()), "Pi", Some(CustomIcon::Pi), rgb(0x3B82F6).into()),
+                                    (Some("zcode".to_string()), "ZCode", Some(CustomIcon::ZCode), rgb(0x3B82F6).into()),
+                                    (Some("workbuddy".to_string()), "WorkBuddy", Some(CustomIcon::WorkBuddy), rgb(0x6366F1).into()),
+                                ];
                                 this.child(
                                     div()
                                         .absolute()
                                         .top(px(36.))
                                         .right(px(0.))
-                                        .w(px(170.))
+                                        .w(px(180.))
                                         .p(px(6.))
                                         .rounded(px(10.))
                                         .bg(theme.background)
@@ -5574,256 +7158,114 @@ impl RouterApp {
                                         .border_color(theme.border)
                                         .shadow_lg()
                                         .child(
-                                            v_flex().gap(px(1.)).children(
-                                                [
-                                                    (None, "全部", None),
-                                                    (
-                                                        Some("codex".to_string()),
-                                                        "Codex",
-                                                        Some(CustomIcon::OpenAI),
-                                                    ),
-                                                    (
-                                                        Some("claude".to_string()),
-                                                        "Claude",
-                                                        Some(CustomIcon::Claude),
-                                                    ),
-                                                ]
-                                                .into_iter()
-                                                .map(|(filter, label, icon)| {
-                                                    let active = self.sessions_filter == filter;
-                                                    div()
-                                                        .id(SharedString::from(format!(
-                                                            "sessions-filter-menu-{:?}",
-                                                            filter
-                                                        )))
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap(px(8.))
-                                                        .px(px(10.))
-                                                        .py(px(7.))
-                                                        .rounded(px(6.))
-                                                        .cursor_pointer()
-                                                        .hover(|this| {
-                                                            this.bg(theme.secondary.opacity(0.6))
-                                                        })
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.sessions_filter =
-                                                                    filter.clone();
-                                                                this.sessions_filter_menu_open =
-                                                                    false;
-                                                                cx.notify();
-                                                            },
-                                                        ))
-                                                        .children(icon.map(|icon| {
-                                                            Icon::new(icon)
-                                                                .size(px(14.))
-                                                                .text_color(theme.foreground)
-                                                        }))
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .text_size(px(12.5))
-                                                                .text_color(theme.foreground)
-                                                                .child(label),
-                                                        )
-                                                        .when(active, |this| {
-                                                            this.child(
-                                                                Icon::new(IconName::Check)
-                                                                    .size(px(12.))
-                                                                    .text_color(theme.foreground),
-                                                            )
-                                                        })
-                                                }),
-                                            ),
-                                        ),
-                                )
-                            })
-                            // 会话列表
-                            .child(
-                                div()
-                                    .id("sessions-list-scroll")
-                                    .max_h(px(560.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(6.))
-                                    .overflow_y_scroll()
-                                    .children(visible.iter().map(|meta| {
-                                        let source = meta.source_path.clone().unwrap_or_default();
-                                        let checked = self.session_checked.contains(&source);
-                                        let is_selected = selected_path == meta.source_path;
-                                        let (icon, icon_color) = if meta.provider_id == "codex" {
-                                            (CustomIcon::OpenAI, rgb(0x10A37F))
-                                        } else {
-                                            (CustomIcon::Claude, rgb(0xD97757))
-                                        };
-                                        let now_secs = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .map(|d| d.as_secs() as i64)
-                                            .unwrap_or(0);
-                                        let relative = relative_time_text(
-                                            now_secs
-                                                - meta
-                                                    .last_active_at
-                                                    .or(meta.created_at)
-                                                    .unwrap_or(0)
-                                                    / 1000,
-                                            self.language,
-                                        );
-                                        let title = meta
-                                            .title
-                                            .clone()
-                                            .unwrap_or_else(|| meta.session_id.clone());
-                                        let summary = meta.summary.clone();
-                                        let source_for_toggle = source.clone();
-                                        let source_for_click = source.clone();
-                                        let meta_for_select = (*meta).clone();
-                                        theme::tile(cx)
-                                            .id(SharedString::from(format!("session-{source}")))
-                                            .cursor_pointer()
-                                            .when(is_selected, |this| {
-                                                this.border_1().border_color(rgb(0x3B82F6))
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                let target = meta_for_select.clone();
-                                                this.select_session(target, cx);
-                                            }))
-                                            .child(
-                                                h_flex()
-                                                    .items_center()
-                                                    .gap(px(8.))
-                                                    .child(
+                                            v_flex().gap(px(2.)).children(
+                                                filter_options
+                                                    .into_iter()
+                                                    .map(|(filter, label, icon, icon_color)| {
+                                                        let active = self.sessions_filter == filter;
                                                         div()
                                                             .id(SharedString::from(format!(
-                                                                "session-check-{source_for_toggle}"
-                                                            )))
-                                                            .size(px(16.))
-                                                            .rounded(px(4.))
-                                                            .border_1()
-                                                            .border_color(if checked {
-                                                                gpui::Hsla::from(rgb(0x2563EB))
-                                                            } else {
-                                                                theme.border
-                                                            })
-                                                            .bg(if checked {
-                                                                gpui::Hsla::from(rgb(0x2563EB))
-                                                            } else {
-                                                                gpui::Hsla::from(
-                                                                    gpui::transparent_black(),
-                                                                )
-                                                            })
+                                                                    "sessions-filter-menu-{:?}",
+                                                                    filter
+                                                                )))
                                                             .flex()
                                                             .items_center()
-                                                            .justify_center()
+                                                            .gap(px(8.))
+                                                            .px(px(8.))
+                                                            .py(px(6.))
+                                                            .rounded(px(6.))
+                                                            .cursor_pointer()
+                                                            .hover(|this| {
+                                                                this.bg(theme.secondary.opacity(0.6))
+                                                            })
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
-                                                                    this.toggle_session_checked(
-                                                                        &source_for_toggle,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            ))
-                                                            .when(checked, |this| {
-                                                                this.child(
-                                                                    Icon::new(IconName::Check)
-                                                                        .size(px(10.))
-                                                                        .text_color(rgb(0xFFFFFF)),
-                                                                )
-                                                            }),
-                                                    )
-                                                    .child(
-                                                        Icon::new(icon)
-                                                            .size(px(16.))
-                                                            .text_color(icon_color),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .truncate()
-                                                            .text_size(px(12.5))
-                                                            .text_color(theme.foreground)
-                                                            .child(title),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id(SharedString::from(format!(
-                                                                "session-expand-{source_for_click}"
-                                                            )))
-                                                            .on_click(cx.listener(
-                                                                move |this, _, _, cx| {
-                                                                    if this
-                                                                        .session_expanded
-                                                                        .contains(&source_for_click)
-                                                                    {
-                                                                        this.session_expanded
-                                                                            .remove(
-                                                                                &source_for_click,
-                                                                            );
-                                                                    } else {
-                                                                        this.session_expanded
-                                                                            .insert(
-                                                                                source_for_click
-                                                                                    .clone(),
-                                                                            );
-                                                                    }
+                                                                    this.sessions_filter =
+                                                                        filter.clone();
+                                                                    this.sessions_filter_menu_open =
+                                                                        false;
                                                                     cx.notify();
                                                                 },
                                                             ))
                                                             .child(
-                                                                Icon::new(
-                                                                    if self
-                                                                        .session_expanded
-                                                                        .contains(&source)
-                                                                    {
-                                                                        IconName::ChevronDown
-                                                                    } else {
-                                                                        IconName::ChevronRight
-                                                                    },
-                                                                )
-                                                                .size(px(12.))
-                                                                .text_color(theme.muted_foreground),
-                                                            ),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .items_center()
-                                                    .gap(px(4.))
-                                                    .pl(px(24.))
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(11.))
-                                                            .text_color(theme.muted_foreground)
-                                                            .child(relative),
-                                                    )
-                                                    .children(summary.map(|summary| {
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .truncate()
-                                                            .text_size(px(11.))
-                                                            .text_color(
-                                                                theme.muted_foreground.opacity(0.8),
+                                                                div()
+                                                                    .size(px(14.))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .when(active, |chk| {
+                                                                        chk.child(
+                                                                            Icon::new(IconName::Check)
+                                                                                .size(px(13.))
+                                                                                .text_color(theme.foreground),
+                                                                        )
+                                                                    }),
                                                             )
-                                                            .child(summary)
-                                                    })),
-                                            )
-                                    })),
-                            ),
+                                                            .child(
+                                                                div()
+                                                                    .size(px(18.))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .justify_center()
+                                                                    .child(if let Some(ic) = icon {
+                                                                        Icon::new(ic)
+                                                                            .size(px(16.))
+                                                                            .text_color(icon_color)
+                                                                            .into_any_element()
+                                                                    } else {
+                                                                        div()
+                                                                            .size(px(16.))
+                                                                            .rounded(px(4.))
+                                                                            .bg(theme.secondary)
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .justify_center()
+                                                                            .text_size(px(10.))
+                                                                            .font_weight(FontWeight::BOLD)
+                                                                            .text_color(theme.foreground)
+                                                                            .child("A")
+                                                                            .into_any_element()
+                                                                    }),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .flex_1()
+                                                                    .text_size(px(13.))
+                                                                    .font_weight(if active {
+                                                                        FontWeight::SEMIBOLD
+                                                                    } else {
+                                                                        FontWeight::NORMAL
+                                                                    })
+                                                                    .text_color(theme.foreground)
+                                                                    .child(label),
+                                                            )
+                                                    }),
+                                            ),
+                                        ),
+                                )
+                            }),
                     )
-                    // 右栏: 会话详情
+                    // 右栏: 会话详情 (自适应拓宽，独立滚动展示空间)
                     .child(
-                        theme::tile(cx)
+                        div()
                             .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .min_h_0()
+                            .p(px(16.))
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.background)
+                            .overflow_hidden()
                             .child(match self.session_selected.clone() {
                                 Some(selected) => {
                                     self.render_session_detail(selected, cx).into_any_element()
                                 }
                                 None => v_flex()
+                                    .size_full()
                                     .items_center()
                                     .justify_center()
-                                    .py(px(80.))
                                     .child(
                                         div()
                                             .text_size(px(13.))
@@ -5843,10 +7285,22 @@ impl RouterApp {
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
-        let (icon, icon_color) = if selected.provider_id == "codex" {
-            (CustomIcon::OpenAI, rgb(0x10A37F))
-        } else {
-            (CustomIcon::Claude, rgb(0xD97757))
+        let dark = theme.is_dark();
+        let (icon, icon_color) = match selected.provider_id.as_str() {
+            "codex" => (CustomIcon::OpenAI, rgb(0x10A37F)),
+            "grok" => (CustomIcon::Grok, rgb(0x8B5CF6)),
+            "claude" => (CustomIcon::Claude, rgb(0xD97757)),
+            "opencode" => (CustomIcon::OpenCode, rgb(0x0284C7)),
+            "openclaw" => (CustomIcon::OhMyPi, rgb(0xEC4899)),
+            "gemini" => (CustomIcon::Gemini, rgb(0x2563EB)),
+            "pi" => (CustomIcon::Pi, rgb(0x3B82F6)),
+            "zcode" => (CustomIcon::ZCode, rgb(0x3B82F6)),
+            "workbuddy" => (CustomIcon::WorkBuddy, rgb(0x6366F1)),
+            "cursor" => (
+                CustomIcon::Cursor,
+                if dark { rgb(0xFFFFFF) } else { rgb(0x000000) },
+            ),
+            _ => (CustomIcon::OpenAI, rgb(0x10A37F)),
         };
         let title = selected
             .title
@@ -5886,7 +7340,8 @@ impl RouterApp {
         };
 
         v_flex()
-            .w_full()
+            .size_full()
+            .min_h_0()
             .gap(px(12.))
             // 标题行 + 操作
             .child(
@@ -5898,11 +7353,11 @@ impl RouterApp {
                         h_flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(Icon::new(icon).size(px(18.)).text_color(icon_color))
+                            .child(Icon::new(icon).size(px(20.)).text_color(icon_color))
                             .child(
                                 div()
-                                    .text_size(px(15.))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight::BOLD)
                                     .text_color(theme.foreground)
                                     .child(title),
                             ),
@@ -5958,7 +7413,7 @@ impl RouterApp {
                     .w_full()
                     .items_center()
                     .gap(px(8.))
-                    .p(px(8.))
+                    .p(px(10.))
                     .rounded(px(8.))
                     .bg(theme.secondary.opacity(0.4))
                     .child(
@@ -6010,12 +7465,13 @@ impl RouterApp {
             .child(
                 div()
                     .id("session-messages-scroll")
-                    .max_h(px(560.))
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(px(10.))
                     .overflow_y_scroll()
-                    .children(self.session_messages.iter().take(80).map(|message| {
+                    .children(self.session_messages.iter().take(100).map(|message| {
                         let role = message.role.clone();
                         let content_for_copy = message.content.clone();
                         let content = message.content.clone();
@@ -6030,63 +7486,67 @@ impl RouterApp {
                                 .to_string()
                             })
                             .unwrap_or_default();
-                        let expanded = self
-                            .session_expanded
-                            .contains(&format!("msg-{}", message.ts.unwrap_or(0)));
                         let color = role_color(&role);
-                        theme::tile(cx).child(
-                            v_flex()
-                                .w_full()
-                                .gap(px(6.))
-                                .child(
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
-                                        .justify_between()
-                                        .child(
-                                            div()
-                                                .text_size(px(11.5))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(color)
-                                                .child(role_label(&role)),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .items_center()
-                                                .gap(px(4.))
-                                                .child(
-                                                    div()
-                                                        .text_size(px(11.))
-                                                        .text_color(muted)
-                                                        .child(ts),
-                                                )
-                                                .child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "msg-copy-{}",
-                                                        message.ts.unwrap_or(0)
-                                                    )))
-                                                    .ghost()
-                                                    .xsmall()
-                                                    .icon(IconName::Copy)
-                                                    .on_click(cx.listener(move |_, _, _, cx| {
-                                                        cx.write_to_clipboard(
-                                                            gpui::ClipboardItem::new_string(
-                                                                content_for_copy.clone(),
-                                                            ),
-                                                        );
-                                                    })),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .max_h(if expanded { px(2000.) } else { px(160.) })
-                                        .overflow_hidden()
-                                        .text_size(px(12.5))
-                                        .text_color(theme.foreground)
-                                        .child(content),
-                                ),
-                        )
+                        div()
+                            .w_full()
+                            .p(px(14.))
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.background)
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .gap(px(8.))
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .items_center()
+                                            .justify_between()
+                                            .child(
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(color)
+                                                            .child(role_label(&role)),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.5))
+                                                            .text_color(muted)
+                                                            .child(ts),
+                                                    ),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "msg-copy-{}",
+                                                    message.ts.unwrap_or(0)
+                                                )))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Copy)
+                                                .on_click(cx.listener(move |_, _, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        gpui::ClipboardItem::new_string(
+                                                            content_for_copy.clone(),
+                                                        ),
+                                                    );
+                                                })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .text_size(px(13.))
+                                            .line_height(px(20.))
+                                            .text_color(theme.foreground)
+                                            .child(content),
+                                    ),
+                            )
                     })),
             )
     }
@@ -7271,17 +8731,17 @@ impl RouterApp {
                                     .w_full()
                                     .flex_wrap()
                                     .gap(px(8.))
-                                    .child(self.render_app_toggle_chip("amp", "Amp", CustomIcon::Amp, rgb(0xEA580C).into(), cx))
+                                    // .child(self.render_app_toggle_chip("amp", "Amp", CustomIcon::Amp, rgb(0xEA580C).into(), cx))
                                     .child(self.render_app_toggle_chip("claude", "Claude Code", CustomIcon::Claude, rgb(0xD97757).into(), cx))
-                                    .child(self.render_app_toggle_chip("claude-desktop", "Claude Desktop", CustomIcon::Claude, rgb(0xD97757).into(), cx))
+                                    // .child(self.render_app_toggle_chip("claude-desktop", "Claude Desktop", CustomIcon::Claude, rgb(0xD97757).into(), cx))
                                     .child(self.render_app_toggle_chip("codex", "Codex", CustomIcon::OpenAI, rgb(0x10A37F).into(), cx))
                                     .child(self.render_app_toggle_chip("cursor", "Cursor", CustomIcon::Cursor, rgb(0x6366F1).into(), cx))
-                                    .child(self.render_app_toggle_chip("deepseek", "DeepSeek Harness", CustomIcon::DeepSeek, rgb(0x3B82F6).into(), cx))
-                                    .child(self.render_app_toggle_chip("fx", "Fx", CustomIcon::Fx, rgb(0x4B5563).into(), cx))
+                                    // .child(self.render_app_toggle_chip("deepseek", "DeepSeek Harness", CustomIcon::DeepSeek, rgb(0x3B82F6).into(), cx))
+                                    // .child(self.render_app_toggle_chip("fx", "Fx", CustomIcon::Fx, rgb(0x4B5563).into(), cx))
                                     .child(self.render_app_toggle_chip("opencode", "OpenCode", CustomIcon::OpenCode, rgb(0x0284C7).into(), cx))
                                     .child(self.render_app_toggle_chip("grok", "Grok Build", CustomIcon::Grok, rgb(0x8B5CF6).into(), cx))
-                                    .child(self.render_app_toggle_chip("kimi", "Kimi Code", CustomIcon::Kimi, rgb(0x2563EB).into(), cx))
-                                    .child(self.render_app_toggle_chip("ohmypi", "Oh My Pi", CustomIcon::OhMyPi, rgb(0xEC4899).into(), cx))
+                                    // .child(self.render_app_toggle_chip("kimi", "Kimi Code", CustomIcon::Kimi, rgb(0x2563EB).into(), cx))
+                                    // .child(self.render_app_toggle_chip("ohmypi", "Oh My Pi", CustomIcon::OhMyPi, rgb(0xEC4899).into(), cx))
                                     .child(self.render_app_toggle_chip("pi", "Pi", CustomIcon::Pi, rgb(0x3B82F6).into(), cx))
                                     .child(self.render_app_toggle_chip("zcode", "ZCode", CustomIcon::ZCode, rgb(0x10B981).into(), cx))
                                     .child(self.render_app_toggle_chip("workbuddy", "WorkBuddy", CustomIcon::WorkBuddy, rgb(0x06B6D4).into(), cx)),
@@ -8677,9 +10137,269 @@ impl RouterApp {
             )
     }
 
+    fn render_codex_auth_selector(
+        &self,
+        form: &FormDraft,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let auth_status = self.codex_oauth_status.as_ref();
+        let is_authenticated = auth_status.map(|s| s.authenticated).unwrap_or(false);
+        let account_name = auth_status
+            .and_then(|s| s.account.clone())
+            .unwrap_or_else(|| "ChatGPT OAuth 账号".to_string());
+
+        let (current_label, current_sublabel) =
+            if form.codex_auth_mode == "oauth" && is_authenticated {
+                (account_name.clone(), "ChatGPT OAuth 账号 (已认证)")
+            } else {
+                (
+                    "跟随 Codex 登录".to_string(),
+                    "账号会随 Codex CLI 当前登录变化",
+                )
+            };
+
+        let is_open = form.codex_auth_dropdown_open;
+
+        v_flex()
+            .w_full()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.foreground)
+                    .child("登录方式"),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(px(4.))
+                    .child(
+                        // Dropdown Trigger Button
+                        h_flex()
+                            .id("codex-auth-trigger-btn")
+                            .w_full()
+                            .p(px(10.))
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.secondary.opacity(0.35))
+                            .hover(|s| s.bg(theme.secondary.opacity(0.6)))
+                            .cursor_pointer()
+                            .items_center()
+                            .justify_between()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(form) = this.form.as_mut() {
+                                    form.codex_auth_dropdown_open = !form.codex_auth_dropdown_open;
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .bg(theme.secondary.opacity(0.6))
+                                            .child(
+                                                Icon::new(CustomIcon::OpenAI)
+                                                    .size(px(16.))
+                                                    .text_color(rgb(0x10A37F)),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.foreground)
+                                                    .child(current_label),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(current_sublabel),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                Icon::new(if is_open {
+                                    IconName::ChevronUp
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .size(px(16.))
+                                .text_color(theme.muted_foreground),
+                            ),
+                    )
+                    .when(is_open, |this| {
+                        let is_auth = is_authenticated;
+                        let acc = account_name.clone();
+                        let current_mode = form.codex_auth_mode.clone();
+                        let mut follow_item = h_flex()
+                            .id("codex-auth-follow-item")
+                            .w_full()
+                            .p(px(8.))
+                            .rounded(px(4.))
+                            .items_center()
+                            .justify_between()
+                            .hover(|s| s.bg(theme.secondary.opacity(0.4)))
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(form) = this.form.as_mut() {
+                                    form.codex_auth_mode = "follow".to_string();
+                                    form.codex_auth_dropdown_open = false;
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                v_flex()
+                                    .gap(px(2.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child("跟随 Codex 登录"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(theme.muted_foreground)
+                                            .child("账号会随 Codex CLI 当前登录变化"),
+                                    ),
+                            );
+                        if current_mode != "oauth" {
+                            follow_item = follow_item.child(
+                                Icon::new(IconName::Check)
+                                    .size(px(14.))
+                                    .text_color(theme.primary),
+                            );
+                        }
+
+                        this.child(
+                            v_flex()
+                                .w_full()
+                                .p(px(4.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.background)
+                                .gap(px(2.))
+                                .shadow_sm()
+                                .child(
+                                    // Top Action: + 添加或管理 ChatGPT 账号...
+                                    h_flex()
+                                        .id("codex-auth-add-btn")
+                                        .w_full()
+                                        .p(px(8.))
+                                        .rounded(px(4.))
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .hover(|s| s.bg(theme.primary.opacity(0.12)))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            if let Some(form) = this.form.as_mut() {
+                                                form.codex_auth_dropdown_open = false;
+                                            }
+                                            this.start_oauth_login(session::CODEX_PROVIDER, window, cx);
+                                        }))
+                                        .child(
+                                            Icon::new(IconName::Plus)
+                                                .size(px(14.))
+                                                .text_color(theme.primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.primary)
+                                                .child("+ 添加或管理 ChatGPT 账号..."),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(1.))
+                                        .bg(theme.border.opacity(0.5))
+                                        .my(px(2.)),
+                                )
+                                .child(follow_item)
+                                .when(is_auth, |this| {
+                                    let mut oauth_item = h_flex()
+                                        .id("codex-auth-oauth-item")
+                                        .w_full()
+                                        .p(px(8.))
+                                        .rounded(px(4.))
+                                        .items_center()
+                                        .justify_between()
+                                        .hover(|s| s.bg(theme.secondary.opacity(0.4)))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            if let Some(form) = this.form.as_mut() {
+                                                form.codex_auth_mode = "oauth".to_string();
+                                                form.codex_auth_dropdown_open = false;
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(
+                                            v_flex()
+                                                .gap(px(2.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(theme.foreground)
+                                                        .child(acc),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(11.))
+                                                        .text_color(theme.muted_foreground)
+                                                        .child("ChatGPT OAuth 账号 (已认证)"),
+                                                ),
+                                        );
+                                    if current_mode == "oauth" {
+                                        oauth_item = oauth_item.child(
+                                            Icon::new(IconName::Check)
+                                                .size(px(14.))
+                                                .text_color(theme.primary),
+                                        );
+                                    }
+                                    this.child(oauth_item)
+                                })
+                                .when(!is_auth, |this| {
+                                    this.child(
+                                        div()
+                                            .p(px(8.))
+                                            .text_size(px(11.))
+                                            .text_color(theme.muted_foreground)
+                                            .child("暂无已登录的 ChatGPT 账号 (点击上方「+ 添加或管理」进行登录)"),
+                                    )
+                                }),
+                        )
+                    }),
+            )
+    }
+
     fn render_form_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(form) = self.form.as_ref() else {
             return div().into_any_element();
+        };
+
+        let codex_auth_selector = if form.is_official && form.app == AppKind::Codex {
+            Some(self.render_codex_auth_selector(form, cx).into_any_element())
+        } else {
+            None
         };
 
         let app_name = form.app.display_name();
@@ -8694,7 +10414,7 @@ impl RouterApp {
         } else {
             "从预设模版快速创建或手动填写第三方 API 服务商"
         };
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
 
         v_flex()
             .w_full()
@@ -8822,7 +10542,35 @@ impl RouterApp {
                         ),
                 ),
             )
-            .child(
+            .when(form.is_official, |this| {
+                this.child(
+                    theme::tile(cx).child(
+                        v_flex()
+                            .w_full()
+                            .gap(px(14.))
+                            .child(theme::tile_label("BASIC SETTINGS / 基础配置", cx))
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child(form_field("供应商名称", Input::new(&form.name))),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .child(form_field("备注 (可选)", Input::new(&form.notes))),
+                                    ),
+                            )
+                            .child(form_field("官网链接", Input::new(&form.website_url)))
+                            .when_some(codex_auth_selector, |this, sel| this.child(sel)),
+                    ),
+                )
+            })
+            .when(!form.is_official, |this| {
+                this.child(
                 // Basic & API Credentials Card
                 theme::tile(cx).child(
                     v_flex()
@@ -8851,7 +10599,7 @@ impl RouterApp {
                             "API Key / 凭据",
                             Input::new(&form.api_key).mask_toggle(),
                         ))
-                                                .child(
+                        .child(
                             v_flex()
                                 .gap(px(6.))
                                 .child(
@@ -9834,7 +11582,7 @@ impl RouterApp {
                                 .child("💡 提示：配置模型映射后，在客户端下拉菜单或设置中可直接切换已配置的模型。"),
                         ),
                 ),
-            )})
+            )})})
             .child(
                 // Bottom Action Buttons
                 h_flex()
@@ -9906,6 +11654,8 @@ impl Render for RouterApp {
             }
         };
 
+        let is_sessions_route = self.form.is_none() && self.route == Route::Sessions;
+
         div()
             .size_full()
             .relative()
@@ -9952,15 +11702,23 @@ impl Render for RouterApp {
                                     .bg(theme::inset_bg(dark))
                                     .shadow_sm()
                                     .when(!self.sidebar_open, |this| this.pt(px(28.)))
-                                    .child(
+                                    .child(if is_sessions_route {
+                                        div()
+                                            .id("main-sessions-container")
+                                            .size_full()
+                                            .overflow_hidden()
+                                            .child(page)
+                                            .into_any_element()
+                                    } else {
                                         div()
                                             .id("main-scroll")
                                             .flex_1()
                                             .min_h_0()
                                             .p(px(20.))
                                             .overflow_y_scrollbar()
-                                            .child(page),
-                                    ),
+                                            .child(page)
+                                            .into_any_element()
+                                    }),
                             ),
                     )
                     .child(self.render_chrome(window, cx)),
@@ -10083,7 +11841,8 @@ impl FormDraft {
     ) -> Self {
         let presets = presets_for_app(app);
 
-        let (name, api_key, base_url, model, is_official, catalog_rows_data): (
+        let (name, website_url, api_key, base_url, model, is_official, catalog_rows_data): (
+            String,
             String,
             String,
             String,
@@ -10099,6 +11858,7 @@ impl FormDraft {
         ) = match &form {
             ProviderForm::Codex(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10118,6 +11878,7 @@ impl FormDraft {
             ),
             ProviderForm::Claude(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10137,6 +11898,7 @@ impl FormDraft {
             ),
             ProviderForm::Grok(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10156,6 +11918,7 @@ impl FormDraft {
             ),
             ProviderForm::OpenCode(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10175,6 +11938,7 @@ impl FormDraft {
             ),
             ProviderForm::Pi(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10194,6 +11958,7 @@ impl FormDraft {
             ),
             ProviderForm::Cursor(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10213,6 +11978,7 @@ impl FormDraft {
             ),
             ProviderForm::ZCode(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model.clone(),
@@ -10232,12 +11998,28 @@ impl FormDraft {
             ),
             ProviderForm::WorkBuddy(f) => (
                 f.name.clone(),
+                f.website_url.clone(),
                 f.api_key.clone(),
                 f.base_url.clone(),
                 f.model_id.clone(),
                 f.kind.is_official(),
                 Vec::new(),
             ),
+        };
+
+        let website_url = if website_url.trim().is_empty() && is_official {
+            match app {
+                AppKind::Codex => "https://chatgpt.com/codex".to_string(),
+                AppKind::Claude => "https://anthropic.com".to_string(),
+                AppKind::Grok => "https://x.ai".to_string(),
+                AppKind::OpenCode => "https://opencode.ai".to_string(),
+                AppKind::Pi => "https://pi.dev".to_string(),
+                AppKind::Cursor => "https://cursor.com".to_string(),
+                AppKind::ZCode => "https://zcode.z.ai".to_string(),
+                AppKind::WorkBuddy => "https://workbuddy.cn".to_string(),
+            }
+        } else {
+            website_url
         };
 
         let protocol = match &form {
@@ -10487,7 +12269,11 @@ impl FormDraft {
             app,
             editing_id,
             is_official,
-            name: field(window, cx, &name, "输入服务商名称，如 PackyCode"),
+            name: field(window, cx, &name, "输入服务商名称，如 OpenAI Official"),
+            notes: field(window, cx, "", "例如：公司专用账号"),
+            website_url: field(window, cx, &website_url, "https://chatgpt.com/codex"),
+            codex_auth_mode: "follow".to_string(),
+            codex_auth_dropdown_open: false,
             api_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("sk-...")
@@ -10602,6 +12388,7 @@ impl FormDraft {
 
     fn to_provider_form(&self, cx: &App) -> ProviderForm {
         let name = self.name.read(cx).value().to_string();
+        let website_url = self.website_url.read(cx).value().to_string();
         let api_key = self.api_key.read(cx).value().to_string();
         let base_url = self.base_url.read(cx).value().to_string();
         let model = self.model.read(cx).value().to_string();
@@ -10630,7 +12417,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::Codex(CodexForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         CodexKind::Official
                     } else {
@@ -10651,7 +12438,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::Claude(ClaudeForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         ClaudeKind::Official
                     } else {
@@ -10672,7 +12459,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::Grok(GrokForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         GrokKind::Official
                     } else {
@@ -10693,7 +12480,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::OpenCode(OpenCodeForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         OpenCodeKind::Official
                     } else {
@@ -10715,7 +12502,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::Pi(PiForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         PiKind::Official
                     } else {
@@ -10737,7 +12524,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::Cursor(CursorForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         CursorKind::Official
                     } else {
@@ -10759,7 +12546,7 @@ impl FormDraft {
                     .collect();
                 ProviderForm::ZCode(ZCodeForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         ZCodeKind::Official
                     } else {
@@ -10812,7 +12599,7 @@ impl FormDraft {
 
                 ProviderForm::WorkBuddy(WorkBuddyForm {
                     name,
-                    website_url: String::new(),
+                    website_url,
                     kind: if self.is_official {
                         WorkBuddyKind::Official
                     } else {
@@ -10992,31 +12779,286 @@ fn usage_summary_text(result: &domain::UsageQueryResult) -> String {
     }
 }
 
-/// 服务商卡片徽标文本
-fn usage_badge_text(result: &domain::UsageQueryResult) -> String {
-    if !result.success {
-        return "用量不可用".to_string();
-    }
-    match result.data.first() {
-        Some(item) => {
-            let unit = item.unit.clone().unwrap_or_else(|| "USD".into());
-            match (item.remaining, item.total) {
-                (Some(remaining), Some(total)) => {
-                    format!("剩余 {remaining:.2}/{total:.2} {unit}")
-                }
-                (Some(remaining), None) => format!("剩余 {remaining:.2} {unit}"),
-                _ => item
-                    .plan_name
-                    .clone()
-                    .unwrap_or_else(|| "已启用".to_string()),
-            }
-        }
-        None => "已启用".to_string(),
-    }
-}
-
 fn notify_info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::info(message), cx);
+}
+
+/// 检查更新结果对话框: 列出有更新的受管技能
+fn open_skills_updates_dialog(
+    window: &mut Window,
+    cx: &mut App,
+    updates: Vec<session::skills::hub::SkillUpdateInfo>,
+    on_update: impl Fn(String, &mut Window, &mut App) + Clone + 'static,
+) {
+    let theme = cx.theme().clone();
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let theme = theme.clone();
+        let on_update = on_update.clone();
+        let rows: Vec<_> = updates
+            .iter()
+            .map(|info| {
+                let theme = theme.clone();
+                let on_update = on_update.clone();
+                let dir_name = info.dir_name.clone();
+                let btn_id = SharedString::from(format!("skill-update-{}", info.dir_name));
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .p(px(10.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .child(info.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("{} · {}", info.repo, info.dir_name)),
+                            ),
+                    )
+                    .child(
+                        Button::new(btn_id)
+                            .primary()
+                            .xsmall()
+                            .label(t!("skills.update_action").to_string())
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                on_update(dir_name.clone(), window, cx);
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        dialog
+            .width(px(520.))
+            .title(t!("skills.updates_title", count = updates.len()).to_string())
+            .child(
+                v_flex()
+                    .id("skills-updates-list")
+                    .w_full()
+                    .max_h(px(400.))
+                    .overflow_y_scroll()
+                    .gap(px(8.))
+                    .children(rows),
+            )
+    });
+}
+
+/// 备份列表中的一行
+fn render_backup_row(
+    entry: &session::skills::hub::SkillBackupEntry,
+    view: gpui::WeakEntity<RouterApp>,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let time = chrono::DateTime::from_timestamp_millis(entry.created_at)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
+    let title = entry.name.clone().unwrap_or_else(|| entry.dir_name.clone());
+    let v_restore = view.clone();
+    let entry_restore = entry.clone();
+    let v_delete = view.clone();
+    let entry_delete = entry.clone();
+    let restore_id = SharedString::from(format!("backup-restore-{}", entry.backup_id));
+    let delete_id = SharedString::from(format!("backup-delete-{}", entry.backup_id));
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            v_flex()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.foreground)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{time} · {} · {}",
+                            t!("skills.backup_origin", origin = entry.origin.as_str()).to_string(),
+                            entry.source_path
+                        )),
+                ),
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    Button::new(restore_id)
+                        .outline()
+                        .xsmall()
+                        .label(t!("skills.backup_restore").to_string())
+                        .on_click(move |_, window, cx| {
+                            let _ = v_restore.update(cx, |this, cx| {
+                                this.restore_skill_backup(entry_restore.clone(), window, cx)
+                            });
+                        }),
+                )
+                .child(
+                    Button::new(delete_id)
+                        .ghost()
+                        .xsmall()
+                        .label(t!("skills.backup_delete").to_string())
+                        .on_click(move |_, window, cx| {
+                            let _ = v_delete.update(cx, |this, cx| {
+                                this.confirm_delete_backup(
+                                    entry_delete.backup_id.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }),
+                ),
+        )
+}
+
+/// 导入已有对话框中的一行
+fn render_import_row(
+    item: &SkillsUnmanaged,
+    selected: bool,
+    view: gpui::WeakEntity<RouterApp>,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let title = item.name.clone().unwrap_or_else(|| item.dir_name.clone());
+    let subtitle = format!(
+        "{} · {}",
+        item.app,
+        item.description.clone().unwrap_or_default()
+    );
+    let dir_name = item.dir_name.clone();
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap(px(10.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            Checkbox::new(SharedString::from(format!(
+                "import-check-{}",
+                item.dir_name
+            )))
+            .checked(selected)
+            .on_click(move |checked: &bool, _window, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    if *checked {
+                        this.skills_import_selected.insert(dir_name.clone());
+                    } else {
+                        this.skills_import_selected.remove(&dir_name);
+                    }
+                    cx.notify();
+                });
+            }),
+        )
+        .child(
+            v_flex()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.foreground)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(subtitle),
+                ),
+        )
+}
+
+/// 仓库管理对话框中的一行
+fn render_repo_row(
+    repo: &session::skills::hub::SkillRepo,
+    view: gpui::WeakEntity<RouterApp>,
+    cx: &App,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let label = format!("{} ({})", repo.key(), repo.branch);
+    let v_toggle = view.clone();
+    let (owner_t, name_t) = (repo.owner.clone(), repo.name.clone());
+    let enabled = repo.enabled;
+    let v_remove = view.clone();
+    let (owner_r, name_r) = (repo.owner.clone(), repo.name.clone());
+    let remove_id = SharedString::from(format!("repo-remove-{}-{}", repo.owner, repo.name));
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap(px(10.))
+        .p(px(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .child(
+            Checkbox::new(SharedString::from(format!(
+                "repo-enable-{}-{}",
+                repo.owner, repo.name
+            )))
+            .checked(enabled)
+            .on_click(move |checked: &bool, _window, cx| {
+                let v = v_toggle.clone();
+                let (o, n) = (owner_t.clone(), name_t.clone());
+                let checked = *checked;
+                let _ = v.update(cx, |this, cx| {
+                    this.toggle_skill_repo_enabled(o, n, checked, cx);
+                });
+            }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(13.))
+                .text_color(theme.foreground)
+                .truncate()
+                .child(label),
+        )
+        .child(
+            Button::new(remove_id)
+                .ghost()
+                .xsmall()
+                .label(t!("skills.repo_remove").to_string())
+                .on_click(move |_, _window, cx| {
+                    let v = v_remove.clone();
+                    let (o, n) = (owner_r.clone(), name_r.clone());
+                    let _ = v.update(cx, |this, cx| this.remove_skill_repo(o, n, cx));
+                }),
+        )
 }
 
 fn empty_state(app_name: &str, cx: &App) -> impl IntoElement {

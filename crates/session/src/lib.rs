@@ -1157,6 +1157,20 @@ impl Workspace {
         skills::remove_skill(path)
     }
 
+    /// Skills 中心库目录(~/.router-switch/skills)
+    pub fn skills_hub_dir(&self) -> PathBuf {
+        store::default_data_dir()
+            .unwrap_or_else(|_| PathBuf::from(".router-switch"))
+            .join("skills")
+    }
+
+    /// Skills 备份目录(~/.router-switch/skills-backup)
+    pub fn skills_backup_dir(&self) -> PathBuf {
+        store::default_data_dir()
+            .unwrap_or_else(|_| PathBuf::from(".router-switch"))
+            .join("skills-backup")
+    }
+
     /// 会话根目录: (codex_roots, claude_root)
     pub fn session_roots(&self) -> (Vec<PathBuf>, PathBuf) {
         (

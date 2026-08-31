@@ -639,7 +639,7 @@ mod tests {
     }
 
     fn routed_gateway(base_url: String) -> CompatGateway {
-        let mut gateway = CompatGateway::new();
+        let gateway = CompatGateway::new();
         gateway.registry().set_target(CompatTarget {
             app: AppKind::Claude,
             base_url,

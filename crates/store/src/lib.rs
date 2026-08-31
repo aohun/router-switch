@@ -140,7 +140,9 @@ fn default_main_apps() -> Vec<String> {
         "claude".into(),
         "codex".into(),
         "cursor".into(),
+        "opencode".into(),
         "grok".into(),
+        "pi".into(),
         "zcode".into(),
         "workbuddy".into(),
     ]
