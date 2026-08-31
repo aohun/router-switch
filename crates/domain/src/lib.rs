@@ -13,6 +13,7 @@ mod error;
 mod grok;
 mod opencode;
 mod pi;
+mod prompt;
 mod protocol;
 mod provider;
 mod updater;
@@ -74,6 +75,7 @@ pub use pi::{
     parse_pi_form, PiForm, PiKind, PiModelMapping, PiPreset, PiSettings, DEFAULT_PI_API_TYPE,
     DEFAULT_PI_MODEL, OFFICIAL_PI_ID, PI_PRESETS,
 };
+pub use prompt::{prompt_display_path, prompt_file_path, prompt_filename, Prompt};
 pub use protocol::{
     normalize_thinking_effort, RequestProtocol, DEFAULT_THINKING_EFFORT, THINKING_EFFORTS,
 };

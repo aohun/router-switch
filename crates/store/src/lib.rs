@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use domain::{
     official_claude_provider, official_codex_provider, official_cursor_provider,
     official_grok_provider, official_opencode_provider, official_pi_provider,
-    official_workbuddy_provider, official_zcode_provider, AppKind, Provider, OFFICIAL_CLAUDE_ID,
-    OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
-    OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
+    official_workbuddy_provider, official_zcode_provider, AppKind, Prompt, Provider,
+    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
+    OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -226,6 +226,17 @@ impl Store {
                 config_json TEXT NOT NULL,
                 result_json TEXT,
                 fetched_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS prompts (
+                id TEXT NOT NULL,
+                app TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                description TEXT,
+                enabled BOOLEAN NOT NULL DEFAULT 0,
+                created_at INTEGER,
+                updated_at INTEGER,
+                PRIMARY KEY (id, app)
             );
             ",
         )?;
@@ -518,6 +529,112 @@ impl Store {
         Ok(out)
     }
 
+    /// 获取指定应用的所有提示词
+    pub fn list_prompts(&self, app: AppKind) -> Result<Vec<Prompt>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, content, description, enabled, created_at, updated_at
+             FROM prompts WHERE app = ?1
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![app.as_str()], |row| {
+            Ok(Prompt {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                content: row.get(2)?,
+                description: row.get(3)?,
+                enabled: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// 获取指定提示词
+    pub fn get_prompt(&self, app: AppKind, id: &str) -> Result<Option<Prompt>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT id, name, content, description, enabled, created_at, updated_at
+                 FROM prompts WHERE app = ?1 AND id = ?2",
+                params![app.as_str(), id],
+                |row| {
+                    Ok(Prompt {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        content: row.get(2)?,
+                        description: row.get(3)?,
+                        enabled: row.get(4)?,
+                        created_at: row.get(5)?,
+                        updated_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// 保存或更新提示词
+    pub fn upsert_prompt(&self, app: AppKind, prompt: &Prompt) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO prompts (id, app, name, content, description, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id, app) DO UPDATE SET
+                name = excluded.name,
+                content = excluded.content,
+                description = excluded.description,
+                enabled = excluded.enabled,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at",
+            params![
+                prompt.id,
+                app.as_str(),
+                prompt.name,
+                prompt.content,
+                prompt.description,
+                prompt.enabled,
+                prompt.created_at,
+                prompt.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 删除指定提示词
+    pub fn delete_prompt(&self, app: AppKind, id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM prompts WHERE app = ?1 AND id = ?2",
+            params![app.as_str(), id],
+        )?;
+        Ok(())
+    }
+
+    /// 切换指定提示词的启用状态
+    pub fn set_prompt_enabled(
+        &self,
+        app: AppKind,
+        id: &str,
+        enabled: bool,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE prompts SET enabled = ?3, updated_at = ?4 WHERE app = ?1 AND id = ?2",
+            params![app.as_str(), id, enabled, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// 禁用指定应用的所有提示词
+    pub fn disable_all_prompts(&self, app: AppKind) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE prompts SET enabled = 0, updated_at = ?2 WHERE app = ?1",
+            params![app.as_str(), now_secs()],
+        )?;
+        Ok(())
+    }
+
     fn is_current(&self, id: &str) -> Result<bool, StoreError> {
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM current_providers WHERE provider_id = ?1",
@@ -708,5 +825,48 @@ mod tests {
         assert_eq!(store.list_providers(AppKind::Codex).unwrap().len(), 2);
         store.delete_provider(&provider.id).unwrap();
         assert_eq!(store.list_providers(AppKind::Codex).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prompt_crud_operations() {
+        let (_dir, store) = temp_store();
+        assert!(store.list_prompts(AppKind::Codex).unwrap().is_empty());
+
+        let p1 = Prompt {
+            id: "p1".into(),
+            name: "Default Codex".into(),
+            content: "You are a helpful coding assistant.".into(),
+            description: Some("Main prompt".into()),
+            enabled: true,
+            created_at: Some(100),
+            updated_at: Some(100),
+        };
+        store.upsert_prompt(AppKind::Codex, &p1).unwrap();
+
+        let list = store.list_prompts(AppKind::Codex).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "p1");
+        assert_eq!(list[0].name, "Default Codex");
+        assert!(list[0].enabled);
+
+        // Fetch single
+        let fetched = store.get_prompt(AppKind::Codex, "p1").unwrap().unwrap();
+        assert_eq!(fetched.content, "You are a helpful coding assistant.");
+
+        // Disable
+        store
+            .set_prompt_enabled(AppKind::Codex, "p1", false)
+            .unwrap();
+        assert!(
+            !store
+                .get_prompt(AppKind::Codex, "p1")
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+
+        // Delete
+        store.delete_prompt(AppKind::Codex, "p1").unwrap();
+        assert!(store.list_prompts(AppKind::Codex).unwrap().is_empty());
     }
 }

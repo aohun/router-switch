@@ -1,5 +1,5 @@
 app:
-  name: "AICWITCH"
+  name: "Router Switch"
   version: "Version v0.1.0"
   subtitle: "Next-Generation AI Gateway Desktop Tool"
   started: "Application started and workspace loaded"
@@ -7,6 +7,7 @@ app:
 nav:
   dashboard: "Dashboard"
   notifications: "Notifications"
+  prompts: "Prompts"
   sessions: "Sessions"
   skills: "Skills"
   settings: "Preferences"
@@ -181,7 +182,6 @@ about:
   empty_inspect_tip: "Click button below to scan installed CLI tools, version statuses, and conflicts."
   inspecting_tip: "Inspecting local CLI environments and querying registry..."
   start_inspect: "Inspect Environment"
-  preview_dialog: "Preview Update Alert"
 
 update:
   dialog_title: "A new version of %{app} is available!"
@@ -400,3 +400,30 @@ skills:
   repo_exists: "This repo already exists"
   repo_hint: "Check to enable a repo; add GitHub repos to discover and install skills."
   cancel: "Cancel"
+
+prompts:
+  title: "%{app} Prompts"
+  manage: "Prompts"
+  count: "%{count} prompts in total"
+  enabled_name: "Active: %{name}"
+  none_enabled: "No prompt active"
+  target_file: "Target file: %{path}"
+  empty: "No Prompts"
+  empty_description: "Click the button in the upper right corner to add or import prompts"
+  search_placeholder: "Search prompt name, description or content..."
+  add: "Add Prompt"
+  edit: "Edit Prompt"
+  delete: "Delete Prompt"
+  name: "Prompt Name"
+  name_placeholder: "e.g. Project Default Prompt"
+  description: "Description"
+  description_placeholder: "e.g. For code review and quality checks"
+  content: "Prompt Content (Markdown)"
+  content_placeholder: "Enter prompt content here..."
+  import_from_file: "Import from File"
+  import_success: "Prompt imported successfully"
+  import_no_file: "No existing prompt configuration file found or file is empty"
+  cannot_delete_enabled: "Cannot delete active prompt, please disable it first"
+  confirm_delete_title: "Delete Prompt"
+  confirm_delete_message: "Are you sure you want to delete prompt \"%{name}\"? This action cannot be undone."
+

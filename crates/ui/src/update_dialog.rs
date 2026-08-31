@@ -47,7 +47,7 @@ pub fn open_app_update_dialog<FAuto, FSkip, FInstall>(
     FSkip: Fn(String, &mut Window, &mut App) + 'static,
     FInstall: Fn(String, &mut Window, &mut App) + 'static,
 {
-    let app_name = "AICWITCH";
+    let app_name = "Router Switch";
     let theme = cx.theme().clone();
 
     let release_clone = release.clone();

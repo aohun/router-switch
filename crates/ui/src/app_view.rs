@@ -2,15 +2,14 @@ use domain::{
     check_app_update, extract_claude_base_url, extract_claude_model, extract_codex_base_url,
     extract_codex_model, extract_cursor_base_url, extract_cursor_model, extract_grok_base_url,
     extract_grok_model, extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url,
-    extract_zcode_model, parse_clipboard_provider_info, sample_app_release, AppKind, AppRelease,
-    ClaudeForm, ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind,
-    CodexModelMapping, CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind,
-    GrokModelMapping, OpenCodeForm, OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind,
-    PiModelMapping, Provider, ProviderForm, ProviderSettings, RequestProtocol,
-    ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping,
-    CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
-    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
-    DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
+    extract_zcode_model, parse_clipboard_provider_info, AppKind, AppRelease, ClaudeForm,
+    ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping,
+    CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
+    OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm,
+    ProviderSettings, RequestProtocol, ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind,
+    ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL,
+    DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL,
+    DEFAULT_PI_MODEL, DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
     DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS,
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
@@ -710,6 +709,7 @@ pub enum Route {
     Dashboard,
     Skills,
     Sessions,
+    Prompts,
     Codex,
     Claude,
     Grok,
@@ -944,6 +944,10 @@ pub struct RouterApp {
     sessions_batch_mode: bool,
     sessions_search_open: bool,
     sessions_filter_menu_open: bool,
+    prompts_app: AppKind,
+    prompts_list: Vec<domain::Prompt>,
+    prompts_loading: bool,
+    prompts_search: Entity<InputState>,
     skills_list: Vec<session::skills::SkillEntry>,
     skills_loading: bool,
     skills_search: Entity<InputState>,
@@ -1187,6 +1191,9 @@ impl RouterApp {
         let usage_code = cx.new(|cx| InputState::new(window, cx).code_editor("javascript"));
         let sessions_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("sessions.search").to_string()));
+        let prompts_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("prompts.search_placeholder").to_string())
+        });
         let skills_search =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("skills.search").to_string()));
         let skills_discover_search = cx.new(|cx| {
@@ -1243,6 +1250,10 @@ impl RouterApp {
             sessions_batch_mode: false,
             sessions_search_open: true,
             sessions_filter_menu_open: false,
+            prompts_app: AppKind::Codex,
+            prompts_list: Vec::new(),
+            prompts_loading: false,
+            prompts_search,
             skills_list: Vec::new(),
             skills_loading: false,
             skills_search: skills_search,
@@ -1952,6 +1963,9 @@ impl RouterApp {
         if route == Route::Sessions && self.sessions_list.is_empty() && !self.sessions_loading {
             self.refresh_sessions(cx);
         }
+        if route == Route::Prompts && self.prompts_list.is_empty() && !self.prompts_loading {
+            self.refresh_prompts(cx);
+        }
         if route == Route::Skills && self.skills_list.is_empty() && !self.skills_loading {
             self.refresh_skills(cx);
         }
@@ -1996,6 +2010,9 @@ impl RouterApp {
         });
         self.search_input.update(cx, |this, cx| {
             this.set_placeholder(t!("provider.search_placeholder").to_string(), window, cx);
+        });
+        self.prompts_search.update(cx, |this, cx| {
+            this.set_placeholder(t!("prompts.search_placeholder").to_string(), window, cx);
         });
         self.settings_search_input.update(cx, |this, cx| {
             this.set_placeholder(t!("settings.search_placeholder").to_string(), window, cx);
@@ -2315,11 +2332,6 @@ impl RouterApp {
                 }
             })
             .detach();
-    }
-
-    pub fn preview_update_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sample = sample_app_release(env!("CARGO_PKG_VERSION"));
-        self.show_update_dialog(sample, window, cx);
     }
 
     fn refresh_env(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3593,10 +3605,20 @@ impl RouterApp {
             .child(div().flex_1())
             .child(self.nav_item(
                 "nav-skills",
-                CustomIcon::Kimi,
+                IconName::Asterisk,
                 Some(rgb(0x6366F1).into()), // Indigo
                 t!("nav.skills").to_string(),
                 Route::Skills,
+                None,
+                false,
+                cx,
+            ))
+            .child(self.nav_item(
+                "nav-prompts",
+                CustomIcon::BookOpen,
+                Some(rgb(0x10B981).into()), // Emerald
+                t!("nav.prompts").to_string(),
+                Route::Prompts,
                 None,
                 false,
                 cx,
@@ -4670,13 +4692,53 @@ impl RouterApp {
                             .child(Input::new(&self.search_input).cleanable(true)),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("{}-add-top", app.as_str())))
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label(t!("provider.new").to_string())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_create_form(app, window, cx);
-                            })),
+                        h_flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "{}-prompts-top",
+                                    app.as_str()
+                                )))
+                                .outline()
+                                .icon(CustomIcon::BookOpen)
+                                .tooltip(t!("prompts.manage").to_string())
+                                .on_click(cx.listener(
+                                    move |this, _, _window, cx| {
+                                        this.prompts_app = app;
+                                        this.set_route(Route::Prompts, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "{}-sessions-top",
+                                    app.as_str()
+                                )))
+                                .outline()
+                                .icon(CustomIcon::History)
+                                .tooltip(t!("nav.sessions").to_string())
+                                .on_click(cx.listener(
+                                    move |this, _, _window, cx| {
+                                        this.sessions_filter = None;
+                                        this.set_route(Route::Sessions, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "{}-add-top",
+                                    app.as_str()
+                                )))
+                                .primary()
+                                .icon(IconName::Plus)
+                                .label(t!("provider.new").to_string())
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.open_create_form(app, window, cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
             .child(if filtered.is_empty() {
@@ -7551,6 +7613,861 @@ impl RouterApp {
             )
     }
 
+    fn refresh_prompts(&mut self, cx: &mut Context<Self>) {
+        self.prompts_loading = true;
+        let app = self.prompts_app;
+        let _ = self.workspace.import_prompt_from_file_on_first_launch(app);
+        match self.workspace.get_prompts(app) {
+            Ok(list) => {
+                self.prompts_list = list;
+            }
+            Err(e) => {
+                eprintln!("[router-switch] 加载提示词失败: {e}");
+            }
+        }
+        self.prompts_loading = false;
+        cx.notify();
+    }
+
+    fn switch_prompts_app(&mut self, app: AppKind, cx: &mut Context<Self>) {
+        self.prompts_app = app;
+        self.refresh_prompts(cx);
+    }
+
+    fn toggle_prompt_enabled(
+        &mut self,
+        app: AppKind,
+        id: &str,
+        current_enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let res = if current_enabled {
+            self.workspace.disable_prompt(app, id)
+        } else {
+            self.workspace.enable_prompt(app, id)
+        };
+        match res {
+            Ok(()) => {
+                self.refresh_prompts(cx);
+                if !current_enabled {
+                    notify_success("已启用提示词并同步至本地配置文件", window, cx);
+                } else {
+                    notify_info("已停用提示词", window, cx);
+                }
+            }
+            Err(e) => {
+                notify_error(format!("切换提示词状态失败: {e}"), window, cx);
+            }
+        }
+    }
+
+    fn delete_prompt_with_confirm(
+        &mut self,
+        app: AppKind,
+        prompt: &domain::Prompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if prompt.enabled {
+            notify_error(t!("prompts.cannot_delete_enabled").to_string(), window, cx);
+            return;
+        }
+        let view = cx.entity().downgrade();
+        let prompt_id = prompt.id.clone();
+        let prompt_name = prompt.name.clone();
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let prompt_id = prompt_id.clone();
+            let prompt_name = prompt_name.clone();
+
+            dialog
+                .confirm()
+                .title(t!("prompts.confirm_delete_title").to_string())
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(
+                            t!(
+                                "prompts.confirm_delete_message",
+                                name = prompt_name.as_str()
+                            )
+                            .to_string(),
+                        ),
+                )
+                .on_ok(move |_, window, cx| {
+                    let prompt_id = prompt_id.clone();
+                    if let Some(app_view) = view.upgrade() {
+                        app_view.update(cx, |this, cx| {
+                            if let Err(e) = this.workspace.delete_prompt(app, &prompt_id) {
+                                notify_error(format!("删除失败: {e}"), window, cx);
+                            } else {
+                                notify_success("提示词已删除", window, cx);
+                                this.refresh_prompts(cx);
+                            }
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
+    fn import_prompt_from_live(
+        &mut self,
+        app: AppKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.import_prompt_from_file(app) {
+            Ok(p) => {
+                notify_success(
+                    format!("{}: {}", t!("prompts.import_success"), p.name),
+                    window,
+                    cx,
+                );
+                self.refresh_prompts(cx);
+            }
+            Err(e) => {
+                notify_error(format!("从文件导入失败: {e}"), window, cx);
+            }
+        }
+    }
+
+    fn open_create_prompt(&mut self, app: AppKind, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("prompts.name_placeholder").to_string())
+        });
+        let desc_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("prompts.description_placeholder").to_string())
+        });
+        let placeholder_content = format!(
+            "# {}\n\n{}",
+            domain::prompt_filename(app),
+            t!("prompts.content_placeholder")
+        );
+        let content_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor("markdown")
+                .placeholder(placeholder_content)
+        });
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let name_input = name_input.clone();
+            let desc_input = desc_input.clone();
+            let content_input = content_input.clone();
+            let border_color = cx.theme().border;
+
+            dialog
+                .width(px(680.))
+                .title(t!("prompts.add").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(14.))
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.name").to_string()),
+                                )
+                                .child(Input::new(&name_input).cleanable(true)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.description").to_string()),
+                                )
+                                .child(Input::new(&desc_input).cleanable(true)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.content").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(240.))
+                                        .w_full()
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(border_color)
+                                        .p(px(8.))
+                                        .overflow_y_scrollbar()
+                                        .child(Input::new(&content_input)),
+                                ),
+                        ),
+                )
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    let view = view.clone();
+                    let name_input = name_input.clone();
+                    let desc_input = desc_input.clone();
+                    let content_input = content_input.clone();
+
+                    vec![h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("cancel-prompt")
+                                .label(t!("common.cancel").to_string())
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("save-prompt")
+                                .primary()
+                                .label(t!("common.save").to_string())
+                                .on_click(move |_, window, cx| {
+                                    let name = name_input.read(cx).value().trim().to_string();
+                                    if name.is_empty() {
+                                        notify_error("请输入提示词名称", window, cx);
+                                        return;
+                                    }
+                                    let description = {
+                                        let d = desc_input.read(cx).value().trim().to_string();
+                                        if d.is_empty() {
+                                            None
+                                        } else {
+                                            Some(d)
+                                        }
+                                    };
+                                    let content = content_input.read(cx).value().to_string();
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                        as i64;
+                                    let id = format!("prompt-{now}");
+                                    let prompt = domain::Prompt {
+                                        id: id.clone(),
+                                        name,
+                                        content,
+                                        description,
+                                        enabled: false,
+                                        created_at: Some(now),
+                                        updated_at: Some(now),
+                                    };
+                                    if let Some(app_view) = view.upgrade() {
+                                        app_view.update(cx, |this, cx| {
+                                            if let Err(e) =
+                                                this.workspace.save_prompt(app, &id, prompt)
+                                            {
+                                                notify_error(format!("保存失败: {e}"), window, cx);
+                                            } else {
+                                                notify_success("提示词已保存", window, cx);
+                                                this.refresh_prompts(cx);
+                                                window.close_dialog(cx);
+                                            }
+                                        });
+                                    }
+                                }),
+                        )
+                        .into_any_element()]
+                })
+        });
+    }
+
+    fn open_edit_prompt(
+        &mut self,
+        app: AppKind,
+        prompt: &domain::Prompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let prompt_id = prompt.id.clone();
+        let is_enabled = prompt.enabled;
+        let created_at = prompt.created_at;
+
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("prompts.name_placeholder").to_string())
+                .default_value(prompt.name.clone())
+        });
+        let desc_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("prompts.description_placeholder").to_string())
+                .default_value(prompt.description.clone().unwrap_or_default())
+        });
+        let content_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .code_editor("markdown")
+                .default_value(prompt.content.clone())
+        });
+
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let name_input = name_input.clone();
+            let desc_input = desc_input.clone();
+            let content_input = content_input.clone();
+            let prompt_id = prompt_id.clone();
+            let border_color = cx.theme().border;
+
+            dialog
+                .width(px(680.))
+                .title(t!("prompts.edit").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(14.))
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.name").to_string()),
+                                )
+                                .child(Input::new(&name_input).cleanable(true)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.description").to_string()),
+                                )
+                                .child(Input::new(&desc_input).cleanable(true)),
+                        )
+                        .child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(t!("prompts.content").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(240.))
+                                        .w_full()
+                                        .rounded(px(8.))
+                                        .border_1()
+                                        .border_color(border_color)
+                                        .p(px(8.))
+                                        .overflow_y_scrollbar()
+                                        .child(Input::new(&content_input)),
+                                ),
+                        ),
+                )
+                .footer(move |_ok, _cancel, _window, _cx| {
+                    let view = view.clone();
+                    let name_input = name_input.clone();
+                    let desc_input = desc_input.clone();
+                    let content_input = content_input.clone();
+                    let prompt_id = prompt_id.clone();
+
+                    vec![h_flex()
+                        .w_full()
+                        .justify_end()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("cancel-edit-prompt")
+                                .label(t!("common.cancel").to_string())
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("save-edit-prompt")
+                                .primary()
+                                .label(t!("common.save").to_string())
+                                .on_click(move |_, window, cx| {
+                                    let name = name_input.read(cx).value().trim().to_string();
+                                    if name.is_empty() {
+                                        notify_error("请输入提示词名称", window, cx);
+                                        return;
+                                    }
+                                    let description = {
+                                        let d = desc_input.read(cx).value().trim().to_string();
+                                        if d.is_empty() {
+                                            None
+                                        } else {
+                                            Some(d)
+                                        }
+                                    };
+                                    let content = content_input.read(cx).value().to_string();
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                        as i64;
+                                    let updated = domain::Prompt {
+                                        id: prompt_id.clone(),
+                                        name,
+                                        content,
+                                        description,
+                                        enabled: is_enabled,
+                                        created_at,
+                                        updated_at: Some(now),
+                                    };
+                                    if let Some(app_view) = view.upgrade() {
+                                        app_view.update(cx, |this, cx| {
+                                            if let Err(e) =
+                                                this.workspace.save_prompt(app, &prompt_id, updated)
+                                            {
+                                                notify_error(format!("保存失败: {e}"), window, cx);
+                                            } else {
+                                                notify_success("提示词已保存", window, cx);
+                                                this.refresh_prompts(cx);
+                                                window.close_dialog(cx);
+                                            }
+                                        });
+                                    }
+                                }),
+                        )
+                        .into_any_element()]
+                })
+        });
+    }
+
+    fn render_prompts_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let dark = theme.is_dark();
+        let app = self.prompts_app;
+        let search_value = self.prompts_search.read(cx).value().to_lowercase();
+        let search = search_value.trim().to_lowercase();
+
+        let visible_prompts: Vec<domain::Prompt> = self
+            .prompts_list
+            .iter()
+            .filter(|p| {
+                if search.is_empty() {
+                    true
+                } else {
+                    p.name.to_lowercase().contains(&search)
+                        || p.description
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&search)
+                        || p.content.to_lowercase().contains(&search)
+                }
+            })
+            .cloned()
+            .collect();
+
+        let active_prompt = self.prompts_list.iter().find(|p| p.enabled);
+        let target_file_str = domain::prompt_display_path(app);
+
+        let apps = [
+            (AppKind::Codex, CustomIcon::OpenAI, "Codex"),
+            (AppKind::Claude, CustomIcon::Claude, "Claude Code"),
+            (AppKind::Grok, CustomIcon::Grok, "Grok Build"),
+            (AppKind::OpenCode, CustomIcon::OpenCode, "OpenCode"),
+            (AppKind::Pi, CustomIcon::Pi, "Pi"),
+            (AppKind::Cursor, CustomIcon::Cursor, "Cursor"),
+            (AppKind::ZCode, CustomIcon::ZCode, "ZCode"),
+            (AppKind::WorkBuddy, CustomIcon::WorkBuddy, "WorkBuddy"),
+        ];
+
+        let app_chips = apps
+            .into_iter()
+            .map(|(kind, icon, label)| {
+                let selected = self.prompts_app == kind;
+                Button::new(SharedString::from(format!("prompt-app-{}", kind.as_str())))
+                    .outline()
+                    .small()
+                    .selected(selected)
+                    .icon(icon)
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.switch_prompts_app(kind, cx);
+                    }))
+            })
+            .collect::<Vec<_>>();
+
+        v_flex()
+            .w_full()
+            .p(px(24.))
+            .gap(px(16.))
+            // Header
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                Button::new("prompts-back")
+                                    .ghost()
+                                    .icon(IconName::ArrowLeft)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.set_route(Route::Dashboard, cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(18.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.foreground)
+                                    .child(
+                                        t!("prompts.title", app = app.display_name()).to_string(),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                Button::new("import-prompt-btn")
+                                    .outline()
+                                    .icon(IconName::ArrowDown)
+                                    .label(t!("prompts.import_from_file").to_string())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.import_prompt_from_live(app, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("add-prompt-btn")
+                                    .primary()
+                                    .icon(IconName::Plus)
+                                    .label(t!("prompts.add").to_string())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_create_prompt(app, window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            // App switcher tabs
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(app_chips),
+            )
+            // Search & Info Bar
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(px(10.))
+                    .child(
+                        h_flex().w_full().items_center().child(
+                            div()
+                                .flex_1()
+                                .child(Input::new(&self.prompts_search).cleanable(true)),
+                        ),
+                    )
+                    .child(
+                        theme::tile(cx).w_full().p(px(12.)).child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.))
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .text_color(theme.muted_foreground)
+                                                .child(
+                                                    t!(
+                                                        "prompts.count",
+                                                        count = self.prompts_list.len()
+                                                    )
+                                                    .to_string(),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .text_color(theme.muted_foreground)
+                                                .child("·"),
+                                        )
+                                        .child(if let Some(active) = active_prompt {
+                                            Tag::success().small().child(
+                                                t!(
+                                                    "prompts.enabled_name",
+                                                    name = active.name.as_str()
+                                                )
+                                                .to_string(),
+                                            )
+                                        } else {
+                                            Tag::secondary()
+                                                .small()
+                                                .child(t!("prompts.none_enabled").to_string())
+                                        }),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(theme.muted_foreground)
+                                                .child("目标文件:"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .font_family(".AppleSystemUIFontMonospaced")
+                                                .text_color(if dark {
+                                                    rgb(0x60A5FA)
+                                                } else {
+                                                    rgb(0x2563EB)
+                                                })
+                                                .child(target_file_str),
+                                        ),
+                                ),
+                        ),
+                    ),
+            )
+            // Prompts List
+            .child(if visible_prompts.is_empty() {
+                if !search.is_empty() {
+                    empty_search_state(cx).into_any_element()
+                } else {
+                    v_flex()
+                        .w_full()
+                        .py(px(40.))
+                        .items_center()
+                        .justify_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .size(px(48.))
+                                .rounded_full()
+                                .bg(theme.secondary)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Icon::new(CustomIcon::BookOpen)
+                                        .size(px(24.))
+                                        .text_color(theme.muted_foreground),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.foreground)
+                                .child(t!("prompts.empty").to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(theme.muted_foreground)
+                                .child(t!("prompts.empty_description").to_string()),
+                        )
+                        .child(
+                            h_flex()
+                                .gap(px(8.))
+                                .pt(px(8.))
+                                .child(
+                                    Button::new("empty-import-prompt-btn")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::ArrowDown)
+                                        .label(t!("prompts.import_from_file").to_string())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.import_prompt_from_live(app, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("empty-add-prompt-btn")
+                                        .primary()
+                                        .small()
+                                        .icon(IconName::Plus)
+                                        .label(t!("prompts.add").to_string())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_create_prompt(app, window, cx);
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                }
+            } else {
+                v_flex()
+                    .w_full()
+                    .gap(px(12.))
+                    .children(
+                        visible_prompts
+                            .iter()
+                            .map(|prompt| self.render_prompt_card(prompt, cx)),
+                    )
+                    .into_any_element()
+            })
+    }
+
+    fn render_prompt_card(
+        &self,
+        prompt: &domain::Prompt,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let dark = theme.is_dark();
+        let app = self.prompts_app;
+        let prompt_clone = prompt.clone();
+        let id = prompt.id.clone();
+        let is_enabled = prompt.enabled;
+
+        let preview_lines = prompt
+            .content
+            .lines()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview_text = if preview_lines.trim().is_empty() {
+            "(无内容)".to_string()
+        } else {
+            preview_lines
+        };
+
+        let card = theme::tile(cx).w_full().p(px(14.)).gap(px(10.));
+        let card = if is_enabled {
+            card.border_1()
+                .border_color(if dark { rgb(0x10B981) } else { rgb(0x059669) })
+                .bg(if dark {
+                    rgba(0x064E3B26)
+                } else {
+                    rgba(0xECFDF5FA)
+                })
+                .shadow_sm()
+        } else {
+            card
+        };
+
+        card.child(
+            h_flex()
+                .w_full()
+                .items_start()
+                .justify_between()
+                .gap(px(12.))
+                // Left: Switch + Name + Desc
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .items_start()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("switch-prompt-{}", prompt.id)))
+                                .cursor_pointer()
+                                .pt(px(2.))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.toggle_prompt_enabled(app, &id, is_enabled, window, cx);
+                                }))
+                                .child(self.render_switch(prompt.enabled, cx)),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(4.))
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme.foreground)
+                                                .child(prompt.name.clone()),
+                                        )
+                                        .when(is_enabled, |this| {
+                                            this.child(Tag::success().small().child("启用中"))
+                                        }),
+                                )
+                                .when_some(prompt.description.as_ref(), |this, desc| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(desc.clone()),
+                                    )
+                                }),
+                        ),
+                )
+                // Right: Action buttons
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            Button::new(SharedString::from(format!("edit-prompt-{}", prompt.id)))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Settings2)
+                                .label(t!("prompts.edit").to_string())
+                                .on_click(cx.listener({
+                                    let prompt_clone = prompt_clone.clone();
+                                    move |this, _, window, cx| {
+                                        this.open_edit_prompt(app, &prompt_clone, window, cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("delete-prompt-{}", prompt.id)))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Delete)
+                                .label(t!("prompts.delete").to_string())
+                                .disabled(prompt.enabled)
+                                .on_click(cx.listener({
+                                    let prompt_clone = prompt_clone.clone();
+                                    move |this, _, window, cx| {
+                                        this.delete_prompt_with_confirm(
+                                            app,
+                                            &prompt_clone,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                })),
+                        ),
+                ),
+        )
+        // Markdown preview snippet box
+        .child(
+            div()
+                .w_full()
+                .p(px(8.))
+                .rounded(px(6.))
+                .bg(theme.secondary.opacity(0.6))
+                .border_1()
+                .border_color(theme.border.opacity(0.5))
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .font_family(".AppleSystemUIFontMonospaced")
+                .text_color(theme.muted_foreground)
+                .child(preview_text),
+        )
+    }
+
     fn render_usage_script_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let provider = self
@@ -8297,7 +9214,7 @@ impl RouterApp {
                             Button::new(SharedString::from(format!("usage-{}", provider.id)))
                                 .outline()
                                 .small()
-                                .icon(CustomIcon::ChartCurve)
+                                .icon(IconName::ChartPie)
                                 .label(t!("provider.usage_query").to_string())
                                 .tooltip("配置用量查询(余额 / 套餐)")
                                 .on_click(cx.listener({
@@ -9649,7 +10566,7 @@ impl RouterApp {
                                                             .text_size(px(22.))
                                                             .font_weight(FontWeight::BOLD)
                                                             .text_color(theme.foreground)
-                                                            .child("AICWITCH"),
+                                                            .child(t!("app.name").to_string()),
                                                     )
                                                     .child(
                                                         Tag::primary()
@@ -9669,16 +10586,6 @@ impl RouterApp {
                                 h_flex()
                                     .items_center()
                                     .gap(px(8.))
-                                    .child(
-                                        Button::new("about-preview-update")
-                                            .outline()
-                                            .small()
-                                            .icon(IconName::Bell)
-                                            .label(t!("update.preview_dialog"))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.preview_update_dialog(window, cx);
-                                            })),
-                                    )
                                     .child(
                                         Button::new("about-github")
                                             .outline()
@@ -11624,6 +12531,7 @@ impl Render for RouterApp {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
                 Route::Sessions => self.render_sessions_page(cx).into_any_element(),
                 Route::Skills => self.render_skills_page(cx).into_any_element(),
+                Route::Prompts => self.render_prompts_page(cx).into_any_element(),
                 Route::Codex => self
                     .render_app_providers_page(AppKind::Codex, cx)
                     .into_any_element(),
@@ -12781,6 +13689,10 @@ fn usage_summary_text(result: &domain::UsageQueryResult) -> String {
 
 fn notify_info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::info(message), cx);
+}
+
+fn notify_error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
+    window.push_notification(Notification::error(message), cx);
 }
 
 /// 检查更新结果对话框: 列出有更新的受管技能

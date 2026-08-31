@@ -1,5 +1,5 @@
 app:
-  name: "AICWITCH"
+  name: "Router Switch"
   version: "版本 v0.1.0"
   subtitle: "新一代AI 网关桌面工具"
   started: "应用已启动并加载工作区"
@@ -7,6 +7,7 @@ app:
 nav:
   dashboard: "仪表盘"
   notifications: "系统通知"
+  prompts: "提示词"
   sessions: "会话管理"
   skills: "Skills 管理"
   settings: "偏好设置"
@@ -181,7 +182,6 @@ about:
   empty_inspect_tip: "尚未检测本地 CLI 环境。点击下方按钮开始扫描本地工具版本与安装冲突。"
   inspecting_tip: "正在后台探测本地 CLI 工具与查询版本..."
   start_inspect: "开始检测环境"
-  preview_dialog: "演示升级弹窗"
 
 update:
   dialog_title: "新版本 %{app} 可用！"
@@ -400,3 +400,30 @@ skills:
   repo_exists: "该仓库已存在"
   repo_hint: "勾选启用仓库; 添加 GitHub 仓库后即可发现并安装其中的 Skills。"
   cancel: "取消"
+
+prompts:
+  title: "%{app} 提示词管理"
+  manage: "提示词"
+  count: "共 %{count} 个提示词"
+  enabled_name: "当前启用: %{name}"
+  none_enabled: "未启用任何提示词"
+  target_file: "目标文件: %{path}"
+  empty: "暂无提示词"
+  empty_description: "点击右上角按钮添加或从现有配置文件导入提示词"
+  search_placeholder: "搜索提示词名称、描述或内容..."
+  add: "添加提示词"
+  edit: "编辑提示词"
+  delete: "删除提示词"
+  name: "提示词名称"
+  name_placeholder: "例如：项目默认提示词"
+  description: "提示词描述"
+  description_placeholder: "例如：用于代码审查与质量把控"
+  content: "提示词内容 (Markdown)"
+  content_placeholder: "在此输入提示词内容..."
+  import_from_file: "从文件导入"
+  import_success: "提示词导入成功"
+  import_no_file: "未找到现有的提示词配置文件或文件为空"
+  cannot_delete_enabled: "无法删除当前已启用的提示词，请先停用后再删除"
+  confirm_delete_title: "删除提示词"
+  confirm_delete_message: "确定要删除提示词 \"%{name}\" 吗？此操作无法撤销。"
+

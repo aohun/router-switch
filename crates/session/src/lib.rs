@@ -64,8 +64,11 @@ pub use usage_query::UsageQueryError;
 
 mod auth_native;
 pub mod oauth;
+pub mod prompts;
 pub mod sessions;
 pub mod skills;
+
+pub use prompts::PromptService;
 
 /// 会话/Skills 模块使用的应用标识字符串(与 cc-switch 的 provider id 对齐)
 pub mod session_apps {
@@ -1155,6 +1158,59 @@ impl Workspace {
     /// 移除某应用下的 Skill 副本
     pub fn remove_skill(&self, path: &Path) -> Result<(), String> {
         skills::remove_skill(path)
+    }
+
+    /// 获取指定应用的所有提示词
+    pub fn get_prompts(&self, app: AppKind) -> Result<Vec<domain::Prompt>, SessionError> {
+        prompts::PromptService::get_prompts(&self.store, app)
+    }
+
+    /// 保存或更新提示词
+    pub fn save_prompt(
+        &self,
+        app: AppKind,
+        id: &str,
+        prompt: domain::Prompt,
+    ) -> Result<(), SessionError> {
+        prompts::PromptService::save_prompt(&self.store, app, id, prompt)
+    }
+
+    /// 删除指定提示词
+    pub fn delete_prompt(&self, app: AppKind, id: &str) -> Result<(), SessionError> {
+        prompts::PromptService::delete_prompt(&self.store, app, id)
+    }
+
+    /// 启用指定提示词（带智能回填与自动备份保护）
+    pub fn enable_prompt(&self, app: AppKind, id: &str) -> Result<(), SessionError> {
+        prompts::PromptService::enable_prompt(&self.store, app, id)
+    }
+
+    /// 停用指定提示词
+    pub fn disable_prompt(&self, app: AppKind, id: &str) -> Result<(), SessionError> {
+        prompts::PromptService::disable_prompt(&self.store, app, id)
+    }
+
+    /// 从现有磁盘配置文件抓取内容新建提示词预设
+    pub fn import_prompt_from_file(&self, app: AppKind) -> Result<domain::Prompt, SessionError> {
+        prompts::PromptService::import_from_file(&self.store, app)
+    }
+
+    /// 首次启动时自动导入现有文件（若数据库中为空）
+    pub fn import_prompt_from_file_on_first_launch(
+        &self,
+        app: AppKind,
+    ) -> Result<usize, SessionError> {
+        prompts::PromptService::import_from_file_on_first_launch(&self.store, app)
+    }
+
+    /// 将数据库中的启用项全量投影到 Live 文件
+    pub fn sync_prompt_to_live(&self, app: AppKind) -> Result<(), SessionError> {
+        prompts::PromptService::sync_to_live(&self.store, app)
+    }
+
+    /// 全量同步所有应用的提示词到磁盘
+    pub fn sync_all_prompts_to_live(&self) -> Result<(), SessionError> {
+        prompts::PromptService::sync_all_to_live(&self.store)
     }
 
     /// Skills 中心库目录(~/.router-switch/skills)

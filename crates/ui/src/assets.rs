@@ -89,6 +89,11 @@ const HISTORY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
   <path d="M12 7v5l4 2"/>
 </svg>"#;
 
+const BOOK_OPEN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+</svg>"#;
+
 const MONITOR_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <rect width="20" height="14" x="2" y="3" rx="2"/>
   <line x1="8" x2="16" y1="21" y2="21"/>
@@ -132,6 +137,7 @@ pub enum CustomIcon {
     ArrowLeft,
     Monitor,
     History,
+    BookOpen,
     ChartCurve,
     Activity,
 }
@@ -157,6 +163,7 @@ impl IconNamed for CustomIcon {
             Self::ArrowLeft => "icons/custom/arrow-left.svg",
             Self::Monitor => "icons/custom/monitor.svg",
             Self::History => "icons/custom/history.svg",
+            Self::BookOpen => "icons/custom/book-open.svg",
             Self::ChartCurve => "icons/custom/chart-curve.svg",
             Self::Activity => "icons/custom/activity.svg",
         }
@@ -185,6 +192,7 @@ impl AssetSource for AppAssets {
             "icons/custom/arrow-left.svg" => Ok(Some(Cow::Borrowed(ARROW_LEFT_SVG.as_bytes()))),
             "icons/custom/monitor.svg" => Ok(Some(Cow::Borrowed(MONITOR_SVG.as_bytes()))),
             "icons/custom/history.svg" => Ok(Some(Cow::Borrowed(HISTORY_SVG.as_bytes()))),
+            "icons/custom/book-open.svg" => Ok(Some(Cow::Borrowed(BOOK_OPEN_SVG.as_bytes()))),
             "icons/custom/chart-curve.svg" => Ok(Some(Cow::Borrowed(CHART_CURVE_SVG.as_bytes()))),
             "icons/custom/activity.svg" => Ok(Some(Cow::Borrowed(ACTIVITY_SVG.as_bytes()))),
             _ => gpui_component_assets::Assets.load(path),
@@ -210,6 +218,8 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/rotate-cw.svg".into());
             list.push("icons/custom/arrow-left.svg".into());
             list.push("icons/custom/monitor.svg".into());
+            list.push("icons/custom/history.svg".into());
+            list.push("icons/custom/book-open.svg".into());
             list.push("icons/custom/chart-curve.svg".into());
             list.push("icons/custom/activity.svg".into());
         }
