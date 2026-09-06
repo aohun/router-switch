@@ -3970,7 +3970,7 @@ impl RouterApp {
             .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
     }
 
-    fn render_chrome(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chrome(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let left_pad = if cfg!(target_os = "macos") { 96. } else { 16. };
 
         h_flex()
@@ -4002,6 +4002,77 @@ impl RouterApp {
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
             )
+            .when(cfg!(target_os = "windows"), |this| {
+                this.child(self.render_window_controls(window, cx))
+            })
+    }
+
+    /// Windows 右上角的窗口控制按钮（按 Windows 惯例置于右上角，而非 macOS 红绿灯样式）。
+    /// 按钮区域用 WindowControlArea 标记，点击与双击最大化由系统按
+    /// HTMINBUTTON/HTMAXBUTTON/HTCLOSE 原生处理，应用只负责绘制与悬停态。
+    fn render_window_controls(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        h_flex()
+            .h_full()
+            .flex_shrink_0()
+            .child(self.window_control_button(
+                "win-minimize",
+                IconName::WindowMinimize,
+                WindowControlArea::Min,
+                false,
+                cx,
+            ))
+            .child(self.window_control_button(
+                "win-maximize",
+                if window.is_maximized() {
+                    IconName::WindowRestore
+                } else {
+                    IconName::WindowMaximize
+                },
+                WindowControlArea::Max,
+                false,
+                cx,
+            ))
+            .child(self.window_control_button(
+                "win-close",
+                IconName::WindowClose,
+                WindowControlArea::Close,
+                true,
+                cx,
+            ))
+    }
+
+    fn window_control_button(
+        &self,
+        id: &'static str,
+        icon: IconName,
+        area: WindowControlArea,
+        is_close: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let base = div()
+            .id(id)
+            .flex()
+            .w(px(46.))
+            .h_full()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .text_color(cx.theme().foreground)
+            .window_control_area(area);
+        let base = if is_close {
+            base.hover(|s| {
+                s.bg(cx.theme().danger)
+                    .text_color(cx.theme().danger_foreground)
+            })
+            .active(|s| {
+                s.bg(cx.theme().danger_active)
+                    .text_color(cx.theme().danger_foreground)
+            })
+        } else {
+            base.hover(|s| s.bg(cx.theme().secondary_hover))
+                .active(|s| s.bg(cx.theme().secondary_active))
+        };
+        base.child(Icon::new(icon).small())
     }
 
     fn render_usage_window_chip(
