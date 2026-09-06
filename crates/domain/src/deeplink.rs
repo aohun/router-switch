@@ -362,7 +362,7 @@ impl DeepLinkImportRequest {
             .unwrap_or_default();
 
         let form = match app_kind {
-            AppKind::Claude => {
+            AppKind::Claude | AppKind::ClaudeDesktop => {
                 let sonnet = self
                     .sonnet_model
                     .clone()
@@ -383,6 +383,7 @@ impl DeepLinkImportRequest {
                     model: sonnet,
                     request_protocol: String::new(),
                     model_mappings: Vec::new(),
+                    desktop_mode: None,
                 })
             }
             AppKind::Codex => {

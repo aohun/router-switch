@@ -266,6 +266,7 @@ pub async fn load_dashboard_usage(
     let client_filters: Option<Vec<String>> = match app_filter {
         None => None,
         Some(AppKind::Claude) => Some(vec!["claude".to_string()]),
+        Some(AppKind::ClaudeDesktop) => Some(vec!["claude-desktop".to_string()]),
         Some(AppKind::Codex) => Some(vec!["codex".to_string()]),
         Some(AppKind::Grok) => Some(vec!["grok".to_string()]),
         Some(AppKind::OpenCode) => Some(vec!["opencode".to_string()]),

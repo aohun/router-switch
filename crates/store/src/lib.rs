@@ -3,11 +3,12 @@
 use std::path::{Path, PathBuf};
 
 use domain::{
-    official_claude_provider, official_codex_provider, official_cursor_provider,
-    official_grok_provider, official_opencode_provider, official_pi_provider,
-    official_workbuddy_provider, official_zcode_provider, AppKind, Prompt, Provider,
-    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
-    OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
+    official_claude_desktop_provider, official_claude_provider, official_codex_provider,
+    official_cursor_provider, official_grok_provider, official_opencode_provider,
+    official_pi_provider, official_workbuddy_provider, official_zcode_provider, AppKind, Prompt,
+    Provider, OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
+    OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
+    OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,8 @@ impl LogLevel {
 pub struct AppSettings {
     pub codex_home: Option<PathBuf>,
     pub claude_home: Option<PathBuf>,
+    #[serde(default)]
+    pub claude_desktop_home: Option<PathBuf>,
     pub grok_home: Option<PathBuf>,
     pub opencode_home: Option<PathBuf>,
     pub pi_home: Option<PathBuf>,
@@ -133,12 +136,38 @@ pub struct AppSettings {
     pub skipped_update_version: Option<String>,
     #[serde(default)]
     pub log_config: LogConfig,
+    /// 非接管切换第三方 Codex 供应商时保留 auth.json 的官方登录
+    #[serde(default)]
+    pub preserve_codex_official_auth_on_switch: bool,
+    /// 统一 Codex 会话历史: 官方订阅以共享 custom 供应商标识运行
+    #[serde(default)]
+    pub unify_codex_session_history: bool,
+    /// 统一会话开启时是否迁入现有官方会话(迁移前自动备份)
+    #[serde(default)]
+    pub unify_codex_migrate_existing: bool,
+    /// 官方会话统一迁移完成标记(按 Codex 目录绑定)
+    #[serde(default)]
+    pub codex_official_history_unify: Option<CodexUnifyMigrationMarker>,
+}
+
+/// 官方会话统一迁移的完成账本
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodexUnifyMigrationMarker {
+    #[serde(rename = "completedAt")]
+    pub completed_at: String,
+    #[serde(rename = "codexConfigDir")]
+    pub codex_config_dir: String,
+    #[serde(rename = "migratedJsonlFiles", default)]
+    pub migrated_jsonl_files: u64,
+    #[serde(rename = "migratedStateRows", default)]
+    pub migrated_state_rows: u64,
 }
 
 fn default_main_apps() -> Vec<String> {
     vec![
         "claude".into(),
         "codex".into(),
+        "claude-desktop".into(),
         "cursor".into(),
         "opencode".into(),
         "grok".into(),
@@ -169,6 +198,7 @@ impl Default for AppSettings {
         Self {
             codex_home: None,
             claude_home: None,
+            claude_desktop_home: None,
             grok_home: None,
             opencode_home: None,
             pi_home: None,
@@ -183,6 +213,10 @@ impl Default for AppSettings {
             auto_check_update: true,
             skipped_update_version: None,
             log_config: LogConfig::default(),
+            preserve_codex_official_auth_on_switch: false,
+            unify_codex_session_history: false,
+            unify_codex_migrate_existing: false,
+            codex_official_history_unify: None,
         }
     }
 }
@@ -372,11 +406,43 @@ impl Store {
                 row.get(0)
             })
             .optional()?;
-        match raw {
+        let mut settings = match raw {
             Some(text) => serde_json::from_str(&text)
-                .map_err(|err| StoreError::Corrupt(format!("settings: {err}"))),
-            None => Ok(AppSettings::default()),
+                .map_err(|err| StoreError::Corrupt(format!("settings: {err}")))?,
+            None => AppSettings::default(),
+        };
+        self.migrate_main_apps_once(&mut settings)?;
+        Ok(settings)
+    }
+
+    /// 老库一次性迁移: 把后新增的应用加入主页面显示(用户随后可自行隐藏)。
+    fn migrate_main_apps_once(&self, settings: &mut AppSettings) -> Result<(), StoreError> {
+        const KEY: &str = "migrated-main-apps-v2";
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", [KEY], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if done.is_some() {
+            return Ok(());
         }
+        let mut changed = false;
+        for app in ["claude-desktop"] {
+            if !settings.main_apps.iter().any(|item| item == app) {
+                settings.main_apps.push(app.to_string());
+                changed = true;
+            }
+        }
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [KEY],
+        )?;
+        if changed {
+            self.save_settings(settings)?;
+        }
+        Ok(())
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> Result<(), StoreError> {
@@ -654,6 +720,12 @@ impl Store {
         // Seed Claude
         if self.get_provider(OFFICIAL_CLAUDE_ID)?.is_none() {
             let mut official = official_claude_provider();
+            official.created_at = now_secs();
+            self.upsert_provider(&official)?;
+        }
+        // Seed Claude Desktop
+        if self.get_provider(OFFICIAL_CLAUDE_DESKTOP_ID)?.is_none() {
+            let mut official = official_claude_desktop_provider();
             official.created_at = now_secs();
             self.upsert_provider(&official)?;
         }

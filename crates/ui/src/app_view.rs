@@ -14,20 +14,22 @@ use domain::{
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
 };
 use gpui::{
-    div, prelude::FluentBuilder, px, rgb, rgba, uniform_list, AnyElement, App, AppContext, Context,
-    Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, PathPromptOptions,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    WindowControlArea,
+    div, hsla, prelude::FluentBuilder, px, rgb, rgba, uniform_list, AnyElement, App, AppContext,
+    Context, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Window, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputState},
     notification::Notification,
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
+    tooltip::Tooltip,
     v_flex, ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     WindowExt,
 };
@@ -134,7 +136,7 @@ pub fn presets_for_app(app: AppKind) -> Vec<PresetSelectItem> {
                 modality_image: true,
             })
             .collect(),
-        AppKind::Claude => CLAUDE_PRESETS
+        AppKind::Claude | AppKind::ClaudeDesktop => CLAUDE_PRESETS
             .iter()
             .map(|p| PresetSelectItem {
                 id: p.id.to_string(),
@@ -300,6 +302,32 @@ impl SelectItem for ProtocolSelectItem {
     }
 }
 
+/// Claude Desktop 接入方式下拉项
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DesktopModeItem {
+    pub value: String,
+    pub label: String,
+}
+
+impl SelectItem for DesktopModeItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+
+    fn render(&self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .text_size(px(13.))
+            .text_color(cx.theme().foreground)
+            .child(self.label.clone())
+    }
+}
+
 fn protocol_items() -> Vec<ProtocolSelectItem> {
     RequestProtocol::all()
         .into_iter()
@@ -373,6 +401,57 @@ pub struct CatalogRowDraft {
     pub reasoning_levels: Option<Vec<String>>,
     pub model_select: Option<Entity<SelectState<Vec<ModelSelectItem>>>>,
     pub _model_select_sub: Option<Subscription>,
+}
+
+/// Claude Desktop 模型映射模式的固定角色行(Sonnet/Opus/Fable/Haiku)
+struct DesktopRoleDraft {
+    display_name: Entity<InputState>,
+    model: Entity<InputState>,
+    one_m: bool,
+    model_select: Option<Entity<SelectState<Vec<ModelSelectItem>>>>,
+    _model_select_sub: Option<Subscription>,
+}
+
+impl DesktopRoleDraft {
+    /// 拉取模型后为该角色挂上模型下拉(保留当前值选中态)
+    fn set_fetched_models(&mut self, fetched_models: &[String], window: &mut Window, cx: &mut App) {
+        if fetched_models.is_empty() {
+            self.model_select = None;
+            self._model_select_sub = None;
+            return;
+        }
+        let current_val = self.model.read(cx).value().to_string();
+        let items: Vec<ModelSelectItem> = fetched_models
+            .iter()
+            .map(|m| ModelSelectItem { name: m.clone() })
+            .collect();
+        let selected_idx = fetched_models
+            .iter()
+            .position(|m| m == &current_val)
+            .map(|i| gpui_component::IndexPath::default().row(i));
+        let select =
+            cx.new(|cx| SelectState::new(items, selected_idx, window, cx).searchable(true));
+        let model_state = self.model.clone();
+        let display_name_state = self.display_name.clone();
+        let sub = window.subscribe(
+            &select,
+            cx,
+            move |_, event: &SelectEvent<Vec<ModelSelectItem>>, window, cx| {
+                if let SelectEvent::Confirm(Some(m)) = event {
+                    let val = m.clone();
+                    model_state.update(cx, |input, cx| input.set_value(val.clone(), window, cx));
+                    display_name_state.update(cx, |input, cx| {
+                        let curr = input.value().to_string();
+                        if curr.trim().is_empty() {
+                            input.set_value(val, window, cx);
+                        }
+                    });
+                }
+            },
+        );
+        self.model_select = Some(select);
+        self._model_select_sub = Some(sub);
+    }
 }
 
 impl CatalogRowDraft {
@@ -712,6 +791,7 @@ pub enum Route {
     Prompts,
     Codex,
     Claude,
+    ClaudeDesktop,
     Grok,
     OpenCode,
     Pi,
@@ -908,6 +988,10 @@ pub struct RouterApp {
     main_apps: Vec<String>,
     launch_on_startup: bool,
     minimize_to_tray: bool,
+    preserve_codex_auth: bool,
+    unify_codex_history: bool,
+    unify_dialog_migrate: bool,
+    unify_dialog_restore: bool,
     settings_tab: SettingsTab,
     dashboard_app_filter: Option<AppKind>,
     dashboard_data: Option<DashboardUsageData>,
@@ -1025,6 +1109,10 @@ struct FormDraft {
     workbuddy_supported_effort_max: bool,
     preset_select: Entity<SelectState<Vec<PresetSelectItem>>>,
     catalog_rows: Vec<CatalogRowDraft>,
+    desktop_mode: String,
+    desktop_mode_select: Option<Entity<SelectState<Vec<DesktopModeItem>>>>,
+    _desktop_mode_sub: Option<Subscription>,
+    desktop_roles: Vec<DesktopRoleDraft>,
     fetched_models: Vec<String>,
     has_fetched_models: bool,
     default_model_select: Option<Entity<SelectState<Vec<ModelSelectItem>>>>,
@@ -1214,6 +1302,10 @@ impl RouterApp {
             main_apps,
             launch_on_startup: settings.launch_on_startup,
             minimize_to_tray: settings.minimize_to_tray,
+            preserve_codex_auth: settings.preserve_codex_official_auth_on_switch,
+            unify_codex_history: settings.unify_codex_session_history,
+            unify_dialog_migrate: false,
+            unify_dialog_restore: false,
             settings_tab: SettingsTab::General,
             dashboard_app_filter: None,
             dashboard_data: None,
@@ -1894,6 +1986,7 @@ impl RouterApp {
 
                 let target_route = match provider.app {
                     AppKind::Claude => Route::Claude,
+                    AppKind::ClaudeDesktop => Route::ClaudeDesktop,
                     AppKind::Codex => Route::Codex,
                     AppKind::Grok => Route::Grok,
                     AppKind::OpenCode => Route::OpenCode,
@@ -1925,17 +2018,8 @@ impl RouterApp {
 
     fn reload(&mut self) {
         let mut all = Vec::new();
-        for app in [
-            AppKind::Codex,
-            AppKind::Claude,
-            AppKind::Grok,
-            AppKind::OpenCode,
-            AppKind::Pi,
-            AppKind::Cursor,
-            AppKind::ZCode,
-            AppKind::WorkBuddy,
-        ] {
-            if let Ok(snapshot) = self.workspace.snapshot_for(app) {
+        for app in AppKind::ALL {
+            if let Ok(snapshot) = self.workspace.snapshot_for(*app) {
                 all.extend(snapshot.providers);
             }
         }
@@ -2190,6 +2274,198 @@ impl RouterApp {
         self.logs.push(msg.into());
         notify_success(msg, window, cx);
         cx.notify();
+    }
+
+    /// 将 Claude Code 中已有的第三方供应商导入 Claude Desktop
+    fn import_claude_desktop_from_claude_code(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.workspace.import_claude_desktop_from_claude() {
+            Ok(0) => {
+                notify_info(t!("claude_desktop.import_none").to_string(), window, cx);
+            }
+            Ok(count) => {
+                self.reload();
+                notify_success(
+                    t!("claude_desktop.import_done", count = count).to_string(),
+                    window,
+                    cx,
+                );
+                cx.notify();
+            }
+            Err(error) => self.fail(error, window, cx),
+        }
+    }
+
+    fn toggle_preserve_codex_auth(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let new_val = !self.preserve_codex_auth;
+        self.preserve_codex_auth = new_val;
+        if let Err(err) = self.workspace.set_preserve_codex_official_auth(new_val) {
+            self.preserve_codex_auth = !new_val;
+            self.fail(err, window, cx);
+            return;
+        }
+        let msg = t!(if new_val {
+            "codex_enhance.preserve_enabled"
+        } else {
+            "codex_enhance.preserve_disabled"
+        })
+        .to_string();
+        notify_success(msg, window, cx);
+        cx.notify();
+    }
+
+    fn toggle_unify_codex_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.unify_codex_history {
+            // 开启前确认: 可选把现有官方会话一并迁入(迁移前自动备份)
+            self.unify_dialog_migrate = true;
+            self.open_unify_enable_dialog(window, cx);
+            return;
+        }
+        // 关闭前探测迁移账本，决定是否提供"按备份恢复"勾选
+        let has_backup = self.workspace.has_codex_unify_history_backup();
+        self.unify_dialog_restore = has_backup;
+        self.open_unify_disable_dialog(window, cx);
+    }
+
+    fn open_unify_enable_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let view_checkbox = view.clone();
+            let view_ok = view.clone();
+
+            dialog
+                .w(px(520.))
+                .title(t!("codex_enhance.enable_dialog_title").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("codex_enhance.enable_dialog_message").to_string()),
+                        )
+                        .child(
+                            h_flex().w_full().items_center().gap(px(8.)).child(
+                                Checkbox::new("unify-migrate-existing")
+                                    .label(t!("codex_enhance.migrate_existing").to_string())
+                                    .on_click(move |checked: &bool, _window, cx| {
+                                        let _ = view_checkbox.update(cx, |this, cx| {
+                                            this.unify_dialog_migrate = *checked;
+                                            cx.notify();
+                                        });
+                                    }),
+                            ),
+                        ),
+                )
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t!("common.confirm").to_string())
+                        .cancel_text(t!("common.cancel").to_string()),
+                )
+                .on_ok(move |_, _window, cx| {
+                    let view = view_ok.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let migrate = this.unify_dialog_migrate;
+                        match this
+                            .workspace
+                            .set_unify_codex_session_history(true, migrate)
+                        {
+                            Ok(outcome) => {
+                                this.unify_codex_history = true;
+                                let msg = unify_outcome_message(&outcome, true);
+                                if outcome.is_skipped() {
+                                    this.logs.push(msg.clone());
+                                } else {
+                                    notify_success(msg, _window, cx);
+                                }
+                                cx.notify();
+                            }
+                            Err(err) => {
+                                this.fail(err, _window, cx);
+                            }
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
+    fn open_unify_disable_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let view = view.clone();
+            let view_checkbox = view.clone();
+            let view_ok = view.clone();
+
+            dialog
+                .w(px(520.))
+                .title(t!("codex_enhance.disable_dialog_title").to_string())
+                .child(
+                    v_flex()
+                        .w_full()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("codex_enhance.disable_dialog_message").to_string()),
+                        )
+                        .child(
+                            Checkbox::new("unify-restore-backup")
+                                .label(t!("codex_enhance.restore_backup").to_string())
+                                .on_click(move |checked: &bool, _window, cx| {
+                                    let _ = view_checkbox.update(cx, |this, cx| {
+                                        this.unify_dialog_restore = *checked;
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                )
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t!("common.confirm").to_string())
+                        .cancel_text(t!("common.cancel").to_string()),
+                )
+                .on_ok(move |_, window, cx| {
+                    let view = view_ok.clone();
+                    let _ = view.update(cx, |this, cx| {
+                        let restore = this.unify_dialog_restore;
+                        // 关闭保存失败时绝不还原: 开关仍开着而账本已翻回，
+                        // 会把历史拆成两半
+                        if let Err(err) =
+                            this.workspace.set_unify_codex_session_history(false, false)
+                        {
+                            this.fail(err, window, cx);
+                            return;
+                        }
+                        this.unify_codex_history = false;
+                        this.unify_dialog_restore = false;
+                        if restore {
+                            match this.workspace.restore_codex_unified_history() {
+                                Ok(outcome) => {
+                                    let msg = unify_outcome_message(&outcome, false);
+                                    if outcome.is_skipped() {
+                                        notify_info(msg, window, cx);
+                                    } else {
+                                        notify_success(msg, window, cx);
+                                    }
+                                }
+                                Err(err) => {
+                                    this.fail(err, window, cx);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    });
+                    true
+                })
+        });
     }
 
     pub fn show_update_dialog(
@@ -2467,6 +2743,9 @@ impl RouterApp {
                         AppKind::Claude => {
                             "已切到 Claude Code 官方配置。可直接在终端使用官方 Claude Code 登录。"
                         }
+                        AppKind::ClaudeDesktop => {
+                            "已切到 Claude Desktop 官方配置。可直接使用官方 Claude Desktop 登录。"
+                        }
                         AppKind::Grok => {
                             "已切到 Grok Build 官方配置。可直接使用官方 Grok CLI 认证。"
                         }
@@ -2483,6 +2762,7 @@ impl RouterApp {
                     let hint = match provider.app {
                         AppKind::Codex => format!("已启用 {} 并写入 ~/.codex，请重启 Codex / 终端生效。", provider_name),
                         AppKind::Claude => format!("已启用 {} 并写入 ~/.claude/settings.json，请重启 Claude Code 生效。", provider_name),
+                        AppKind::ClaudeDesktop => format!("已启用 {} 并写入 Claude Desktop 3P 配置，请重启 Claude Desktop 生效。", provider_name),
                         AppKind::Grok => format!("已启用 {} 并写入 ~/.grok/config.toml，请重启 Grok Build 生效。", provider_name),
                         AppKind::OpenCode => format!("已启用 {} 并写入 ~/.config/opencode/opencode.json，请重启 OpenCode 生效。", provider_name),
                         AppKind::Pi => format!("已启用 {} 并写入 ~/.pi/agent/，请重启 Pi 生效。", provider_name),
@@ -2938,6 +3218,15 @@ impl RouterApp {
         cx.notify();
     }
 
+    fn toggle_desktop_role_one_m(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if let Some(form) = self.form.as_mut() {
+            if let Some(role) = form.desktop_roles.get_mut(idx) {
+                role.one_m = !role.one_m;
+                cx.notify();
+            }
+        }
+    }
+
     fn toggle_workbuddy_supports_tool_call(&mut self, cx: &mut Context<Self>) {
         if let Some(form) = self.form.as_mut() {
             form.workbuddy_supports_tool_call = !form.workbuddy_supports_tool_call;
@@ -3124,6 +3413,10 @@ impl RouterApp {
                                         // Update existing catalog rows
                                         for row in &mut form.catalog_rows {
                                             row.set_fetched_models(&models, window, cx);
+                                        }
+                                        // Claude Desktop 映射角色同样挂上下拉
+                                        for role in &mut form.desktop_roles {
+                                            role.set_fetched_models(&models, window, cx);
                                         }
                                     }
                                 }
@@ -3426,6 +3719,7 @@ impl RouterApp {
         let border = cx.theme().sidebar_border;
         let codex_count = self.providers_for(AppKind::Codex).len();
         let claude_count = self.providers_for(AppKind::Claude).len();
+        let claude_desktop_count = self.providers_for(AppKind::ClaudeDesktop).len();
         let grok_count = self.providers_for(AppKind::Grok).len();
         let opencode_count = self.providers_for(AppKind::OpenCode).len();
         let pi_count = self.providers_for(AppKind::Pi).len();
@@ -3461,9 +3755,9 @@ impl RouterApp {
                     CustomIcon::Claude,
                     Some(rgb(0xD97757).into()),
                     "Claude Desktop",
-                    Route::Claude,
-                    Some(t!("nav.soon").to_string()),
-                    true,
+                    Route::ClaudeDesktop,
+                    Some(format!("{claude_desktop_count}")),
+                    false,
                     cx,
                 )),
                 "codex" => Some(self.draggable_nav_item(
@@ -4668,6 +4962,138 @@ impl RouterApp {
         )
     }
 
+    /// Codex 应用增强: 对齐 cc-switch 的两个增强开关，展示在 Codex 页最上方
+    fn render_codex_enhancements(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+
+        v_flex()
+            .w_full()
+            .gap(px(10.))
+            .child(
+                theme::tile(cx).w_full().p(px(16.)).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .size(px(36.))
+                                .rounded(px(10.))
+                                .bg(hsla(152. / 360., 0.76, 0.44, 1.0).opacity(0.12))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Icon::new(CustomIcon::KeyRound)
+                                        .size(px(17.))
+                                        .text_color(hsla(152. / 360., 0.76, 0.44, 1.0)),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap(px(4.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.foreground)
+                                        .child(t!("codex_enhance.preserve_title").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .line_height(px(18.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(
+                                            t!("codex_enhance.preserve_description").to_string(),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("switch-preserve-codex-auth")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_preserve_codex_auth(window, cx);
+                                }))
+                                .child(self.render_switch(self.preserve_codex_auth, cx)),
+                        ),
+                ),
+            )
+            .child({
+                let sky = hsla(199. / 360., 0.89, 0.48, 1.0);
+                let tile_id = SharedString::from("switch-unify-codex-history");
+                let title = t!("codex_enhance.unify_title").to_string();
+                let description = t!("codex_enhance.unify_description").to_string();
+                theme::tile(cx).w_full().p(px(16.)).child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .size(px(36.))
+                                .rounded(px(10.))
+                                .bg(sky.opacity(0.12))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Icon::new(CustomIcon::History).size(px(17.)).text_color(sky),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(13.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme.foreground)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .id("unify-codex-history-help")
+                                        .cursor_pointer()
+                                        .hoverable_tooltip(move |window, cx| {
+                                            // 显式宽度保证长文本换行(flex 容器的
+                                            // max_w 会被文本 min-content 撑破)
+                                            let description = description.clone();
+                                            Tooltip::element(move |_window, _cx| {
+                                                div()
+                                                    .w(px(360.))
+                                                    .text_size(px(12.))
+                                                    .line_height(px(19.))
+                                                    .child(description.clone())
+                                            })
+                                            .build(window, cx)
+                                        })
+                                        .child(
+                                            Icon::new(CustomIcon::HelpCircle)
+                                                .size(px(13.))
+                                                .text_color(theme.muted_foreground),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id(tile_id)
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_unify_codex_history(window, cx);
+                                }))
+                                .child(self.render_switch(self.unify_codex_history, cx)),
+                        ),
+                )
+            })
+    }
+
     fn render_app_providers_page(&self, app: AppKind, cx: &mut Context<Self>) -> impl IntoElement {
         let filtered = self.filtered_providers(app, cx);
         let app_name = app.display_name();
@@ -4677,6 +5103,9 @@ impl RouterApp {
             .gap(px(14.))
             .when(app == AppKind::Cursor, |this| {
                 this.child(self.render_cursor_gateway_banner(cx))
+            })
+            .when(app == AppKind::Codex, |this| {
+                this.child(self.render_codex_enhancements(cx))
             })
             .child(
                 h_flex()
@@ -4725,6 +5154,17 @@ impl RouterApp {
                                     },
                                 )),
                             )
+                            .when(app == AppKind::ClaudeDesktop, |this| {
+                                this.child(
+                                    Button::new("claude-desktop-import-top")
+                                        .primary()
+                                        .icon(CustomIcon::Download)
+                                        .label(t!("claude_desktop.import_from_claude").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.import_claude_desktop_from_claude_code(window, cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new(SharedString::from(format!(
                                     "{}-add-top",
@@ -11328,8 +11768,8 @@ impl RouterApp {
             .gap(px(16.))
             .child(
                 // Header bar with breadcrumbs / back button and actions
+                // （不设 w_full：依赖 stretch 铺满，justify_between 才能把操作按钮推到右侧）
                 h_flex()
-                    .w_full()
                     .items_center()
                     .justify_between()
                     .child(
@@ -11596,47 +12036,49 @@ impl RouterApp {
                                     this.child(div().pt(px(2.)).child(tag))
                                 }),
                         )
-                        .child(
-                            v_flex()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(theme.foreground)
-                                        .child("默认模型 (Model)"),
-                                )
-                                .child(
-                                    h_flex()
-                                        .w_full()
-                                        .gap(px(8.))
-                                        .items_center()
-                                        .child(
-                                            div().flex_1().child(Input::new(&form.model).cleanable(true))
-                                        )
-                                        .when_some(form.default_model_select.as_ref(), |this, select| {
-                                            this.child(
-                                                div()
-                                                    .w(px(240.))
-                                                    .child(
-                                                        Select::new(select)
-                                                            .placeholder("选择模型...")
-                                                            .search_placeholder("搜索模型..."),
-                                                    ),
+                        .when(form.app != AppKind::ClaudeDesktop, |this| {
+                            this.child(
+                                v_flex()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child("默认模型 (Model)"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap(px(8.))
+                                            .items_center()
+                                            .child(
+                                                div().flex_1().child(Input::new(&form.model).cleanable(true))
                                             )
-                                        })
-                                        .child(
-                                            Button::new("fetch-models-btn")
-                                                .outline()
-                                                .icon(IconName::ArrowDown)
-                                                .tooltip("从端点拉取可用模型列表")
-                                                .disabled(form.is_fetching_models)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.fetch_models_for_form(window, cx);
-                                                })),
-                                        ),
-                                ),
-                        )
+                                            .when_some(form.default_model_select.as_ref(), |this, select| {
+                                                this.child(
+                                                    div()
+                                                        .w(px(240.))
+                                                        .child(
+                                                            Select::new(select)
+                                                                .placeholder("选择模型...")
+                                                                .search_placeholder("搜索模型..."),
+                                                        ),
+                                                )
+                                            })
+                                            .child(
+                                                Button::new("fetch-models-btn")
+                                                    .outline()
+                                                    .icon(IconName::ArrowDown)
+                                                    .tooltip("从端点拉取可用模型列表")
+                                                    .disabled(form.is_fetching_models)
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.fetch_models_for_form(window, cx);
+                                                    })),
+                                            ),
+                                    ),
+                            )
+                        })
                         .when(form.app == AppKind::Cursor, |this| {
                             this.when_some(form.thinking_effort_select.as_ref(), |this, select| {
                                 this.child(
@@ -12231,7 +12673,255 @@ impl RouterApp {
                         ),
                 ),
             )
-            .when(form.app != AppKind::WorkBuddy, |this| {
+            .when(form.app == AppKind::ClaudeDesktop, |this| {
+                // Claude Desktop 模型配置: 左侧标题+说明，右侧接入方式下拉
+                // (对齐 cc-switch)
+                let (mapping_desc, role_hint) = if form.desktop_mode
+                    == domain::CLAUDE_DESKTOP_MODE_MAPPING
+                {
+                    (
+                        t!("claude_desktop.model_config_mapping_hint").to_string(),
+                        t!("claude_desktop.route_map_hint").to_string(),
+                    )
+                } else {
+                    (
+                        t!("claude_desktop.model_config_direct_hint").to_string(),
+                        String::new(),
+                    )
+                };
+                this.child(
+                    theme::tile(cx).child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap(px(24.))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child(t!("claude_desktop.model_config_title").to_string()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(18.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(mapping_desc),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(theme.foreground)
+                                            .child(t!("claude_desktop.model_mode_label").to_string()),
+                                    )
+                                    .children(form.desktop_mode_select.as_ref().map(|select| {
+                                        div()
+                                            .w(px(150.))
+                                            .child(Select::new(select).small())
+                                    })),
+                            ),
+                    ),
+                )
+                .when(
+                    form.desktop_mode == domain::CLAUDE_DESKTOP_MODE_MAPPING,
+                    |this| {
+                        this.child(
+                            theme::tile(cx).child(
+                                v_flex()
+                                    .w_full()
+                                    .gap(px(12.))
+                                    .child(
+                                        // 不设 w_full：依赖 v_flex 的 align-items: stretch
+                                        // 铺满整行，justify_between 才能把按钮推到最右侧
+                                        h_flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap(px(12.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(theme.foreground)
+                                                    .child(t!("claude_desktop.route_map_title").to_string()),
+                                            )
+                                            .child(
+                                                Button::new("desktop-fetch-models-btn")
+                                                    .outline()
+                                                    .small()
+                                                    .icon(CustomIcon::Download)
+                                                    .label(t!("provider.fetch_models").to_string())
+                                                    .disabled(form.is_fetching_models)
+                                                    .on_click(cx.listener(
+                                                        |this, _, window, cx| {
+                                                            this.fetch_models_for_form(
+                                                                window, cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(18.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(role_hint),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .items_center()
+                                            .gap(px(12.))
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .rounded(px(6.))
+                                            .bg(theme.secondary.opacity(0.5))
+                                            .child(
+                                                div()
+                                                    .w(px(120.))
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("claude_desktop.route_role_label").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(140.))
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("claude_desktop.label_override_label").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(220.))
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("claude_desktop.upstream_model_label").to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(110.))
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(t!("claude_desktop.supports_1m_label").to_string()),
+                                            ),
+                                    )
+                                    .children(
+                                        form.desktop_roles
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(idx, role)| {
+                                                let (role_label, _) =
+                                                    domain::CLAUDE_DESKTOP_ROUTES[idx];
+                                                h_flex()
+                                                    .items_center()
+                                                    .gap(px(12.))
+                                                    .px(px(8.))
+                                                    .py(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .w(px(120.))
+                                                            .flex_none()
+                                                            .child(
+                                                                div()
+                                                                    .w_full()
+                                                                    .h(px(32.))
+                                                                    .flex()
+                                                                    .items_center()
+                                                                    .px(px(12.))
+                                                                    .rounded(px(6.))
+                                                                    .border_1()
+                                                                    .border_color(theme.border)
+                                                                    .bg(theme.secondary.opacity(0.6))
+                                                                    .text_size(px(13.))
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(theme.foreground)
+                                                                    .child(role_label.to_string()),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w(px(140.))
+                                                            .child(Input::new(&role.display_name).small().cleanable(true)),
+                                                    )
+                                                    .child(
+                                                        h_flex()
+                                                            .flex_1()
+                                                            .min_w(px(220.))
+                                                            .items_center()
+                                                            .gap(px(6.))
+                                                            .child(
+                                                                div()
+                                                                    .flex_1()
+                                                                    .child(Input::new(&role.model).small().cleanable(true)),
+                                                            )
+                                                            .when_some(role.model_select.as_ref(), |this, select| {
+                                                                this.child(
+                                                                    div()
+                                                                        .w(px(130.))
+                                                                        .flex_none()
+                                                                        .child(
+                                                                            Select::new(select)
+                                                                                .small()
+                                                                                .placeholder("选择模型")
+                                                                                .search_placeholder("搜索模型..."),
+                                                                        ),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        h_flex()
+                                                            .w(px(110.))
+                                                            .flex_none()
+                                                            .items_center()
+                                                            .gap(px(8.))
+                                                            .child(
+                                                                Checkbox::new(
+                                                                    SharedString::from(format!(
+                                                                        "desktop-role-1m-{idx}"
+                                                                    )),
+                                                                )
+                                                                .checked(role.one_m)
+                                                                .on_click(cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        this.toggle_desktop_role_one_m(idx, cx);
+                                                                    },
+                                                                )),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(13.))
+                                                                    .text_color(theme.muted_foreground)
+                                                                    .child("1M"),
+                                                            ),
+                                                    )
+                                            }),
+                                    ),
+                            ),
+                        )
+                    },
+                )
+            })
+            .when(
+                form.app != AppKind::WorkBuddy && form.app != AppKind::ClaudeDesktop,
+                |this| {
                 this.child(
                 // Model Mapping Card
                 theme::tile(cx).child(
@@ -12491,9 +13181,8 @@ impl RouterApp {
                 ),
             )})})
             .child(
-                // Bottom Action Buttons
+                // Bottom Action Buttons（不设 w_full：依赖 stretch 铺满，justify_end 才能靠右）
                 h_flex()
-                    .w_full()
                     .justify_end()
                     .gap(px(10.))
                     .pt(px(8.))
@@ -12537,6 +13226,9 @@ impl Render for RouterApp {
                     .into_any_element(),
                 Route::Claude => self
                     .render_app_providers_page(AppKind::Claude, cx)
+                    .into_any_element(),
+                Route::ClaudeDesktop => self
+                    .render_app_providers_page(AppKind::ClaudeDesktop, cx)
                     .into_any_element(),
                 Route::Grok => self
                     .render_app_providers_page(AppKind::Grok, cx)
@@ -12650,7 +13342,7 @@ impl FormDraft {
                 request_protocol: RequestProtocol::OpenAiResponses.as_str().into(),
                 model_mappings: Vec::new(),
             }),
-            AppKind::Claude => ProviderForm::Claude(ClaudeForm {
+            AppKind::Claude | AppKind::ClaudeDesktop => ProviderForm::Claude(ClaudeForm {
                 name: String::new(),
                 website_url: String::new(),
                 kind: ClaudeKind::ThirdParty,
@@ -12659,6 +13351,7 @@ impl FormDraft {
                 model: DEFAULT_CLAUDE_MODEL.to_string(),
                 request_protocol: RequestProtocol::Anthropic.as_str().into(),
                 model_mappings: Vec::new(),
+                desktop_mode: None,
             }),
             AppKind::Grok => ProviderForm::Grok(GrokForm {
                 name: String::new(),
@@ -12919,6 +13612,7 @@ impl FormDraft {
             match app {
                 AppKind::Codex => "https://chatgpt.com/codex".to_string(),
                 AppKind::Claude => "https://anthropic.com".to_string(),
+                AppKind::ClaudeDesktop => "https://claude.ai".to_string(),
                 AppKind::Grok => "https://x.ai".to_string(),
                 AppKind::OpenCode => "https://opencode.ai".to_string(),
                 AppKind::Pi => "https://pi.dev".to_string(),
@@ -13000,6 +13694,104 @@ impl FormDraft {
         let (zcode_modality_text, zcode_modality_image) = match &form {
             ProviderForm::ZCode(f) => (f.modality_text, f.modality_image),
             _ => (true, true),
+        };
+
+        // Claude Desktop 默认模型映射(对齐 cc-switch)；未存储过该字段的
+        // 旧数据同样按映射展示
+        let desktop_mode = match &form {
+            ProviderForm::Claude(f) => f.desktop_mode.clone().unwrap_or_else(|| {
+                if app == AppKind::ClaudeDesktop {
+                    domain::CLAUDE_DESKTOP_MODE_MAPPING.to_string()
+                } else {
+                    domain::CLAUDE_DESKTOP_MODE_DIRECT.to_string()
+                }
+            }),
+            _ => domain::CLAUDE_DESKTOP_MODE_DIRECT.to_string(),
+        };
+        let desktop_role_sources: Vec<(String, String, bool)> = match &form {
+            ProviderForm::Claude(f) => f
+                .model_mappings
+                .iter()
+                .take(domain::CLAUDE_DESKTOP_ROUTES.len())
+                .map(|m| {
+                    (
+                        m.display_name.clone(),
+                        m.model.clone(),
+                        m.context_window
+                            .is_some_and(|w| w >= domain::CLAUDE_DESKTOP_ONE_M_WINDOW),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let desktop_roles: Vec<DesktopRoleDraft> = (0..domain::CLAUDE_DESKTOP_ROUTES.len())
+            .map(|idx| {
+                let (dn, m, one_m) = desktop_role_sources.get(idx).cloned().unwrap_or_default();
+                let (role_label, _) = domain::CLAUDE_DESKTOP_ROUTES[idx];
+                let is_haiku = role_label.eq_ignore_ascii_case("haiku");
+                let dn_placeholder = if is_haiku {
+                    "DeepSeek V4 Flash"
+                } else {
+                    "DeepSeek V4 Pro"
+                };
+                let model_placeholder = if is_haiku {
+                    "deepseek-v4-flash"
+                } else {
+                    "deepseek-v4-pro"
+                };
+                DesktopRoleDraft {
+                    display_name: field(window, cx, &dn, dn_placeholder),
+                    model: field(window, cx, &m, model_placeholder),
+                    one_m,
+                    model_select: None,
+                    _model_select_sub: None,
+                }
+            })
+            .collect();
+
+        // 接入方式下拉(对齐 cc-switch: 始终位于卡片右侧)
+        let (desktop_mode_select, _desktop_mode_sub) = if app == AppKind::ClaudeDesktop {
+            let modes = [
+                (
+                    domain::CLAUDE_DESKTOP_MODE_DIRECT,
+                    t!("claude_desktop.model_mode_direct").to_string(),
+                ),
+                (
+                    domain::CLAUDE_DESKTOP_MODE_MAPPING,
+                    t!("claude_desktop.model_mode_mapping").to_string(),
+                ),
+            ];
+            let items: Vec<DesktopModeItem> = modes
+                .iter()
+                .map(|(value, label)| DesktopModeItem {
+                    value: value.to_string(),
+                    label: label.to_string(),
+                })
+                .collect();
+            let selected = modes
+                .iter()
+                .position(|(value, _)| *value == desktop_mode)
+                .map(|i| gpui_component::IndexPath::default().row(i));
+            let select = cx.new(|cx| SelectState::new(items, selected, window, cx));
+            let view = cx.entity();
+            let sub = window.subscribe(
+                &select,
+                cx,
+                move |_, event: &SelectEvent<Vec<DesktopModeItem>>, _window, cx| {
+                    if let SelectEvent::Confirm(Some(mode)) = event {
+                        let mode = mode.clone();
+                        view.update(cx, |this, cx| {
+                            if let Some(form) = this.form.as_mut() {
+                                form.desktop_mode = mode;
+                                cx.notify();
+                            }
+                        });
+                    }
+                },
+            );
+            (Some(select), Some(sub))
+        } else {
+            (None, None)
         };
 
         let (
@@ -13219,6 +14011,10 @@ impl FormDraft {
             workbuddy_supported_effort_max,
             preset_select,
             catalog_rows,
+            desktop_mode,
+            desktop_mode_select,
+            _desktop_mode_sub,
+            desktop_roles,
             fetched_models: Vec::new(),
             has_fetched_models: false,
             default_model_select: None,
@@ -13338,12 +14134,66 @@ impl FormDraft {
                     model_mappings,
                 })
             }
-            AppKind::Claude => {
-                let model_mappings = self
-                    .catalog_rows
-                    .iter()
-                    .filter_map(|row| row.to_claude_mapping(cx))
-                    .collect();
+            AppKind::Claude | AppKind::ClaudeDesktop => {
+                // Claude Desktop 模型映射模式: 固定四档角色 -> model_mappings
+                // (context_window >= 1M 表示声明支持 1M)；直连模式沿用通用映射
+                let is_desktop_mapping = self.app == AppKind::ClaudeDesktop
+                    && self.desktop_mode == domain::CLAUDE_DESKTOP_MODE_MAPPING;
+                let model_mappings = if is_desktop_mapping {
+                    let first_filled = self
+                        .desktop_roles
+                        .iter()
+                        .find(|role| !role.model.read(cx).value().trim().is_empty());
+                    if let Some(primary) = first_filled {
+                        let primary_model = primary.model.read(cx).value().trim().to_string();
+                        let primary_dn = primary.display_name.read(cx).value().trim().to_string();
+                        let primary_1m = primary.one_m;
+                        self.desktop_roles
+                            .iter()
+                            .map(|role| {
+                                let m = role.model.read(cx).value().trim().to_string();
+                                let dn = role.display_name.read(cx).value().trim().to_string();
+                                let model = if m.is_empty() {
+                                    primary_model.clone()
+                                } else {
+                                    m
+                                };
+                                let display_name = if dn.is_empty() {
+                                    if !primary_dn.is_empty() {
+                                        primary_dn.clone()
+                                    } else {
+                                        model.clone()
+                                    }
+                                } else {
+                                    dn
+                                };
+                                let one_m = if role.one_m {
+                                    true
+                                } else if role.model.read(cx).value().trim().is_empty() {
+                                    primary_1m
+                                } else {
+                                    false
+                                };
+                                domain::ClaudeModelMapping {
+                                    display_name,
+                                    model,
+                                    context_window: one_m
+                                        .then_some(domain::CLAUDE_DESKTOP_ONE_M_WINDOW),
+                                    reasoning_effort: None,
+                                }
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    self.catalog_rows
+                        .iter()
+                        .filter_map(|row| row.to_claude_mapping(cx))
+                        .collect()
+                };
+                let desktop_mode =
+                    (self.app == AppKind::ClaudeDesktop).then(|| self.desktop_mode.clone());
                 ProviderForm::Claude(ClaudeForm {
                     name,
                     website_url,
@@ -13357,6 +14207,7 @@ impl FormDraft {
                     model,
                     request_protocol,
                     model_mappings,
+                    desktop_mode,
                 })
             }
             AppKind::Grok => {
@@ -13689,6 +14540,39 @@ fn usage_summary_text(result: &domain::UsageQueryResult) -> String {
 
 fn notify_info(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::info(message), cx);
+}
+
+/// 统一会话迁移/还原结果的提示文案
+fn unify_outcome_message(
+    outcome: &session::codex_history::HistoryOutcome,
+    enabling: bool,
+) -> String {
+    if let Some(reason) = &outcome.skipped_reason {
+        return match reason.as_str() {
+            "unify_toggle_on" => t!("codex_enhance.restore_skipped_toggle_on").to_string(),
+            "no_backup_ledger" => t!("codex_enhance.restore_nothing").to_string(),
+            "nothing_to_restore" => t!("codex_enhance.restore_nothing").to_string(),
+            "live_not_unified" => t!("codex_enhance.migrate_skipped_live_not_unified").to_string(),
+            "already_migrated" => t!("codex_enhance.migrate_already_done").to_string(),
+            _ => {
+                if enabling {
+                    t!("codex_enhance.enable_saved").to_string()
+                } else {
+                    t!("codex_enhance.disable_saved").to_string()
+                }
+            }
+        };
+    }
+    t!(
+        if enabling {
+            "codex_enhance.migrate_completed"
+        } else {
+            "codex_enhance.restore_completed"
+        },
+        files = outcome.jsonl_files,
+        rows = outcome.state_rows
+    )
+    .to_string()
 }
 
 fn notify_error(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {

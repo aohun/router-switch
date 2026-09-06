@@ -5,6 +5,7 @@ members = [
     "crates/cursor-gateway",
     "crates/adapters-codex",
     "crates/adapters-claude",
+    "crates/adapters-claude-desktop",
     "crates/adapters-grok",
     "crates/adapters-opencode",
     "crates/adapters-pi",
@@ -19,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 authors = ["router-switch"]
@@ -29,6 +30,7 @@ domain = { path = "crates/domain" }
 cursor-gateway = { path = "crates/cursor-gateway" }
 adapters-codex = { path = "crates/adapters-codex" }
 adapters-claude = { path = "crates/adapters-claude" }
+adapters-claude-desktop = { path = "crates/adapters-claude-desktop" }
 adapters-grok = { path = "crates/adapters-grok" }
 adapters-opencode = { path = "crates/adapters-opencode" }
 adapters-pi = { path = "crates/adapters-pi" }
@@ -46,7 +48,7 @@ gpui = "0.2.2"
 gpui-component = "0.5.1"
 gpui-component-assets = "0.5.1"
 parking_lot = "0.12"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

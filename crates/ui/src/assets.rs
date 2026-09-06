@@ -14,6 +14,23 @@ const ACTIVITY_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
   <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
 </svg>"#;
 
+const KEY_ROUND_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/>
+  <circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>
+</svg>"#;
+
+const DOWNLOAD_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+  <polyline points="7 10 12 15 17 10"/>
+  <line x1="12" x2="12" y1="15" y2="3"/>
+</svg>"#;
+
+const HELP_CIRCLE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="10"/>
+  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+  <path d="M12 17h.01"/>
+</svg>"#;
+
 const GEMINI_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <path fill="currentColor" d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.627 12 12 0-6.627 5.627-12 12-12-6.627 0-12-5.627-12-12Z"/>
 </svg>"#;
@@ -140,6 +157,9 @@ pub enum CustomIcon {
     BookOpen,
     ChartCurve,
     Activity,
+    KeyRound,
+    HelpCircle,
+    Download,
 }
 
 impl IconNamed for CustomIcon {
@@ -166,6 +186,9 @@ impl IconNamed for CustomIcon {
             Self::BookOpen => "icons/custom/book-open.svg",
             Self::ChartCurve => "icons/custom/chart-curve.svg",
             Self::Activity => "icons/custom/activity.svg",
+            Self::KeyRound => "icons/custom/key-round.svg",
+            Self::HelpCircle => "icons/custom/help-circle.svg",
+            Self::Download => "icons/custom/download.svg",
         }
         .into()
     }
@@ -195,6 +218,9 @@ impl AssetSource for AppAssets {
             "icons/custom/book-open.svg" => Ok(Some(Cow::Borrowed(BOOK_OPEN_SVG.as_bytes()))),
             "icons/custom/chart-curve.svg" => Ok(Some(Cow::Borrowed(CHART_CURVE_SVG.as_bytes()))),
             "icons/custom/activity.svg" => Ok(Some(Cow::Borrowed(ACTIVITY_SVG.as_bytes()))),
+            "icons/custom/key-round.svg" => Ok(Some(Cow::Borrowed(KEY_ROUND_SVG.as_bytes()))),
+            "icons/custom/help-circle.svg" => Ok(Some(Cow::Borrowed(HELP_CIRCLE_SVG.as_bytes()))),
+            "icons/custom/download.svg" => Ok(Some(Cow::Borrowed(DOWNLOAD_SVG.as_bytes()))),
             _ => gpui_component_assets::Assets.load(path),
         }
     }

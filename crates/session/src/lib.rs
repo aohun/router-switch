@@ -1,6 +1,7 @@
 //! App-layer glue: SQLite SSOT + live config adapters for Codex, Claude, Grok, OpenCode, Pi, Cursor, and ZCode.
 
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -9,9 +10,15 @@ use adapters_claude::{
     read_live as read_claude_live, resolve_claude_paths,
     write_live_for_provider as write_claude_live, ClaudeAdapterError, ClaudePaths,
 };
+use adapters_claude_desktop::{
+    resolve_claude_desktop_paths, write_live as write_claude_desktop_live, ClaudeDesktopError,
+    ClaudeDesktopPaths,
+};
 use adapters_codex::{
-    read_live as read_codex_live, resolve_codex_paths, write_live_for_provider as write_codex_live,
-    CodexAdapterError, CodexPaths,
+    read_live as read_codex_live, resolve_codex_paths,
+    strip_unified_session_bucket as strip_codex_unified_bucket,
+    write_live_for_provider_with_options as write_codex_live_with_options, CodexAdapterError,
+    CodexPaths, CodexWriteOptions,
 };
 use adapters_grok::{
     read_live as read_grok_live, resolve_grok_paths, write_live_for_provider as write_grok_live,
@@ -41,13 +48,15 @@ use cursor_gateway::{
 };
 use domain::{
     backfill_claude_settings, backfill_codex_settings, backfill_cursor_settings,
-    backfill_grok_settings, inspect_all_tools, inspect_tool_environment, new_provider_id,
-    parse_claude_form, parse_codex_form, parse_cursor_form, parse_grok_form, parse_opencode_form,
-    parse_pi_form, parse_workbuddy_form, parse_zcode_form, AppKind, ClaudeForm, CodexForm,
-    CursorForm, DomainError, GrokForm, OpenCodeForm, PiForm, Provider, ProviderForm,
-    ProviderSettings, RequestProtocol, WorkBuddyForm, WorkBuddySettings, ZCodeForm,
-    OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID,
-    OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
+    backfill_grok_settings, extract_claude_api_key, extract_claude_base_url, extract_claude_model,
+    extract_codex_api_key, has_login_material, inspect_all_tools, inspect_tool_environment,
+    new_provider_id, parse_claude_form, parse_codex_form, parse_cursor_form, parse_grok_form,
+    parse_opencode_form, parse_pi_form, parse_workbuddy_form, parse_zcode_form, AppKind,
+    ClaudeForm, CodexForm, CursorForm, DomainError, GrokForm, OpenCodeForm, PiForm, Provider,
+    ProviderForm, ProviderSettings, RequestProtocol, WorkBuddyForm, WorkBuddySettings, ZCodeForm,
+    OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID,
+    OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID, OFFICIAL_WORKBUDDY_ID,
+    OFFICIAL_ZCODE_ID,
 };
 pub use oauth::{
     codex_start_device_flow, xai_start_device_flow, AuthTokens, DeviceCodeStart, DevicePollStatus,
@@ -63,6 +72,7 @@ use thiserror::Error;
 pub use usage_query::UsageQueryError;
 
 mod auth_native;
+pub mod codex_history;
 pub mod oauth;
 pub mod prompts;
 pub mod sessions;
@@ -151,6 +161,27 @@ fn codex_model_mappings(mappings: &[domain::CodexModelMapping]) -> Vec<(String, 
 /// Local base URL that preserves the original provider URL's path (usually
 /// `/v1`): tools append their own endpoint suffix (`/responses`,
 /// `/chat/completions`, `/v1/messages`), so dropping the path would 404.
+/// 模型映射模式: 四档角色 -> (claude-* 路由 ID, 实际请求模型)。
+/// 空档沿用 Sonnet(或第一个已填档)的模型，确保子-agent 的 Haiku 可用。
+fn desktop_route_model_mappings(mappings: &[domain::ClaudeModelMapping]) -> Vec<(String, String)> {
+    let fallback = mappings
+        .iter()
+        .map(|m| m.model.trim().to_string())
+        .find(|model| !model.is_empty());
+    domain::CLAUDE_DESKTOP_ROUTES
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (_role, route_id))| {
+            let model = mappings
+                .get(idx)
+                .map(|m| m.model.trim().to_string())
+                .filter(|model| !model.is_empty())
+                .or_else(|| fallback.clone())?;
+            Some((route_id.to_string(), model))
+        })
+        .collect()
+}
+
 fn gateway_base_url(port: u16, original_base_url: &str) -> String {
     let trimmed = original_base_url.trim().trim_end_matches('/');
     let path = match trimmed.find("://") {
@@ -175,6 +206,8 @@ pub enum SessionError {
     #[error(transparent)]
     ClaudeAdapter(#[from] ClaudeAdapterError),
     #[error(transparent)]
+    ClaudeDesktopAdapter(#[from] ClaudeDesktopError),
+    #[error(transparent)]
     GrokAdapter(#[from] GrokAdapterError),
     #[error(transparent)]
     OpenCodeAdapter(#[from] OpenCodeAdapterError),
@@ -198,6 +231,7 @@ pub struct Workspace {
     store: Store,
     codex_paths: CodexPaths,
     claude_paths: ClaudePaths,
+    claude_desktop_paths: ClaudeDesktopPaths,
     grok_paths: GrokPaths,
     opencode_paths: OpenCodePaths,
     pi_paths: PiPaths,
@@ -229,6 +263,8 @@ impl Workspace {
             .or(settings.codex_home.clone());
         let codex_paths = resolve_codex_paths(override_codex.as_deref())?;
         let claude_paths = resolve_claude_paths(settings.claude_home.as_deref())?;
+        let claude_desktop_paths =
+            resolve_claude_desktop_paths(settings.claude_desktop_home.as_deref())?;
         let grok_paths = resolve_grok_paths(settings.grok_home.as_deref())?;
         let opencode_paths = resolve_opencode_paths(settings.opencode_home.as_deref())?;
         let pi_paths = resolve_pi_paths(settings.pi_home.as_deref())?;
@@ -245,6 +281,7 @@ impl Workspace {
             store,
             codex_paths,
             claude_paths,
+            claude_desktop_paths,
             grok_paths,
             opencode_paths,
             pi_paths,
@@ -456,6 +493,14 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn apply_claude_desktop_home(&mut self, home: Option<PathBuf>) -> Result<(), SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.claude_desktop_home = home.clone();
+        self.store.save_settings(&settings)?;
+        self.claude_desktop_paths = resolve_claude_desktop_paths(home.as_deref())?;
+        Ok(())
+    }
+
     pub fn apply_grok_home(&mut self, home: Option<PathBuf>) -> Result<(), SessionError> {
         let mut settings = self.store.settings()?;
         settings.grok_home = home.clone();
@@ -585,6 +630,134 @@ impl Workspace {
         Ok(())
     }
 
+    /// 非接管切换第三方 Codex 供应商时是否保留官方登录
+    pub fn preserve_codex_official_auth_on_switch(&self) -> Result<bool, SessionError> {
+        Ok(self
+            .store
+            .settings()?
+            .preserve_codex_official_auth_on_switch)
+    }
+
+    pub fn set_preserve_codex_official_auth(&self, enabled: bool) -> Result<(), SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.preserve_codex_official_auth_on_switch = enabled;
+        self.store.save_settings(&settings)?;
+        Ok(())
+    }
+
+    /// 统一 Codex 会话历史是否开启
+    pub fn unify_codex_session_history(&self) -> Result<bool, SessionError> {
+        Ok(self.store.settings()?.unify_codex_session_history)
+    }
+
+    fn codex_unify_backup_parent(&self) -> PathBuf {
+        store::default_data_dir()
+            .unwrap_or_else(|_| PathBuf::from(".router-switch"))
+            .join("backups")
+            .join("codex-official-history-unify-v1")
+    }
+
+    fn codex_unify_restore_backup_dir(&self) -> PathBuf {
+        store::default_data_dir()
+            .unwrap_or_else(|_| PathBuf::from(".router-switch"))
+            .join("backups")
+            .join("codex-official-history-unify-restore-v1")
+    }
+
+    /// 是否存在可还原的官方会话迁移账本
+    pub fn has_codex_unify_history_backup(&self) -> bool {
+        codex_history::has_unify_backup(&self.codex_unify_backup_parent(), &self.codex_paths.home)
+    }
+
+    /// 切换统一 Codex 会话历史开关。开启且勾选迁入时执行官方会话迁移
+    /// (迁移前自动备份，账本绑定当前 Codex 目录)；关闭时清理迁移意愿
+    /// 与完成标记。还原由 `restore_codex_unified_history` 单独执行。
+    pub fn set_unify_codex_session_history(
+        &self,
+        enabled: bool,
+        migrate_existing: bool,
+    ) -> Result<codex_history::HistoryOutcome, SessionError> {
+        let mut settings = self.store.settings()?;
+        settings.unify_codex_session_history = enabled;
+        settings.unify_codex_migrate_existing = enabled && migrate_existing;
+        if !enabled {
+            settings.codex_official_history_unify = None;
+        }
+        self.store.save_settings(&settings)?;
+
+        if !enabled || !migrate_existing {
+            return Ok(codex_history::HistoryOutcome::skipped("not_requested"));
+        }
+        self.maybe_migrate_codex_official_history(&settings)
+    }
+
+    /// 执行官方会话统一迁移: 已有当前目录的完成标记则跳过；live 未路由
+    /// 到 custom 桶(注入被拒绝)时跳过并保留迁移意愿，待下次切换后重试。
+    fn maybe_migrate_codex_official_history(
+        &self,
+        settings: &AppSettings,
+    ) -> Result<codex_history::HistoryOutcome, SessionError> {
+        let codex_dir_key = fs::canonicalize(&self.codex_paths.home)
+            .unwrap_or_else(|_| self.codex_paths.home.clone())
+            .to_string_lossy()
+            .to_string();
+        if let Some(marker) = &settings.codex_official_history_unify {
+            if marker.codex_config_dir == codex_dir_key {
+                return Ok(codex_history::HistoryOutcome::skipped("already_migrated"));
+            }
+        }
+
+        let live = read_codex_live(&self.codex_paths)?;
+        let generation = self
+            .codex_unify_backup_parent()
+            .join(chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string());
+        let outcome = codex_history::migrate_official_history(
+            &self.codex_paths.home,
+            &live.config_toml,
+            &generation,
+        )
+        .map_err(SessionError::Message)?;
+
+        if outcome.is_skipped() {
+            // live_not_unified 等情况: 保留迁移意愿，清理可能建出的空代际
+            let _ = fs::remove_dir(&generation);
+            return Ok(outcome);
+        }
+
+        // 条件写标记: 迁移期间开关被关掉时不写，避免下次开启被标记挡住
+        let mut settings = self.store.settings()?;
+        if !settings.unify_codex_session_history || !settings.unify_codex_migrate_existing {
+            return Ok(codex_history::HistoryOutcome::skipped(
+                "toggle_disabled_during_migration",
+            ));
+        }
+        settings.codex_official_history_unify = Some(store::CodexUnifyMigrationMarker {
+            completed_at: chrono::Utc::now().to_rfc3339(),
+            codex_config_dir: codex_dir_key,
+            migrated_jsonl_files: outcome.jsonl_files as u64,
+            migrated_state_rows: outcome.state_rows as u64,
+        });
+        self.store.save_settings(&settings)?;
+        Ok(outcome)
+    }
+
+    /// 按迁移账本把官方会话还原回 openai 桶。开关重新开启时拒绝还原。
+    pub fn restore_codex_unified_history(
+        &self,
+    ) -> Result<codex_history::HistoryOutcome, SessionError> {
+        if self.unify_codex_session_history()? {
+            return Ok(codex_history::HistoryOutcome::skipped("unify_toggle_on"));
+        }
+        let live = read_codex_live(&self.codex_paths)?;
+        codex_history::restore_official_history(
+            &self.codex_paths.home,
+            &live.config_toml,
+            &self.codex_unify_backup_parent(),
+            &self.codex_unify_restore_backup_dir(),
+        )
+        .map_err(SessionError::Message)
+    }
+
     pub fn set_auto_check_update(&self, enabled: bool) -> Result<(), SessionError> {
         let mut settings = self.store.settings()?;
         settings.auto_check_update = enabled;
@@ -631,7 +804,9 @@ impl Workspace {
                 let mut settings = settings.clone();
                 if self.store.current_id(AppKind::Codex)?.as_deref() == Some(id) {
                     let live = read_codex_live(&self.codex_paths)?;
-                    backfill_codex_settings(&mut settings, &live.auth, &live.config_toml);
+                    // 回填前剥掉统一会话注入产物，避免共享路由进入存储配置
+                    let config = strip_codex_unified_bucket(&live.config_toml);
+                    backfill_codex_settings(&mut settings, &live.auth, &config);
                 }
                 Ok(ProviderForm::Codex(settings.form_snapshot(
                     &provider.name,
@@ -640,7 +815,11 @@ impl Workspace {
             }
             ProviderSettings::Claude(settings) => {
                 let mut settings = settings.clone();
-                if self.store.current_id(AppKind::Claude)?.as_deref() == Some(id) {
+                // Claude Desktop 复用 Claude 结构但 live 是 3P 档案，不做
+                // ~/.claude 回填
+                if provider.app == AppKind::Claude
+                    && self.store.current_id(AppKind::Claude)?.as_deref() == Some(id)
+                {
                     let live = read_claude_live(&self.claude_paths)?;
                     backfill_claude_settings(&mut settings, &live.settings);
                 }
@@ -701,6 +880,99 @@ impl Workspace {
         form: ClaudeForm,
     ) -> Result<Provider, SessionError> {
         self.save_form(AppKind::Claude, editing_id, ProviderForm::Claude(form))
+    }
+
+    pub fn save_claude_desktop_form(
+        &self,
+        editing_id: Option<&str>,
+        form: ClaudeForm,
+    ) -> Result<Provider, SessionError> {
+        self.save_form(
+            AppKind::ClaudeDesktop,
+            editing_id,
+            ProviderForm::Claude(form),
+        )
+    }
+
+    /// 把 Claude Code 中已有的第三方供应商导入 Claude Desktop(对齐 cc-switch)。
+    /// 复制为新行而非挪动原行(providers.id 全局唯一，禁止跨应用改写)；
+    /// 配置适配为 Claude Desktop 直连所需: env 仅保留 base_url 与 auth
+    /// token，模型菜单由 model_mappings 承载(无映射时从 ANTHROPIC_MODEL
+    /// 推导)。按确定性 id 或名称+端点去重，重复导入幂等。
+    pub fn import_claude_desktop_from_claude(&self) -> Result<usize, SessionError> {
+        let claude_providers = self.store.list_providers(AppKind::Claude)?;
+        let existing = self.store.list_providers(AppKind::ClaudeDesktop)?;
+        let desktop_base_url = |provider: &Provider| -> String {
+            match &provider.settings {
+                ProviderSettings::Claude(settings) => {
+                    extract_claude_base_url(&settings.env).unwrap_or_default()
+                }
+                _ => String::new(),
+            }
+        };
+        let mut imported = 0usize;
+        for source in claude_providers {
+            if source.id == OFFICIAL_CLAUDE_ID {
+                continue;
+            }
+            let ProviderSettings::Claude(settings) = source.settings.clone() else {
+                continue;
+            };
+            if settings.kind == domain::ClaudeKind::Official
+                || !adapters_claude_desktop::is_compatible_direct_settings(&settings)
+            {
+                continue;
+            }
+            let new_id = format!("{}-desktop", source.id);
+            let already_imported = existing.iter().any(|p| {
+                p.id == new_id
+                    || (p.name.trim() == source.name.trim()
+                        && desktop_base_url(p) == desktop_base_url(&source))
+            });
+            if already_imported {
+                continue;
+            }
+
+            let base_url = extract_claude_base_url(&settings.env).unwrap_or_default();
+            let api_key = extract_claude_api_key(&settings.env).unwrap_or_default();
+            let mut model_mappings = settings.model_mappings.clone();
+            if model_mappings.is_empty() {
+                if let Some(model) = extract_claude_model(&settings.env) {
+                    model_mappings.push(domain::ClaudeModelMapping {
+                        display_name: source.name.trim().to_string(),
+                        model,
+                        context_window: None,
+                        reasoning_effort: None,
+                    });
+                }
+            }
+            let provider = Provider {
+                id: new_id,
+                app: AppKind::ClaudeDesktop,
+                name: source.name.clone(),
+                website_url: source.website_url.clone(),
+                settings: ProviderSettings::Claude(domain::ClaudeSettings {
+                    kind: domain::ClaudeKind::ThirdParty,
+                    env: json!({
+                        "ANTHROPIC_BASE_URL": base_url,
+                        "ANTHROPIC_AUTH_TOKEN": api_key,
+                    }),
+                    request_protocol: RequestProtocol::Anthropic.as_str().into(),
+                    model_mappings,
+                    desktop_mode: None,
+                }),
+                created_at: now_secs(),
+                sort_index: next_sort(&self.store, AppKind::ClaudeDesktop)?,
+            };
+            self.store.upsert_provider(&provider)?;
+            imported += 1;
+        }
+        self.write_diagnostic_log(
+            LogLevel::Info,
+            "provider",
+            &format!("Imported {imported} providers from Claude Code into Claude Desktop"),
+        );
+        Ok(imported)
     }
 
     pub fn save_grok_form(
@@ -780,13 +1052,12 @@ impl Workspace {
                 let url = optional_url(&f.website_url);
                 let is_off = f.kind.is_official();
                 let s = parse_claude_form(f)?;
-                (
-                    name,
-                    url,
-                    ProviderSettings::Claude(s),
-                    OFFICIAL_CLAUDE_ID,
-                    is_off,
-                )
+                let official_id = if app == AppKind::ClaudeDesktop {
+                    OFFICIAL_CLAUDE_DESKTOP_ID
+                } else {
+                    OFFICIAL_CLAUDE_ID
+                };
+                (name, url, ProviderSettings::Claude(s), official_id, is_off)
             }
             ProviderForm::Grok(f) => {
                 let name = f.name.trim().to_string();
@@ -987,6 +1258,7 @@ impl Workspace {
 
     pub fn enable(&self, id: &str) -> Result<(), SessionError> {
         let provider = self.require(id)?;
+        self.backfill_live_into_current(&provider)?;
         self.write_live(&provider)?;
         self.store.set_current(provider.app, id)?;
         self.write_diagnostic_log(
@@ -999,6 +1271,47 @@ impl Workspace {
                 provider.id
             ),
         );
+        Ok(())
+    }
+
+    /// 对齐 cc-switch: 切换前把当前 live 配置回填到将离开的供应商行，
+    /// 保证切回时还原到离开时的样子(含用户在 live 文件里的手动改动)。
+    /// 仅覆盖有回填语义的独占文件型应用(Codex / Claude / Grok)。
+    fn backfill_live_into_current(&self, target: &Provider) -> Result<(), SessionError> {
+        let Some(current_id) = self.store.current_id(target.app)? else {
+            return Ok(());
+        };
+        if current_id == target.id {
+            return Ok(());
+        }
+        let mut current = self.require(&current_id)?;
+        match (&mut current.settings, target.app) {
+            (ProviderSettings::Codex(settings), AppKind::Codex) => {
+                let live = read_codex_live(&self.codex_paths)?;
+                let config = strip_codex_unified_bucket(&live.config_toml);
+                // 认证仅回填该行能安全承载的形态: 官方行接受 ChatGPT 登录，
+                // 第三方行只接受 API Key(避免令牌混入第三方凭据)。
+                if has_login_material(&live.auth) {
+                    let live_is_bare_key = extract_codex_api_key(&live.auth).is_some();
+                    if settings.kind == domain::CodexKind::Official || live_is_bare_key {
+                        settings.auth = live.auth.clone();
+                    }
+                }
+                if !config.trim().is_empty() {
+                    settings.config_toml = config;
+                }
+            }
+            (ProviderSettings::Claude(settings), AppKind::Claude) => {
+                let live = read_claude_live(&self.claude_paths)?;
+                *settings = backfill_claude_settings(settings, &live.settings);
+            }
+            (ProviderSettings::Grok(settings), AppKind::Grok) => {
+                let live = read_grok_live(&self.grok_paths)?;
+                *settings = backfill_grok_settings(settings, &live.config_toml);
+            }
+            _ => return Ok(()),
+        }
+        self.store.upsert_provider(&current)?;
         Ok(())
     }
 
@@ -1373,9 +1686,49 @@ impl Workspace {
     }
 
     fn write_live(&self, provider: &Provider) -> Result<(), SessionError> {
+        // Claude Desktop 复用 Claude 表单结构，但落盘目标是 3P 网关配置；
+        // 模型映射模式经本地 compat 网关把 claude-* 角色路由映射到实际模型。
+        if provider.app == AppKind::ClaudeDesktop {
+            if let ProviderSettings::Claude(settings) = &provider.settings {
+                let mut settings = settings.clone();
+                let is_mapping =
+                    settings.desktop_mode.as_deref() == Some(domain::CLAUDE_DESKTOP_MODE_MAPPING);
+                if is_mapping {
+                    let base_url = extract_claude_base_url(&settings.env).unwrap_or_default();
+                    let api_key = extract_claude_api_key(&settings.env).unwrap_or_default();
+                    let model_mappings = desktop_route_model_mappings(&settings.model_mappings);
+                    let protocol = RequestProtocol::parse(&settings.request_protocol);
+                    let port = self.register_compat_target(CompatTarget {
+                        app: AppKind::ClaudeDesktop,
+                        model_mappings,
+                        base_url: base_url.clone(),
+                        api_key,
+                        model: settings
+                            .model_mappings
+                            .first()
+                            .map(|m| m.model.clone())
+                            .unwrap_or_default(),
+                        protocol,
+                    })?;
+                    if !base_url.is_empty() {
+                        settings.env["ANTHROPIC_BASE_URL"] =
+                            json!(gateway_base_url(port, &base_url));
+                    }
+                } else {
+                    self.unregister_compat_target(AppKind::ClaudeDesktop);
+                }
+                return write_claude_desktop_live(&self.claude_desktop_paths, &settings)
+                    .map_err(SessionError::from);
+            }
+        }
         match &provider.settings {
             ProviderSettings::Codex(settings) => {
                 let mut settings = settings.clone();
+                let app_settings = self.store.settings()?;
+                let options = CodexWriteOptions {
+                    preserve_official_auth: app_settings.preserve_codex_official_auth_on_switch,
+                    unify_session_history: app_settings.unify_codex_session_history,
+                };
                 match self.routing_plan(AppKind::Codex, provider) {
                     Some(upstream) => {
                         let base_url = domain::extract_codex_base_url(&settings.config_toml)
@@ -1398,7 +1751,7 @@ impl Workspace {
                     }
                     None => self.unregister_compat_target(AppKind::Codex),
                 }
-                write_codex_live(&self.codex_paths, &settings)?;
+                write_codex_live_with_options(&self.codex_paths, &settings, options)?;
             }
             ProviderSettings::Claude(settings) => {
                 let mut settings = settings.clone();
@@ -1546,8 +1899,9 @@ impl Workspace {
     }
 
     /// Apps whose live configs can be routed through the compat gateway.
-    const ROUTABLE_APPS: [AppKind; 5] = [
+    const ROUTABLE_APPS: [AppKind; 6] = [
         AppKind::Claude,
+        AppKind::ClaudeDesktop,
         AppKind::Codex,
         AppKind::Grok,
         AppKind::OpenCode,
@@ -1789,6 +2143,353 @@ mod tests {
     }
 
     #[test]
+    fn claude_desktop_import_and_direct_write_flow() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_desktop_home(Some(temp.path().join("AppSupport")))
+            .unwrap();
+
+        let form = ClaudeForm {
+            name: "PackyCode".into(),
+            website_url: "https://www.packyapi.ai".into(),
+            kind: ClaudeKind::ThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: "https://www.packyapi.ai".into(),
+            model: "claude-sonnet-5".into(),
+            request_protocol: String::new(),
+            model_mappings: Vec::new(),
+            desktop_mode: None,
+        };
+        let claude_provider = ws.save_claude_form(None, form).unwrap();
+
+        // 从 Claude Code 导入 → 复制为新行(id 加 -desktop 后缀)，原行不挪动
+        let imported = ws.import_claude_desktop_from_claude().unwrap();
+        assert_eq!(imported, 1);
+        let desktop = ws.snapshot_for(AppKind::ClaudeDesktop).unwrap();
+        let new_id = format!("{}-desktop", claude_provider.id);
+        let copied = desktop
+            .providers
+            .iter()
+            .find(|p| p.id == new_id)
+            .expect("imported copy should exist in Claude Desktop");
+        assert!(copied.id != claude_provider.id);
+
+        // Claude Code 供应商列表不受影响
+        let claude_after = ws.snapshot_for(AppKind::Claude).unwrap();
+        assert!(claude_after
+            .providers
+            .iter()
+            .any(|p| p.id == claude_provider.id));
+
+        // 配置已适配 Claude Desktop 直连: env 仅保留 base_url + auth token，
+        // 模型菜单由 model_mappings 承载(从 ANTHROPIC_MODEL 推导)
+        if let ProviderSettings::Claude(settings) = &copied.settings {
+            assert_eq!(
+                settings.env.get("ANTHROPIC_BASE_URL"),
+                Some(&serde_json::json!("https://www.packyapi.ai"))
+            );
+            assert_eq!(
+                settings.env.get("ANTHROPIC_AUTH_TOKEN"),
+                Some(&serde_json::json!("sk-mock-key-12345"))
+            );
+            assert!(settings.env.get("ANTHROPIC_MODEL").is_none());
+            assert_eq!(settings.model_mappings.len(), 1);
+            assert_eq!(settings.model_mappings[0].model, "claude-sonnet-5");
+        } else {
+            panic!("expected claude settings for desktop copy");
+        }
+
+        // 官方种子已就位
+        assert!(desktop
+            .providers
+            .iter()
+            .any(|p| p.id == OFFICIAL_CLAUDE_DESKTOP_ID));
+
+        // 启用复制品 → 写入 3P 网关配置
+        ws.enable(&new_id).unwrap();
+        let paths = adapters_claude_desktop::ClaudeDesktopPaths::from_app_support(
+            temp.path().join("AppSupport"),
+        );
+        let profile = fs::read_to_string(&paths.profile_path).unwrap();
+        assert!(profile.contains("inferenceGatewayBaseUrl"));
+        assert!(profile.contains("https://www.packyapi.ai"));
+        let normal = fs::read_to_string(&paths.normal_config).unwrap();
+        assert!(normal.contains("\"deploymentMode\": \"3p\""));
+
+        // 切回官方 → 1P 模式并移除档案
+        ws.enable(OFFICIAL_CLAUDE_DESKTOP_ID).unwrap();
+        let normal = fs::read_to_string(&paths.normal_config).unwrap();
+        assert!(normal.contains("\"deploymentMode\": \"1p\""));
+        assert!(!paths.profile_path.exists());
+
+        // 重复导入幂等
+        assert_eq!(ws.import_claude_desktop_from_claude().unwrap(), 0);
+    }
+
+    #[test]
+    fn claude_desktop_mapping_mode_routes_via_local_gateway() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_claude_desktop_home(Some(temp.path().join("AppSupport")))
+            .unwrap();
+
+        let form = ClaudeForm {
+            name: "DeepSeek Relay".into(),
+            website_url: "https://api.example.com".into(),
+            kind: ClaudeKind::ThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: "https://api.example.com".into(),
+            model: "deepseek-v4-pro".into(),
+            request_protocol: String::new(),
+            model_mappings: vec![
+                domain::ClaudeModelMapping {
+                    display_name: "gemini-3.7-flash-high".into(),
+                    model: "gpt-5.4-mini".into(),
+                    context_window: Some(domain::CLAUDE_DESKTOP_ONE_M_WINDOW),
+                    reasoning_effort: None,
+                },
+                domain::ClaudeModelMapping {
+                    display_name: "DeepSeek V4 Pro".into(),
+                    model: "deepseek-v4-pro".into(),
+                    context_window: None,
+                    reasoning_effort: None,
+                },
+                domain::ClaudeModelMapping {
+                    display_name: String::new(),
+                    model: String::new(),
+                    context_window: None,
+                    reasoning_effort: None,
+                },
+                domain::ClaudeModelMapping {
+                    display_name: "DeepSeek V4 Flash".into(),
+                    model: "deepseek-v4-flash".into(),
+                    context_window: None,
+                    reasoning_effort: None,
+                },
+            ],
+            desktop_mode: Some(domain::CLAUDE_DESKTOP_MODE_MAPPING.into()),
+        };
+        let provider = ws.save_claude_desktop_form(None, form).unwrap();
+        ws.enable(&provider.id).unwrap();
+
+        // 档案暴露 claude-* 安全路由(非实际模型)，端点指向本地网关
+        let paths = adapters_claude_desktop::ClaudeDesktopPaths::from_app_support(
+            temp.path().join("AppSupport"),
+        );
+        let profile = fs::read_to_string(&paths.profile_path).unwrap();
+        assert!(profile.contains("claude-sonnet-5"));
+        assert!(profile.contains("claude-opus-5"));
+        assert!(profile.contains("claude-fable-5"));
+        assert!(profile.contains("claude-haiku-4-5"));
+        assert!(!profile.contains("deepseek-v4-pro"));
+        assert!(profile.contains("supports1m"));
+        assert!(profile.contains("http://127.0.0.1:"));
+        assert!(!profile.contains("https://api.example.com"));
+
+        // 切回直连 → 档案恢复供应商端点
+        let mut direct_form = ws.form_for(&provider.id).unwrap();
+        if let ProviderForm::Claude(ref mut f) = direct_form {
+            f.desktop_mode = Some(domain::CLAUDE_DESKTOP_MODE_DIRECT.into());
+        }
+        let updated = ws
+            .save_claude_desktop_form(
+                Some(&provider.id),
+                match direct_form {
+                    ProviderForm::Claude(f) => f,
+                    _ => unreachable!(),
+                },
+            )
+            .unwrap();
+        ws.enable(&updated.id).unwrap();
+        let profile = fs::read_to_string(&paths.profile_path).unwrap();
+        assert!(profile.contains("https://api.example.com"));
+        assert!(!profile.contains("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn switching_back_to_official_restores_official_login_and_config() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let codex_home = temp.path().join(".codex");
+        fs::create_dir_all(&codex_home).unwrap();
+        // 模拟用户官方登录后的 live 状态(ChatGPT OAuth + 自定义官方配置)
+        fs::write(
+            codex_home.join("auth.json"),
+            r#"{"tokens":{"access_token":"chatgpt-oauth","refresh_token":"rt"}}"#,
+        )
+        .unwrap();
+        let official_config = "default_model = \"gpt-5.6\"\ndisable_response_storage = false\n";
+        fs::write(codex_home.join("config.toml"), official_config).unwrap();
+
+        let ws = Workspace::open(&db_path, Some(&codex_home)).unwrap();
+        let form = CodexForm {
+            name: "PackyCode".into(),
+            website_url: "https://www.packyapi.ai".into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-live-test".into(),
+            base_url: "https://www.packyapi.ai/v1".into(),
+            model: "gpt-5.6-sol".into(),
+            request_protocol: String::new(),
+            model_mappings: Vec::new(),
+        };
+        let third_party_id = ws.save_codex_form(None, form).unwrap();
+
+        // 官方 → 第三方 → 官方: 应回到官方登录与官方配置
+        ws.enable(&third_party_id.id).unwrap();
+        let tp_auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(tp_auth["OPENAI_API_KEY"], "sk-live-test");
+
+        ws.enable(OFFICIAL_CODEX_ID).unwrap();
+        let back_auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(back_auth["tokens"]["access_token"], "chatgpt-oauth");
+        assert_eq!(
+            fs::read_to_string(codex_home.join("config.toml")).unwrap(),
+            official_config
+        );
+    }
+
+    #[test]
+    fn switching_back_to_official_survives_unified_route_and_manual_edits() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let codex_home = temp.path().join(".codex");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::write(
+            codex_home.join("auth.json"),
+            r#"{"tokens":{"access_token":"chatgpt-oauth","refresh_token":"rt"}}"#,
+        )
+        .unwrap();
+        let official_config = "default_model = \"gpt-5.6\"\n";
+        fs::write(codex_home.join("config.toml"), official_config).unwrap();
+
+        let ws = Workspace::open(&db_path, Some(&codex_home)).unwrap();
+        // 统一会话历史开启: 官方 live 将带共享 custom 路由
+        ws.set_unify_codex_session_history(true, false).unwrap();
+
+        let form = CodexForm {
+            name: "PackyCode".into(),
+            website_url: "https://www.packyapi.ai".into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-live-test".into(),
+            base_url: "https://www.packyapi.ai/v1".into(),
+            model: "gpt-5.6-sol".into(),
+            request_protocol: String::new(),
+            model_mappings: Vec::new(),
+        };
+        let third_party = ws.save_codex_form(None, form).unwrap();
+
+        // 官方(注入统一路由) → 第三方 → 官方: 官方登录与配置都不能丢
+        ws.enable(OFFICIAL_CODEX_ID).unwrap();
+        assert!(fs::read_to_string(codex_home.join("config.toml"))
+            .unwrap()
+            .contains("model_provider = \"custom\""));
+        ws.enable(&third_party.id).unwrap();
+        ws.enable(OFFICIAL_CODEX_ID).unwrap();
+
+        let back_auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(back_auth["tokens"]["access_token"], "chatgpt-oauth");
+        let back_config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        // 用户官方配置保留，且统一路由重新注入
+        assert!(back_config.contains("default_model = \"gpt-5.6\""));
+        assert!(back_config.contains("model_provider = \"custom\""));
+    }
+
+    #[test]
+    fn preserve_official_auth_and_unify_history_flags_flow() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let codex_home = temp.path().join(".codex");
+        fs::create_dir_all(&codex_home).unwrap();
+        // 预置官方 ChatGPT 登录与官方配置
+        fs::write(
+            codex_home.join("auth.json"),
+            r#"{"tokens":{"access_token":"chatgpt-oauth"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            codex_home.join("config.toml"),
+            "default_model = \"gpt-5.6\"\n",
+        )
+        .unwrap();
+
+        let ws = Workspace::open(&db_path, Some(&codex_home)).unwrap();
+
+        // 默认关闭
+        assert!(!ws.preserve_codex_official_auth_on_switch().unwrap());
+        assert!(!ws.unify_codex_session_history().unwrap());
+
+        // 第三方供应商
+        let form = CodexForm {
+            name: "PackyCode".into(),
+            website_url: "https://www.packyapi.ai".into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-live-test".into(),
+            base_url: "https://www.packyapi.ai/v1".into(),
+            model: "gpt-5.6-sol".into(),
+            request_protocol: String::new(),
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_codex_form(None, form).unwrap();
+
+        // 开启保留官方登录后切换: auth.json 保留 ChatGPT 登录，密钥走 bearer token
+        ws.set_preserve_codex_official_auth(true).unwrap();
+        ws.enable(&provider.id).unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(auth["tokens"]["access_token"], "chatgpt-oauth");
+        assert!(auth.get("OPENAI_API_KEY").is_none());
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("experimental_bearer_token = \"sk-live-test\""));
+
+        // 切回官方: 统一会话开启后 live 注入共享 custom 路由
+        ws.set_unify_codex_session_history(true, false).unwrap();
+        let official_id = ws
+            .snapshot_for(AppKind::Codex)
+            .unwrap()
+            .providers
+            .iter()
+            .find(|p| {
+                matches!(
+                    p.settings,
+                    domain::ProviderSettings::Codex(ref s) if s.kind == CodexKind::Official
+                )
+            })
+            .map(|p| p.id.clone())
+            .expect("official provider seeded");
+        ws.enable(&official_id).unwrap();
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("model_provider = \"custom\""));
+        assert!(config.contains("supports_websockets = true"));
+
+        // live 未统一前不迁移；编辑表单回填时剥掉统一路由
+        let outcome = ws.set_unify_codex_session_history(true, true).unwrap();
+        // 当前 live 已注入统一路由，迁移可执行(无历史会话则 0 项)
+        assert_eq!(outcome.skipped_reason, None);
+        if let ProviderForm::Codex(snapshot) = ws.form_for(&official_id).unwrap() {
+            // 官方配置回填后 base_url 仍为空(统一路由表已剥离)
+            assert!(snapshot.base_url.is_empty());
+        } else {
+            panic!("expected codex form");
+        }
+
+        // 关闭开关: 清理标记，还原拒绝在开关开启时执行
+        ws.set_unify_codex_session_history(false, false).unwrap();
+        assert!(!ws.unify_codex_session_history().unwrap());
+        ws.set_unify_codex_session_history(true, false).unwrap();
+        let restore = ws.restore_codex_unified_history().unwrap();
+        assert_eq!(restore.skipped_reason.as_deref(), Some("unify_toggle_on"));
+    }
+
+    #[test]
     fn claude_provider_flow() {
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("app.db");
@@ -1805,6 +2506,7 @@ mod tests {
             model: "anthropic/claude-3.7-sonnet".into(),
             request_protocol: String::new(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let provider = ws.save_claude_form(None, form).unwrap();
         ws.enable(&provider.id).unwrap();
@@ -1832,6 +2534,7 @@ mod tests {
             model: "gpt-5.6-sol".into(),
             request_protocol: "openai-chat".into(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let routed = ws.save_claude_form(None, form).unwrap();
         ws.enable(&routed.id).unwrap();
@@ -2021,6 +2724,7 @@ mod tests {
             model: "gpt-5.6-sol".into(),
             request_protocol: "openai-chat".into(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let routed = ws.save_claude_form(None, routed_form).unwrap();
         ws.enable(&routed.id).unwrap();
@@ -2035,6 +2739,7 @@ mod tests {
             model: "claude-sonnet-4-5".into(),
             request_protocol: "anthropic".into(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let native = ws.save_claude_form(None, native_form).unwrap();
         ws.enable(&native.id).unwrap();

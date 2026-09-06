@@ -25,8 +25,10 @@ pub use app_kind::AppKind;
 pub use claude::{
     backfill_claude_settings, extract_claude_api_key, extract_claude_base_url,
     extract_claude_model, extract_claude_provider_name, generate_claude_env,
-    official_claude_provider, official_claude_settings, parse_claude_form, ClaudeForm, ClaudeKind,
-    ClaudeModelMapping, ClaudePreset, ClaudeSettings, CLAUDE_PRESETS, DEFAULT_CLAUDE_MODEL,
+    official_claude_desktop_provider, official_claude_provider, official_claude_settings,
+    parse_claude_form, ClaudeForm, ClaudeKind, ClaudeModelMapping, ClaudePreset, ClaudeSettings,
+    CLAUDE_DESKTOP_MODE_DIRECT, CLAUDE_DESKTOP_MODE_MAPPING, CLAUDE_DESKTOP_ONE_M_WINDOW,
+    CLAUDE_DESKTOP_ROUTES, CLAUDE_PRESETS, DEFAULT_CLAUDE_MODEL, OFFICIAL_CLAUDE_DESKTOP_ID,
     OFFICIAL_CLAUDE_ID,
 };
 pub use clipboard::{parse_clipboard_provider_info, ClipboardProviderInfo};
@@ -197,6 +199,7 @@ mod tests {
             model: "claude-3-7-sonnet-20250219".into(),
             request_protocol: String::new(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let settings = parse_claude_form(form).unwrap();
         assert_eq!(settings.kind, ClaudeKind::ThirdParty);

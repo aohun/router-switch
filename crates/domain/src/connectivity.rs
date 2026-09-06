@@ -374,6 +374,7 @@ mod tests {
                 ),
                 request_protocol: String::new(),
                 model_mappings: vec![],
+                desktop_mode: None,
             }),
             created_at: 0,
             sort_index: 0,

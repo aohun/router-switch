@@ -1,6 +1,7 @@
 mod app_view;
 pub mod assets;
 mod theme;
+pub mod tray;
 pub mod update_dialog;
 pub mod usage_service;
 
@@ -78,6 +79,8 @@ pub fn run() {
     app.run(|cx: &mut App| {
         #[cfg(target_os = "macos")]
         setup_dock_icon();
+
+        tray::setup_tray();
 
         gpui_component::init(cx);
         theme::apply_palette(cx);

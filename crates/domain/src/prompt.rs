@@ -24,6 +24,7 @@ pub fn prompt_filename(app: AppKind) -> &'static str {
     match app {
         AppKind::Claude => "CLAUDE.md",
         AppKind::Codex
+        | AppKind::ClaudeDesktop
         | AppKind::Grok
         | AppKind::OpenCode
         | AppKind::Pi
@@ -39,6 +40,11 @@ pub fn prompt_file_path(app: AppKind) -> Option<PathBuf> {
     let path = match app {
         AppKind::Claude => home.join(".claude").join("CLAUDE.md"),
         AppKind::Codex => home.join(".codex").join("AGENTS.md"),
+        AppKind::ClaudeDesktop => home
+            .join("Library")
+            .join("Application Support")
+            .join("Claude")
+            .join("CLAUDE.md"),
         AppKind::Grok => home.join(".grok").join("AGENTS.md"),
         AppKind::OpenCode => home.join(".config").join("opencode").join("AGENTS.md"),
         AppKind::Pi => home.join(".pi").join("agent").join("AGENTS.md"),

@@ -241,6 +241,7 @@ mod tests {
             model: "claude-3-7-sonnet-20250219".into(),
             request_protocol: String::new(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         };
         let settings = parse_claude_form(form).unwrap();
 

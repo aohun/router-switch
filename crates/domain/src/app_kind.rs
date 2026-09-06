@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum AppKind {
     Codex,
     Claude,
+    ClaudeDesktop,
     Grok,
     OpenCode,
     Pi,
@@ -18,6 +19,7 @@ impl AppKind {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::ClaudeDesktop => "claude-desktop",
             Self::Grok => "grok",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
@@ -31,6 +33,7 @@ impl AppKind {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude Code",
+            Self::ClaudeDesktop => "Claude Desktop",
             Self::Grok => "Grok Build",
             Self::OpenCode => "OpenCode",
             Self::Pi => "Pi",
@@ -44,6 +47,7 @@ impl AppKind {
         match raw {
             "codex" => Some(Self::Codex),
             "claude" => Some(Self::Claude),
+            "claude-desktop" | "claude_desktop" | "claudedesktop" => Some(Self::ClaudeDesktop),
             "grok" => Some(Self::Grok),
             "opencode" => Some(Self::OpenCode),
             "pi" => Some(Self::Pi),
@@ -53,4 +57,17 @@ impl AppKind {
             _ => None,
         }
     }
+
+    /// 全部应用(供遍历加载等场景使用，避免硬编码漏项)
+    pub const ALL: &'static [AppKind] = &[
+        AppKind::Codex,
+        AppKind::Claude,
+        AppKind::ClaudeDesktop,
+        AppKind::Grok,
+        AppKind::OpenCode,
+        AppKind::Pi,
+        AppKind::Cursor,
+        AppKind::ZCode,
+        AppKind::WorkBuddy,
+    ];
 }

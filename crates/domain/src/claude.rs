@@ -6,6 +6,7 @@ use crate::provider::ProviderSettings;
 use crate::{AppKind, DomainError, Provider};
 
 pub const OFFICIAL_CLAUDE_ID: &str = "claude-official";
+pub const OFFICIAL_CLAUDE_DESKTOP_ID: &str = "claude-desktop-official";
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-3-7-sonnet-20250219";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,7 +38,28 @@ pub struct ClaudeSettings {
     pub request_protocol: String,
     #[serde(default)]
     pub model_mappings: Vec<ClaudeModelMapping>,
+    /// Claude Desktop 接入方式: "mapping" = 模型映射(四档角色经本地网关
+    /// 路由到实际模型)；None/"direct" = 直连。仅 Claude Desktop 使用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_mode: Option<String>,
 }
+
+/// Claude Desktop 接入方式取值
+pub const CLAUDE_DESKTOP_MODE_DIRECT: &str = "direct";
+pub const CLAUDE_DESKTOP_MODE_MAPPING: &str = "mapping";
+
+/// `context_window` 用 1M 值表示「声明支持 1M 上下文」
+pub const CLAUDE_DESKTOP_ONE_M_WINDOW: u64 = 1_000_000;
+
+/// 模型映射模式的固定四档角色: (角色名, 暴露给 Claude Desktop 的安全路由 ID)。
+/// Claude Desktop 只接受 claude-sonnet-* / claude-opus-* / claude-fable-* /
+/// claude-haiku-* 形态的角色 ID。
+pub const CLAUDE_DESKTOP_ROUTES: [(&str, &str); 4] = [
+    ("Sonnet", "claude-sonnet-5"),
+    ("Opus", "claude-opus-5"),
+    ("Fable", "claude-fable-5"),
+    ("Haiku", "claude-haiku-4-5"),
+];
 
 impl ClaudeSettings {
     pub fn form_snapshot(&self, name: &str, website_url: Option<&str>) -> ClaudeForm {
@@ -57,6 +79,7 @@ impl ClaudeSettings {
                 self.request_protocol.clone()
             },
             model_mappings: self.model_mappings.clone(),
+            desktop_mode: self.desktop_mode.clone(),
         }
     }
 }
@@ -71,6 +94,8 @@ pub struct ClaudeForm {
     pub model: String,
     pub request_protocol: String,
     pub model_mappings: Vec<ClaudeModelMapping>,
+    /// Claude Desktop 接入方式(None = 直连)
+    pub desktop_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +190,7 @@ pub fn official_claude_settings() -> ClaudeSettings {
         env: json!({}),
         request_protocol: RequestProtocol::Anthropic.as_str().into(),
         model_mappings: Vec::new(),
+        desktop_mode: None,
     }
 }
 
@@ -174,6 +200,19 @@ pub fn official_claude_provider() -> Provider {
         app: AppKind::Claude,
         name: "Anthropic Official".into(),
         website_url: Some("https://anthropic.com".into()),
+        settings: ProviderSettings::Claude(official_claude_settings()),
+        created_at: 0,
+        sort_index: 0,
+    }
+}
+
+/// Claude Desktop 官方订阅入口(1P 部署模式，还原官方登录态)
+pub fn official_claude_desktop_provider() -> Provider {
+    Provider {
+        id: OFFICIAL_CLAUDE_DESKTOP_ID.into(),
+        app: AppKind::ClaudeDesktop,
+        name: "Claude Official".into(),
+        website_url: Some("https://claude.ai".into()),
         settings: ProviderSettings::Claude(official_claude_settings()),
         created_at: 0,
         sort_index: 0,
@@ -191,6 +230,7 @@ pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError
             env: json!({}),
             request_protocol: RequestProtocol::Anthropic.as_str().into(),
             model_mappings: Vec::new(),
+            desktop_mode: None,
         }),
         ClaudeKind::ThirdParty => {
             let api_key = form.api_key.trim();
@@ -219,6 +259,7 @@ pub fn parse_claude_form(form: ClaudeForm) -> Result<ClaudeSettings, DomainError
                     .as_str()
                     .into(),
                 model_mappings: form.model_mappings,
+                desktop_mode: form.desktop_mode,
             })
         }
     }
