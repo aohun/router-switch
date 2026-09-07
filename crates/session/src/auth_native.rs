@@ -3,15 +3,18 @@
 //! - Codex: 登录成功写入原生 `~/.codex/auth.json`(与 Codex CLI 同构),
 //!   状态直接读该文件——官方 `codex login` 写入的内容同样能被识别为已认证。
 //! - xAI (Grok): 令牌保存在应用数据库(kv), 无 Grok CLI 原生 OAuth 落盘格式。
+//! - WorkBuddy (CodeBuddy): 令牌保存在应用数据库(kv), 到期前 5 分钟刷新。
 
 use serde::{Deserialize, Serialize};
 
 use crate::oauth::AuthTokens;
+use crate::workbuddy_auth::WorkBuddyStoredCredentials;
 use crate::SessionError;
 use adapters_codex::CodexPaths;
 use store::Store;
 
 const XAI_KV_KEY: &str = "oauth.xai.tokens";
+const WORKBUDDY_KV_KEY: &str = "oauth.workbuddy.tokens";
 
 /// 认证状态(UI 展示用)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -44,6 +47,7 @@ pub fn read_status(
     match provider {
         crate::oauth::CODEX_PROVIDER => read_codex_status(store, codex_paths),
         crate::oauth::XAI_PROVIDER => read_xai_status(store),
+        crate::oauth::WORKBUDDY_PROVIDER => read_workbuddy_status(store),
         other => Err(SessionError::Message(format!(
             "不支持的认证提供方: {other}"
         ))),
@@ -60,6 +64,7 @@ pub fn persist_tokens(
     match provider {
         crate::oauth::CODEX_PROVIDER => persist_codex(tokens, store, codex_paths),
         crate::oauth::XAI_PROVIDER => persist_xai(tokens, store),
+        crate::oauth::WORKBUDDY_PROVIDER => persist_workbuddy(tokens, store),
         other => Err(SessionError::Message(format!(
             "不支持的认证提供方: {other}"
         ))),
@@ -83,6 +88,10 @@ pub fn clear_credentials(
         }
         crate::oauth::XAI_PROVIDER => {
             store.kv_delete(XAI_KV_KEY)?;
+            Ok(())
+        }
+        crate::oauth::WORKBUDDY_PROVIDER => {
+            store.kv_delete(WORKBUDDY_KV_KEY)?;
             Ok(())
         }
         other => Err(SessionError::Message(format!(
@@ -226,4 +235,73 @@ fn read_xai_status(store: &Store) -> Result<NativeAuthStatus, SessionError> {
         account: credentials.email,
         last_refresh: Some(credentials.authenticated_at),
     })
+}
+
+// ==================== WorkBuddy / CodeBuddy ====================
+
+fn persist_workbuddy(tokens: &AuthTokens, store: &Store) -> Result<(), SessionError> {
+    let credentials = WorkBuddyStoredCredentials::from_tokens(tokens);
+    store.kv_set(
+        WORKBUDDY_KV_KEY,
+        &serde_json::to_string(&credentials)
+            .map_err(|e| SessionError::Message(format!("WorkBuddy 凭据序列化失败: {e}")))?,
+    )?;
+    Ok(())
+}
+
+fn read_workbuddy_status(store: &Store) -> Result<NativeAuthStatus, SessionError> {
+    match load_workbuddy_credentials(store)? {
+        Some(credentials) if !credentials.access_token.trim().is_empty() => Ok(NativeAuthStatus {
+            provider: crate::oauth::WORKBUDDY_PROVIDER.to_string(),
+            authenticated: true,
+            account: (!credentials.nickname.trim().is_empty()).then_some(credentials.nickname),
+            last_refresh: (!credentials.authenticated_at.trim().is_empty())
+                .then_some(credentials.authenticated_at),
+        }),
+        _ => Ok(NativeAuthStatus::unauthenticated(
+            crate::oauth::WORKBUDDY_PROVIDER,
+        )),
+    }
+}
+
+pub fn load_workbuddy_credentials(
+    store: &Store,
+) -> Result<Option<WorkBuddyStoredCredentials>, SessionError> {
+    let Some(json) = store.kv_get(WORKBUDDY_KV_KEY)? else {
+        return Ok(None);
+    };
+    let credentials: WorkBuddyStoredCredentials = serde_json::from_str(&json)
+        .map_err(|e| SessionError::Message(format!("WorkBuddy 凭据损坏: {e}")))?;
+    Ok(Some(credentials))
+}
+
+fn save_workbuddy_credentials(
+    store: &Store,
+    credentials: &WorkBuddyStoredCredentials,
+) -> Result<(), SessionError> {
+    store.kv_set(
+        WORKBUDDY_KV_KEY,
+        &serde_json::to_string(credentials)
+            .map_err(|e| SessionError::Message(format!("WorkBuddy 凭据序列化失败: {e}")))?,
+    )?;
+    Ok(())
+}
+
+/// 若凭据将在 5 分钟内过期则刷新, 返回最新 access token 与请求头。
+pub fn ensure_workbuddy_access_token(
+    store: &Store,
+) -> Result<Option<WorkBuddyStoredCredentials>, SessionError> {
+    let Some(credentials) = load_workbuddy_credentials(store)? else {
+        return Ok(None);
+    };
+    let now = chrono::Utc::now().timestamp();
+    if !credentials.needs_refresh(now) {
+        return Ok(Some(credentials));
+    }
+    let rt = crate::tokio_runtime();
+    let refreshed = rt
+        .block_on(crate::workbuddy_auth::workbuddy_refresh(&credentials))
+        .map_err(SessionError::Message)?;
+    save_workbuddy_credentials(store, &refreshed)?;
+    Ok(Some(refreshed))
 }

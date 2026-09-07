@@ -7,6 +7,76 @@ pub const OFFICIAL_WORKBUDDY_ID: &str = "workbuddy-official";
 pub const DEFAULT_WORKBUDDY_MODEL: &str = "gemini-2.5-pro";
 pub const DEFAULT_WORKBUDDY_VENDOR: &str = "Custom";
 
+/// CodeBuddy 套餐在服务商编辑页中的预设 ID。
+pub const WORKBUDDY_CODEBUDDY_PRESET_ID: &str = "workbuddy";
+pub const WORKBUDDY_WEBSITE_URL: &str = "https://www.codebuddy.cn";
+/// CodeBuddy 上游 Chat Completions 根路径(resolve 后为 `/v2/chat/completions`)。
+pub const WORKBUDDY_UPSTREAM_BASE: &str = "https://copilot.tencent.com/v2";
+pub const WORKBUDDY_DEFAULT_CODEBUDDY_MODEL: &str = "glm-5.3-flash";
+
+/// 与 workbuddy-cliproxy `models.yaml` 对齐的嵌入式目录。
+/// CodeBuddy 没有公开的 `/v1/models`，拉取模型时直接返回这份清单。
+pub const WORKBUDDY_MODEL_IDS: &[&str] = &[
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "kimi-k3",
+    "kimi-k2.7",
+    "kimi-k2.6",
+    "minimax-m3",
+    "minimax-m3-pay",
+    "hy4-preview",
+    "hy3",
+    "hy3-preview",
+    "hy3-preview-agent",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+];
+
+pub fn is_workbuddy_upstream(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    lower.contains("copilot.tencent.com") || lower.contains("codebuddy.cn")
+}
+
+pub fn workbuddy_model_ids() -> Vec<String> {
+    WORKBUDDY_MODEL_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect()
+}
+
+pub fn workbuddy_model_context_length(model_id: &str) -> u64 {
+    match model_id.trim() {
+        "glm-5.3" | "glm-5.3-flash" | "glm-5.2" | "deepseek-v4-pro" | "deepseek-v4-flash" => {
+            1_000_000
+        }
+        "glm-5.1" | "glm-5v-turbo" => 131_072,
+        "kimi-k3" | "kimi-k2.7" | "kimi-k2.6" | "hy4-preview" | "hy3" | "hy3-preview"
+        | "hy3-preview-agent" => 262_144,
+        "minimax-m3" | "minimax-m3-pay" => 204_800,
+        _ => 128_000,
+    }
+}
+
+/// Codex 需要 model_catalog_json 才能识别 hy4-preview 等非官方模型。
+pub fn workbuddy_codex_mappings() -> Vec<crate::codex::CodexModelMapping> {
+    WORKBUDDY_MODEL_IDS
+        .iter()
+        .map(|id| crate::codex::CodexModelMapping {
+            display_name: id.to_string(),
+            model: id.to_string(),
+            context_window: Some(workbuddy_model_context_length(id)),
+            reasoning_effort: Some("high".into()),
+            reasoning_levels: None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkBuddyKind {
@@ -313,6 +383,25 @@ pub const WORKBUDDY_PRESETS: &[WorkBuddyPreset] = &[
         max_output_tokens: None,
         reasoning_effort: "medium",
         provider_label: "Official",
+    },
+    WorkBuddyPreset {
+        id: WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: WORKBUDDY_WEBSITE_URL,
+        kind: WorkBuddyKind::ThirdParty,
+        model_id: WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        vendor: "Custom",
+        base_url: WORKBUDDY_UPSTREAM_BASE,
+        supports_tool_call: true,
+        supports_images: true,
+        supports_reasoning: true,
+        reasoning_only: false,
+        can_disable_reasoning: true,
+        use_custom_protocol: false,
+        max_input_tokens: Some(1_000_000),
+        max_output_tokens: Some(8192),
+        reasoning_effort: "high",
+        provider_label: "CodeBuddy",
     },
     WorkBuddyPreset {
         id: "cchost-gemini",

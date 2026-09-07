@@ -47,6 +47,8 @@ pub struct CompatTarget {
     pub protocol: RequestProtocol,
     /// inbound model id → upstream model id; unmatched ids pass through.
     pub model_mappings: Vec<(String, String)>,
+    /// Extra upstream headers (CodeBuddy User-Id / Refresh-Token 等)。
+    pub extra_headers: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -328,6 +330,7 @@ async fn route_compat(
         target.base_url.clone(),
         target.api_key.clone(),
         upstream_model,
+        target.extra_headers.clone(),
     );
     let events = provider.stream(invocation, CancellationToken::new());
     let display_model = if requested_model.is_empty() {
@@ -647,6 +650,7 @@ mod tests {
             model: "gpt-test".into(),
             protocol: RequestProtocol::OpenAiChat,
             model_mappings: vec![("claude-sonnet-4-5".into(), "gpt-test".into())],
+            extra_headers: Vec::new(),
         });
         gateway
     }
@@ -737,6 +741,7 @@ mod tests {
             model: "gpt-test".into(),
             protocol: RequestProtocol::OpenAiChat,
             model_mappings: Vec::new(),
+            extra_headers: Vec::new(),
         });
         let port = gateway.start(0).await.unwrap();
 
@@ -983,6 +988,7 @@ mod tests {
             model: "model-a".into(),
             protocol: RequestProtocol::OpenAiChat,
             model_mappings: vec![("alias".into(), "upstream-a".into())],
+            extra_headers: Vec::new(),
         });
         registry.set_target(CompatTarget {
             app: AppKind::Codex,
@@ -991,6 +997,7 @@ mod tests {
             model: "model-b".into(),
             protocol: RequestProtocol::Anthropic,
             model_mappings: Vec::new(),
+            extra_headers: Vec::new(),
         });
 
         assert_eq!(

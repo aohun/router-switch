@@ -226,6 +226,15 @@ pub const RESPONSES_PRESETS: &[CodexPreset] = &[
         provider_label: "openrouter",
     },
     CodexPreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: CodexKind::ResponsesThirdParty,
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_label: "workbuddy",
+    },
+    CodexPreset {
         id: "custom",
         name: "Custom Responses (自定义模板)",
         website_url: "",
@@ -431,6 +440,9 @@ pub fn fetch_models_from_api(base_url: &str, api_key: &str) -> Result<Vec<String
     if trimmed_base.is_empty() {
         return Err("API 端点为空".into());
     }
+    if crate::is_workbuddy_upstream(trimmed_base) {
+        return Ok(crate::workbuddy_model_ids());
+    }
 
     let candidate_urls = if trimmed_base.ends_with("/v1") {
         vec![
@@ -523,7 +535,25 @@ pub fn parse_codex_form(form: CodexForm) -> Result<CodexSettings, DomainError> {
             if model.is_empty() {
                 return Err(DomainError::validation("第三方服务商需要模型名"));
             }
-            let has_catalog = !form.model_mappings.is_empty();
+            let mut model_mappings = form.model_mappings;
+            if crate::is_workbuddy_upstream(base_url) {
+                if model_mappings.is_empty() {
+                    model_mappings = crate::workbuddy_codex_mappings();
+                }
+                if !model_mappings.iter().any(|m| m.model == model) {
+                    model_mappings.insert(
+                        0,
+                        CodexModelMapping {
+                            display_name: model.to_string(),
+                            model: model.to_string(),
+                            context_window: Some(crate::workbuddy_model_context_length(model)),
+                            reasoning_effort: Some("high".into()),
+                            reasoning_levels: None,
+                        },
+                    );
+                }
+            }
+            let has_catalog = !model_mappings.is_empty();
             Ok(CodexSettings {
                 kind: CodexKind::ResponsesThirdParty,
                 auth: generate_third_party_auth(api_key),
@@ -536,7 +566,7 @@ pub fn parse_codex_form(form: CodexForm) -> Result<CodexSettings, DomainError> {
                 request_protocol: RequestProtocol::parse(&form.request_protocol)
                     .as_str()
                     .into(),
-                model_mappings: form.model_mappings,
+                model_mappings,
             })
         }
     }

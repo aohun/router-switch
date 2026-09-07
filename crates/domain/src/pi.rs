@@ -141,6 +141,16 @@ pub const PI_PRESETS: &[PiPreset] = &[
         provider_label: "Third-Party",
     },
     PiPreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: PiKind::ThirdParty,
+        api_type: "openai-completions",
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_label: "CodeBuddy",
+    },
+    PiPreset {
         id: "custom",
         name: "自定义模板",
         website_url: "",

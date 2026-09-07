@@ -88,10 +88,12 @@ pub use usage_script::{
     UsageQueryResult, UsageScriptConfig, TEMPLATE_CUSTOM, TEMPLATE_GENERAL, TEMPLATE_NEW_API,
 };
 pub use workbuddy::{
-    official_workbuddy_provider, official_workbuddy_settings, parse_workbuddy_form, WorkBuddyForm,
-    WorkBuddyKind, WorkBuddyModelItem, WorkBuddyPreset, WorkBuddyReasoningConfig,
-    WorkBuddySettings, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR, OFFICIAL_WORKBUDDY_ID,
-    WORKBUDDY_PRESETS,
+    is_workbuddy_upstream, official_workbuddy_provider, official_workbuddy_settings,
+    parse_workbuddy_form, workbuddy_codex_mappings, workbuddy_model_context_length,
+    workbuddy_model_ids, WorkBuddyForm, WorkBuddyKind, WorkBuddyModelItem, WorkBuddyPreset,
+    WorkBuddyReasoningConfig, WorkBuddySettings, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
+    OFFICIAL_WORKBUDDY_ID, WORKBUDDY_CODEBUDDY_PRESET_ID, WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+    WORKBUDDY_MODEL_IDS, WORKBUDDY_PRESETS, WORKBUDDY_UPSTREAM_BASE, WORKBUDDY_WEBSITE_URL,
 };
 pub use zcode::{
     extract_zcode_api_key, extract_zcode_base_url, extract_zcode_modalities, extract_zcode_model,
@@ -449,5 +451,73 @@ mod tests {
             from_item_settings.supported_reasoning_efforts,
             vec!["medium", "high"]
         );
+    }
+
+    #[test]
+    fn workbuddy_upstream_detects_codebuddy_hosts() {
+        assert!(is_workbuddy_upstream("https://copilot.tencent.com/v2"));
+        assert!(is_workbuddy_upstream("https://www.codebuddy.cn"));
+        assert!(!is_workbuddy_upstream("https://api.example.com/v1"));
+        assert!(!is_workbuddy_upstream(""));
+    }
+
+    #[test]
+    fn workbuddy_preset_is_registered_for_routable_apps() {
+        assert!(CLAUDE_PRESETS.iter().any(
+            |p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID && p.base_url == WORKBUDDY_UPSTREAM_BASE
+        ));
+        assert!(RESPONSES_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID));
+        assert!(GROK_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID));
+        assert!(OPENCODE_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID));
+        assert!(PI_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID));
+        assert!(ZCODE_PRESETS.iter().any(
+            |p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID && p.provider_kind == "openai-compatible"
+        ));
+        assert!(CURSOR_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID && p.provider_type == "openai-chat"));
+        assert!(WORKBUDDY_PRESETS
+            .iter()
+            .any(|p| p.id == WORKBUDDY_CODEBUDDY_PRESET_ID));
+    }
+
+    #[test]
+    fn fetch_models_returns_workbuddy_catalog_without_network() {
+        let models = fetch_models_from_api(WORKBUDDY_UPSTREAM_BASE, "").unwrap();
+        assert!(models.contains(&WORKBUDDY_DEFAULT_CODEBUDDY_MODEL.to_string()));
+        assert_eq!(models.len(), WORKBUDDY_MODEL_IDS.len());
+    }
+
+    #[test]
+    fn workbuddy_codex_form_auto_fills_catalog_for_hy4() {
+        let settings = parse_codex_form(CodexForm {
+            name: "WorkBuddy".into(),
+            website_url: WORKBUDDY_WEBSITE_URL.into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: WORKBUDDY_UPSTREAM_BASE.into(),
+            model: "hy4-preview".into(),
+            request_protocol: "openai-chat".into(),
+            model_mappings: Vec::new(),
+        })
+        .unwrap();
+        assert!(settings
+            .model_mappings
+            .iter()
+            .any(|m| m.model == "hy4-preview"));
+        assert!(settings
+            .config_toml
+            .contains("model_catalog_json = \"router-switch-model-catalog.json\""));
+        let catalog = generate_catalog_json(&settings.model_mappings).unwrap();
+        assert!(catalog.contains("\"slug\": \"hy4-preview\""));
+        assert!(catalog.contains("base_instructions"));
     }
 }

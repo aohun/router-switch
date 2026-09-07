@@ -60,7 +60,7 @@ use domain::{
 };
 pub use oauth::{
     codex_start_device_flow, xai_start_device_flow, AuthTokens, DeviceCodeStart, DevicePollStatus,
-    CODEX_PROVIDER, CODEX_VERIFICATION_URL, XAI_PROVIDER,
+    CODEX_PROVIDER, CODEX_VERIFICATION_URL, WORKBUDDY_PROVIDER, XAI_PROVIDER,
 };
 use parking_lot::Mutex;
 use serde_json::json;
@@ -77,6 +77,7 @@ pub mod oauth;
 pub mod prompts;
 pub mod sessions;
 pub mod skills;
+mod workbuddy_auth;
 
 pub use prompts::PromptService;
 
@@ -144,6 +145,9 @@ pub fn oauth_poll_once(
                     .filter(|s| !s.trim().is_empty())
                     .ok_or_else(|| "缺少 token endpoint".to_string())?;
                 oauth::xai_poll_device(device_code, endpoint).await
+            }
+            oauth::WORKBUDDY_PROVIDER => {
+                crate::workbuddy_auth::workbuddy_poll_login(device_code).await
             }
             other => Err(format!("不支持的认证提供方: {other}")),
         }
@@ -1408,6 +1412,7 @@ impl Workspace {
             match provider {
                 oauth::CODEX_PROVIDER => oauth::codex_start_device_flow().await,
                 oauth::XAI_PROVIDER => oauth::xai_start_device_flow().await,
+                oauth::WORKBUDDY_PROVIDER => crate::workbuddy_auth::workbuddy_start_login().await,
                 other => Err(format!("不支持的认证提供方: {other}")),
             }
         })
@@ -1426,6 +1431,14 @@ impl Workspace {
     /// 退出登录(清除本地存储的凭据; Codex 原生 auth.json 一并移除)
     pub fn oauth_logout(&self, provider: &str) -> Result<(), SessionError> {
         crate::auth_native::clear_credentials(provider, &self.store, &self.codex_paths)
+    }
+
+    /// 读取(必要时刷新) CodeBuddy access token, 供表单预设回填。
+    pub fn workbuddy_access_token(&self) -> Result<Option<String>, SessionError> {
+        Ok(
+            crate::auth_native::ensure_workbuddy_access_token(&self.store)?
+                .map(|creds| creds.access_token),
+        )
     }
 
     /// 各应用的 skills 目录: (app, dir)
@@ -1698,7 +1711,7 @@ impl Workspace {
                     let api_key = extract_claude_api_key(&settings.env).unwrap_or_default();
                     let model_mappings = desktop_route_model_mappings(&settings.model_mappings);
                     let protocol = RequestProtocol::parse(&settings.request_protocol);
-                    let port = self.register_compat_target(CompatTarget {
+                    let target = self.finalize_compat_target(CompatTarget {
                         app: AppKind::ClaudeDesktop,
                         model_mappings,
                         base_url: base_url.clone(),
@@ -1709,10 +1722,17 @@ impl Workspace {
                             .map(|m| m.model.clone())
                             .unwrap_or_default(),
                         protocol,
-                    })?;
+                        extra_headers: Vec::new(),
+                    });
+                    let live_key = target.api_key.clone();
+                    let port = self.register_compat_target(target)?;
                     if !base_url.is_empty() {
                         settings.env["ANTHROPIC_BASE_URL"] =
                             json!(gateway_base_url(port, &base_url));
+                    }
+                    if !live_key.is_empty() {
+                        settings.env["ANTHROPIC_API_KEY"] = json!(live_key.clone());
+                        settings.env["ANTHROPIC_AUTH_TOKEN"] = json!(live_key);
                     }
                 } else {
                     self.unregister_compat_target(AppKind::ClaudeDesktop);
@@ -1724,6 +1744,23 @@ impl Workspace {
         match &provider.settings {
             ProviderSettings::Codex(settings) => {
                 let mut settings = settings.clone();
+                let original_base =
+                    domain::extract_codex_base_url(&settings.config_toml).unwrap_or_default();
+                if domain::is_workbuddy_upstream(&original_base) {
+                    if settings.model_mappings.is_empty() {
+                        settings.model_mappings = domain::workbuddy_codex_mappings();
+                    }
+                    let model =
+                        domain::extract_codex_model(&settings.config_toml).unwrap_or_default();
+                    let name = domain::extract_codex_provider_name(&settings.config_toml)
+                        .unwrap_or_else(|| provider.name.clone());
+                    settings.config_toml = domain::generate_third_party_config_with_catalog(
+                        &name,
+                        &original_base,
+                        &model,
+                        true,
+                    );
+                }
                 let app_settings = self.store.settings()?;
                 let options = CodexWriteOptions {
                     preserve_official_auth: app_settings.preserve_codex_official_auth_on_switch,
@@ -1733,7 +1770,7 @@ impl Workspace {
                     Some(upstream) => {
                         let base_url = domain::extract_codex_base_url(&settings.config_toml)
                             .unwrap_or_default();
-                        let port = self.register_compat_target(CompatTarget {
+                        let target = self.finalize_compat_target(CompatTarget {
                             app: AppKind::Codex,
                             model_mappings: codex_model_mappings(&settings.model_mappings),
                             base_url: base_url.clone(),
@@ -1742,11 +1779,17 @@ impl Workspace {
                             model: domain::extract_codex_model(&settings.config_toml)
                                 .unwrap_or_default(),
                             protocol: upstream,
-                        })?;
+                            extra_headers: Vec::new(),
+                        });
+                        let live_key = target.api_key.clone();
+                        let port = self.register_compat_target(target)?;
                         if !base_url.is_empty() {
                             settings.config_toml = settings
                                 .config_toml
                                 .replace(&base_url, &gateway_base_url(port, &base_url));
+                        }
+                        if !live_key.is_empty() {
+                            settings.auth["OPENAI_API_KEY"] = json!(live_key);
                         }
                     }
                     None => self.unregister_compat_target(AppKind::Codex),
@@ -1757,7 +1800,7 @@ impl Workspace {
                 let mut settings = settings.clone();
                 match self.routing_plan(AppKind::Claude, provider) {
                     Some(upstream) => {
-                        let port = self.register_compat_target(CompatTarget {
+                        let target = self.finalize_compat_target(CompatTarget {
                             app: AppKind::Claude,
                             base_url: domain::extract_claude_base_url(&settings.env)
                                 .unwrap_or_default(),
@@ -1770,7 +1813,10 @@ impl Workspace {
                                 .iter()
                                 .map(|m| (m.display_name.clone(), m.model.clone()))
                                 .collect(),
-                        })?;
+                            extra_headers: Vec::new(),
+                        });
+                        let live_key = target.api_key.clone();
+                        let port = self.register_compat_target(target)?;
                         let claude_base =
                             domain::extract_claude_base_url(&settings.env).unwrap_or_default();
                         if let Some(env) = settings.env.as_object_mut() {
@@ -1778,6 +1824,10 @@ impl Workspace {
                                 "ANTHROPIC_BASE_URL".into(),
                                 json!(gateway_base_url(port, &claude_base)),
                             );
+                            if !live_key.is_empty() {
+                                env.insert("ANTHROPIC_API_KEY".into(), json!(live_key.clone()));
+                                env.insert("ANTHROPIC_AUTH_TOKEN".into(), json!(live_key));
+                            }
                         }
                     }
                     None => self.unregister_compat_target(AppKind::Claude),
@@ -1790,7 +1840,7 @@ impl Workspace {
                     Some(upstream) => {
                         let base_url = domain::extract_grok_base_url(&settings.config_toml)
                             .unwrap_or_default();
-                        let port = self.register_compat_target(CompatTarget {
+                        let target = self.finalize_compat_target(CompatTarget {
                             app: AppKind::Grok,
                             base_url: base_url.clone(),
                             api_key: domain::extract_grok_api_key(&settings.config_toml)
@@ -1803,11 +1853,20 @@ impl Workspace {
                                 .iter()
                                 .map(|m| (m.display_name.clone(), m.model.clone()))
                                 .collect(),
-                        })?;
+                            extra_headers: Vec::new(),
+                        });
+                        let live_key = target.api_key.clone();
+                        let old_key =
+                            domain::extract_grok_api_key(&settings.config_toml).unwrap_or_default();
+                        let port = self.register_compat_target(target)?;
                         if !base_url.is_empty() {
                             settings.config_toml = settings
                                 .config_toml
                                 .replace(&base_url, &gateway_base_url(port, &base_url));
+                        }
+                        if !live_key.is_empty() && !old_key.is_empty() && old_key != live_key {
+                            settings.config_toml =
+                                settings.config_toml.replace(&old_key, &live_key);
                         }
                     }
                     None => self.unregister_compat_target(AppKind::Grok),
@@ -1820,7 +1879,7 @@ impl Workspace {
                     Some(upstream) => {
                         let base_url = domain::extract_opencode_base_url(&settings.options)
                             .unwrap_or_default();
-                        let port = self.register_compat_target(CompatTarget {
+                        let target = self.finalize_compat_target(CompatTarget {
                             app: AppKind::OpenCode,
                             base_url: base_url.clone(),
                             api_key: domain::extract_opencode_api_key(&settings.options)
@@ -1833,10 +1892,16 @@ impl Workspace {
                                 .iter()
                                 .map(|m| (m.display_name.clone(), m.model_id.clone()))
                                 .collect(),
-                        })?;
+                            extra_headers: Vec::new(),
+                        });
+                        let live_key = target.api_key.clone();
+                        let port = self.register_compat_target(target)?;
                         if let Some(options) = settings.options.as_object_mut() {
                             options
                                 .insert("baseURL".into(), json!(gateway_base_url(port, &base_url)));
+                            if !live_key.is_empty() {
+                                options.insert("apiKey".into(), json!(live_key));
+                            }
                         }
                     }
                     None => self.unregister_compat_target(AppKind::OpenCode),
@@ -1852,7 +1917,7 @@ impl Workspace {
                 let mut settings = settings.clone();
                 match self.routing_plan(AppKind::Pi, provider) {
                     Some(upstream) => {
-                        let port = self.register_compat_target(CompatTarget {
+                        let target = self.finalize_compat_target(CompatTarget {
                             app: AppKind::Pi,
                             base_url: settings.base_url.clone(),
                             api_key: settings.api_key.clone(),
@@ -1863,28 +1928,58 @@ impl Workspace {
                                 .iter()
                                 .map(|m| (m.display_name.clone(), m.model_id.clone()))
                                 .collect(),
-                        })?;
+                            extra_headers: Vec::new(),
+                        });
+                        let live_key = target.api_key.clone();
+                        let port = self.register_compat_target(target)?;
                         settings.base_url = gateway_base_url(port, &settings.base_url);
+                        if !live_key.is_empty() {
+                            settings.api_key = live_key;
+                        }
                     }
                     None => self.unregister_compat_target(AppKind::Pi),
                 }
                 write_pi_live(&self.pi_paths, &provider.id, &settings)?;
             }
-            // ZCode natively switches protocols via its provider_kind, and
-            // WorkBuddy has no protocol choice — neither needs the gateway.
+            // ZCode natively switches protocols via its provider_kind.
             ProviderSettings::ZCode(settings) => {
-                write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, settings)?;
+                let mut settings = settings.clone();
+                if let Some(base) = domain::extract_zcode_base_url(&settings.options) {
+                    let fallback =
+                        domain::extract_zcode_api_key(&settings.options).unwrap_or_default();
+                    let (live_key, _) = self.workbuddy_overlay(&base, &fallback);
+                    if domain::is_workbuddy_upstream(&base) && !live_key.is_empty() {
+                        if let Some(options) = settings.options.as_object_mut() {
+                            options.insert("apiKey".into(), json!(live_key));
+                        }
+                    }
+                }
+                write_zcode_live(&self.zcode_paths, &provider.id, &provider.name, &settings)?;
             }
             ProviderSettings::Cursor(settings) => {
+                let mut settings = settings.clone();
+                if domain::is_workbuddy_upstream(&settings.base_url) {
+                    let (live_key, _) =
+                        self.workbuddy_overlay(&settings.base_url, &settings.api_key);
+                    if !live_key.is_empty() {
+                        settings.api_key = live_key;
+                    }
+                }
                 if let Some(guard) = self.cursor_gateway.try_lock() {
                     if let Some(gw) = guard.as_ref() {
-                        gw.set_settings(Some(settings.clone()));
+                        gw.set_settings(Some(settings));
                     }
                 }
             }
             ProviderSettings::WorkBuddy(settings) => {
                 if settings.kind == domain::WorkBuddyKind::ThirdParty {
-                    let item = settings.to_model_item(&provider.name);
+                    let mut item = settings.to_model_item(&provider.name);
+                    if domain::is_workbuddy_upstream(&item.url) {
+                        let (live_key, _) = self.workbuddy_overlay(&item.url, &item.api_key);
+                        if !live_key.is_empty() {
+                            item.api_key = live_key;
+                        }
+                    }
                     write_workbuddy_live(&self.workbuddy_paths, None, &item)?;
                 }
             }
@@ -1911,6 +2006,7 @@ impl Workspace {
     /// Some(upstream protocol) when the provider's configured request protocol
     /// differs from the tool's native dialect — i.e. traffic must be converted
     /// by the compat gateway instead of written through as a direct connection.
+    /// CodeBuddy 上游只讲 Chat Completions, 即使协议一致也走网关以便注入请求头。
     fn routing_plan(&self, app: AppKind, provider: &Provider) -> Option<RequestProtocol> {
         let protocol_raw = match &provider.settings {
             ProviderSettings::Claude(settings) => &settings.request_protocol,
@@ -1922,7 +2018,64 @@ impl Workspace {
         };
         let configured = RequestProtocol::parse(protocol_raw);
         let native = RequestProtocol::default_for_app(app);
-        (configured != native).then_some(configured)
+        if configured != native {
+            return Some(configured);
+        }
+        let base_url = match &provider.settings {
+            ProviderSettings::Claude(settings) => {
+                extract_claude_base_url(&settings.env).unwrap_or_default()
+            }
+            ProviderSettings::Codex(settings) => {
+                domain::extract_codex_base_url(&settings.config_toml).unwrap_or_default()
+            }
+            ProviderSettings::Grok(settings) => {
+                domain::extract_grok_base_url(&settings.config_toml).unwrap_or_default()
+            }
+            ProviderSettings::OpenCode(settings) => {
+                domain::extract_opencode_base_url(&settings.options).unwrap_or_default()
+            }
+            ProviderSettings::Pi(settings) => settings.base_url.clone(),
+            _ => String::new(),
+        };
+        domain::is_workbuddy_upstream(&base_url).then_some(RequestProtocol::OpenAiChat)
+    }
+
+    fn workbuddy_overlay(
+        &self,
+        base_url: &str,
+        fallback_key: &str,
+    ) -> (String, Vec<(String, String)>) {
+        if !domain::is_workbuddy_upstream(base_url) {
+            return (fallback_key.to_string(), Vec::new());
+        }
+        let mut headers = crate::workbuddy_auth::workbuddy_default_headers();
+        match crate::auth_native::ensure_workbuddy_access_token(&self.store) {
+            Ok(Some(creds)) => {
+                headers.extend(creds.extra_headers());
+                let key = if creds.access_token.trim().is_empty() {
+                    fallback_key.to_string()
+                } else {
+                    creds.access_token
+                };
+                (key, headers)
+            }
+            _ => {
+                headers.push(("X-No-User-Id".into(), "1".into()));
+                headers.push(("X-No-Enterprise-Id".into(), "1".into()));
+                headers.push(("X-No-Department-Info".into(), "1".into()));
+                (fallback_key.to_string(), headers)
+            }
+        }
+    }
+
+    fn finalize_compat_target(&self, mut target: CompatTarget) -> CompatTarget {
+        let (key, headers) = self.workbuddy_overlay(&target.base_url, &target.api_key);
+        if domain::is_workbuddy_upstream(&target.base_url) {
+            target.api_key = key;
+            target.extra_headers = headers;
+            target.protocol = RequestProtocol::OpenAiChat;
+        }
+        target
     }
 
     fn register_compat_target(&self, target: CompatTarget) -> Result<u16, SessionError> {
@@ -2610,6 +2763,7 @@ mod tests {
         // 初始未认证
         assert!(!ws.oauth_status(CODEX_PROVIDER).unwrap().authenticated);
         assert!(!ws.oauth_status(XAI_PROVIDER).unwrap().authenticated);
+        assert!(!ws.oauth_status(WORKBUDDY_PROVIDER).unwrap().authenticated);
 
         let tokens = AuthTokens {
             access_token: "at".into(),
@@ -2618,6 +2772,7 @@ mod tests {
             id_token: Some("eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6Im1lQGV4YW1wbGUuY29tIn0.x".into()),
             account_id: Some("acct-1".into()),
             email: Some("me@example.com".into()),
+            ..AuthTokens::default()
         };
 
         // Codex: 写原生 auth.json 并可读回
@@ -2641,6 +2796,88 @@ mod tests {
         // 登出清除凭据
         ws.oauth_logout(XAI_PROVIDER).unwrap();
         assert!(!ws.oauth_status(XAI_PROVIDER).unwrap().authenticated);
+
+        let workbuddy = AuthTokens {
+            access_token: "wb-at".into(),
+            refresh_token: Some("wb-rt".into()),
+            email: Some("codebuddy-user".into()),
+            account_id: Some("uid-1".into()),
+            expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+            enterprise_id: Some("ent-1".into()),
+            domain: Some("tencent".into()),
+            ..AuthTokens::default()
+        };
+        ws.oauth_complete(WORKBUDDY_PROVIDER, &workbuddy).unwrap();
+        let status = ws.oauth_status(WORKBUDDY_PROVIDER).unwrap();
+        assert!(status.authenticated);
+        assert_eq!(status.account.as_deref(), Some("codebuddy-user"));
+        assert_eq!(
+            ws.workbuddy_access_token().unwrap().as_deref(),
+            Some("wb-at")
+        );
+        ws.oauth_logout(WORKBUDDY_PROVIDER).unwrap();
+        assert!(!ws.oauth_status(WORKBUDDY_PROVIDER).unwrap().authenticated);
+    }
+
+    #[test]
+    fn workbuddy_same_protocol_still_routes_through_gateway() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_grok_home(Some(temp.path().join("grok"))).unwrap();
+
+        let form = GrokForm {
+            name: "WorkBuddy".into(),
+            website_url: domain::WORKBUDDY_WEBSITE_URL.into(),
+            kind: GrokKind::ThirdParty,
+            api_key: "placeholder".into(),
+            base_url: domain::WORKBUDDY_UPSTREAM_BASE.into(),
+            model: domain::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL.into(),
+            request_protocol: "openai-chat".into(),
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_grok_form(None, form).unwrap();
+        ws.enable(&provider.id).unwrap();
+
+        let port = ws.compat_gateway_port().expect("gateway auto-started");
+        let target = ws.compat_target_for_app(AppKind::Grok).unwrap();
+        assert_eq!(target.base_url, domain::WORKBUDDY_UPSTREAM_BASE);
+        assert_eq!(target.protocol, RequestProtocol::OpenAiChat);
+        let live = read_grok_live(&ws.grok_paths).unwrap();
+        assert!(live
+            .config_toml
+            .contains(&format!("http://127.0.0.1:{port}")));
+        assert!(!live.config_toml.contains("copilot.tencent.com"));
+    }
+
+    #[test]
+    fn workbuddy_codex_enable_writes_hy4_catalog() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("app.db");
+        let mut ws = Workspace::open(&db_path, None).unwrap();
+        ws.apply_codex_home(Some(temp.path().join("codex")))
+            .unwrap();
+
+        let form = CodexForm {
+            name: "WorkBuddy".into(),
+            website_url: domain::WORKBUDDY_WEBSITE_URL.into(),
+            kind: CodexKind::ResponsesThirdParty,
+            api_key: "sk-mock-key-12345".into(),
+            base_url: domain::WORKBUDDY_UPSTREAM_BASE.into(),
+            model: "hy4-preview".into(),
+            request_protocol: "openai-chat".into(),
+            model_mappings: Vec::new(),
+        };
+        let provider = ws.save_codex_form(None, form).unwrap();
+        ws.enable(&provider.id).unwrap();
+
+        let live = read_codex_live(&ws.codex_paths).unwrap();
+        assert!(live
+            .config_toml
+            .contains("model_catalog_json = \"router-switch-model-catalog.json\""));
+        let catalog = std::fs::read_to_string(&ws.codex_paths.catalog).unwrap();
+        assert!(catalog.contains("\"slug\": \"hy4-preview\""));
+        assert!(catalog.contains("base_instructions"));
     }
 
     #[test]

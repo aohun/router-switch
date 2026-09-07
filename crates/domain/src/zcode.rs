@@ -193,6 +193,18 @@ pub const ZCODE_PRESETS: &[ZCodePreset] = &[
         provider_label: "Third-Party",
     },
     ZCodePreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: ZCodeKind::ThirdParty,
+        provider_kind: "openai-compatible",
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        modality_text: true,
+        modality_image: true,
+        provider_label: "CodeBuddy",
+    },
+    ZCodePreset {
         id: "custom",
         name: "自定义模板",
         website_url: "",

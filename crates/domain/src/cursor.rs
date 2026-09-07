@@ -176,6 +176,16 @@ pub const CURSOR_PRESETS: &[CursorPreset] = &[
         provider_label: "Third-Party",
     },
     CursorPreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: CursorKind::ThirdParty,
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_type: "openai-chat",
+        provider_label: "CodeBuddy",
+    },
+    CursorPreset {
         id: "grok",
         name: "xAI / Grok",
         website_url: "https://x.ai",

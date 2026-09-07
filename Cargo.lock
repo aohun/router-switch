@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapters-claude"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-claude-desktop"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-codex"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-grok"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-opencode"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-pi"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-workbuddy"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-zcode"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -1342,6 +1342,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "cookie"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+dependencies = [
+ "percent-encoding",
+ "time",
+ "version_check",
+]
+
+[[package]]
+name = "cookie_store"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2c103cf610ec6cae3da84a766285b42fd16aad564758459e6ecf128c75206"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "log",
+ "publicsuffix",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,7 +1642,7 @@ checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "cursor-gateway"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-stream",
  "axum",
@@ -1838,8 +1867,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "document-features"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
+dependencies = [
+ "litrs",
+]
+
+[[package]]
 name = "domain"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64",
  "dirs 6.0.0",
@@ -3861,6 +3899,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
+name = "litrs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5272,6 +5316,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "psm"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5279,6 +5329,16 @@ checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
  "ar_archive_writer",
  "cc",
+]
+
+[[package]]
+name = "publicsuffix"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
+dependencies = [
+ "idna",
+ "psl-types",
 ]
 
 [[package]]
@@ -5728,6 +5788,8 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
+ "cookie",
+ "cookie_store",
  "futures-core",
  "futures-util",
  "http",
@@ -5812,7 +5874,7 @@ dependencies = [
 
 [[package]]
 name = "router-switch"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6410,7 +6472,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "adapters-claude",
  "adapters-claude-desktop",
@@ -6713,7 +6775,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -7257,7 +7319,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokens-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bincode",
  "chrono",
@@ -7717,7 +7779,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "cocoa 0.26.0",
@@ -7868,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "usage-query"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "domain",
  "reqwest",

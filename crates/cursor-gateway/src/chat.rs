@@ -52,6 +52,7 @@ pub async fn stream_chat_handler(
         s.base_url.clone(),
         s.api_key.clone(),
         target_model.clone(),
+        Vec::new(),
     );
 
     let cancellation = CancellationToken::new();

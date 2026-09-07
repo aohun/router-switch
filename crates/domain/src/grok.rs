@@ -112,6 +112,15 @@ pub const GROK_PRESETS: &[GrokPreset] = &[
         provider_label: "Third-Party",
     },
     GrokPreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: GrokKind::ThirdParty,
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_label: "CodeBuddy",
+    },
+    GrokPreset {
         id: "custom",
         name: "自定义服务商",
         website_url: "",

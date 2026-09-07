@@ -52,13 +52,19 @@ pub fn create_provider(
     base_url: String,
     api_key: String,
     model: String,
+    extra_headers: Vec<(String, String)>,
 ) -> SharedProvider {
     match provider_type.trim().to_ascii_lowercase().as_str() {
         "anthropic" | "claude" => Arc::new(AnthropicProvider::new(base_url, api_key, model)),
         "openai-responses" | "responses" => {
             Arc::new(OpenAiResponsesProvider::new(base_url, api_key, model))
         }
-        _ => Arc::new(OpenAiChatProvider::new(base_url, api_key, model)),
+        _ => Arc::new(OpenAiChatProvider::new(
+            base_url,
+            api_key,
+            model,
+            extra_headers,
+        )),
     }
 }
 
@@ -145,6 +151,14 @@ pub(crate) fn merge_extra_params(
 #[cfg(test)]
 mod tests {
     use super::resolve_provider_url;
+
+    #[test]
+    fn codebuddy_v2_root_resolves_chat_completions() {
+        assert_eq!(
+            resolve_provider_url("https://copilot.tencent.com/v2", "openai-chat").unwrap(),
+            "https://copilot.tencent.com/v2/chat/completions"
+        );
+    }
 
     #[test]
     fn chat_from_v1_root() {

@@ -2,16 +2,18 @@ use domain::{
     check_app_update, extract_claude_base_url, extract_claude_model, extract_codex_base_url,
     extract_codex_model, extract_cursor_base_url, extract_cursor_model, extract_grok_base_url,
     extract_grok_model, extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url,
-    extract_zcode_model, parse_clipboard_provider_info, AppKind, AppRelease, ClaudeForm,
-    ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping,
-    CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
+    extract_zcode_model, is_workbuddy_upstream, parse_clipboard_provider_info,
+    workbuddy_model_context_length, AppKind, AppRelease, ClaudeForm, ClaudeKind,
+    ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping, CursorForm,
+    CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
     OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm,
     ProviderSettings, RequestProtocol, ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind,
     ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL,
     DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL,
     DEFAULT_PI_MODEL, DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
     DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS,
-    RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_PRESETS, ZCODE_PRESETS,
+    RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_CODEBUDDY_PRESET_ID, WORKBUDDY_PRESETS,
+    WORKBUDDY_UPSTREAM_BASE, ZCODE_PRESETS,
 };
 use gpui::{
     div, hsla, prelude::FluentBuilder, px, rgb, rgba, uniform_list, AnyElement, App, AppContext,
@@ -1016,6 +1018,7 @@ pub struct RouterApp {
     usage_refreshing: std::collections::HashSet<String>,
     codex_oauth_status: Option<session::NativeAuthStatus>,
     xai_oauth_status: Option<session::NativeAuthStatus>,
+    workbuddy_oauth_status: Option<session::NativeAuthStatus>,
     oauth_pending: Option<OngoingLogin>,
     sessions_list: Vec<session::sessions::SessionMeta>,
     sessions_loading: bool,
@@ -1081,11 +1084,13 @@ struct FormDraft {
     app: AppKind,
     editing_id: Option<String>,
     is_official: bool,
+    uses_workbuddy_auth: bool,
     name: Entity<InputState>,
     notes: Entity<InputState>,
     website_url: Entity<InputState>,
     codex_auth_mode: String,
     codex_auth_dropdown_open: bool,
+    workbuddy_auth_dropdown_open: bool,
     api_key: Entity<InputState>,
     base_url: Entity<InputState>,
     model: Entity<InputState>,
@@ -1330,6 +1335,7 @@ impl RouterApp {
             usage_refreshing: std::collections::HashSet::new(),
             codex_oauth_status: None,
             xai_oauth_status: None,
+            workbuddy_oauth_status: None,
             oauth_pending: None,
             sessions_list: Vec::new(),
             sessions_loading: false,
@@ -1523,6 +1529,10 @@ impl RouterApp {
     fn reload_oauth_statuses(&mut self) {
         self.codex_oauth_status = self.workspace.oauth_status(session::CODEX_PROVIDER).ok();
         self.xai_oauth_status = self.workspace.oauth_status(session::XAI_PROVIDER).ok();
+        self.workbuddy_oauth_status = self
+            .workspace
+            .oauth_status(session::WORKBUDDY_PROVIDER)
+            .ok();
     }
 
     fn start_oauth_login(
@@ -1543,11 +1553,15 @@ impl RouterApp {
             }
         };
         cx.open_url(&start.verification_uri);
-        notify_info(
-            t!("auth.open_browser", code = start.user_code.as_str()).to_string(),
-            window,
-            cx,
-        );
+        if start.user_code.trim().is_empty() {
+            notify_info(t!("auth.open_browser_qr").to_string(), window, cx);
+        } else {
+            notify_info(
+                t!("auth.open_browser", code = start.user_code.as_str()).to_string(),
+                window,
+                cx,
+            );
+        }
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3051,6 +3065,7 @@ impl RouterApp {
                 auto_filled = true;
             }
         }
+        self.reload_oauth_statuses();
         self.form = Some(form);
         if auto_filled {
             self.logs
@@ -3098,6 +3113,7 @@ impl RouterApp {
         };
         match self.workspace.form_for(provider_id) {
             Ok(form) => {
+                self.reload_oauth_statuses();
                 self.form = Some(FormDraft::from_provider_form(
                     provider.app,
                     Some(provider_id.to_string()),
@@ -3112,6 +3128,41 @@ impl RouterApp {
     }
 
     fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.reload_oauth_statuses();
+        let uses_workbuddy_auth = self
+            .form
+            .as_ref()
+            .is_some_and(|form| form.uses_workbuddy_auth);
+        if uses_workbuddy_auth {
+            let authenticated = self
+                .workbuddy_oauth_status
+                .as_ref()
+                .is_some_and(|status| status.authenticated);
+            if !authenticated {
+                window.push_notification(
+                    Notification::warning(t!("auth.workbuddy_need_login").to_string()),
+                    cx,
+                );
+                return false;
+            }
+        }
+        if let Some(form) = self.form.as_mut() {
+            let base = form.base_url.read(cx).value().to_string();
+            let key = form.api_key.read(cx).value().to_string();
+            if form.uses_workbuddy_auth || is_workbuddy_upstream(&base) {
+                if base.trim().is_empty() {
+                    form.base_url.update(cx, |input, cx| {
+                        input.set_value(WORKBUDDY_UPSTREAM_BASE, window, cx)
+                    });
+                }
+                if key.trim().is_empty() {
+                    if let Ok(Some(token)) = self.workspace.workbuddy_access_token() {
+                        form.api_key
+                            .update(cx, |input, cx| input.set_value(token, window, cx));
+                    }
+                }
+            }
+        }
         let Some(form) = self.form.as_ref() else {
             return true;
         };
@@ -3154,68 +3205,95 @@ impl RouterApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(form) = self.form.as_mut() else {
-            return;
+        let is_workbuddy_preset = preset.id == WORKBUDDY_CODEBUDDY_PRESET_ID;
+        let workbuddy_token = if is_workbuddy_preset {
+            self.workspace.workbuddy_access_token().ok().flatten()
+        } else {
+            None
         };
-        form.is_official = preset.is_official;
-        form.name
-            .update(cx, |input, cx| input.set_value(preset.name, window, cx));
-        form.website_url.update(cx, |input, cx| {
-            input.set_value(preset.website_url, window, cx)
-        });
-        form.base_url
-            .update(cx, |input, cx| input.set_value(preset.base_url, window, cx));
-        form.model
-            .update(cx, |input, cx| input.set_value(preset.model, window, cx));
-        if form.app == AppKind::ZCode {
-            form.zcode_modality_text = preset.modality_text;
-            form.zcode_modality_image = preset.modality_image;
-        }
-        if form.app == AppKind::WorkBuddy {
-            if let Some(p) = WORKBUDDY_PRESETS.iter().find(|p| p.id == preset.id) {
-                form.workbuddy_supports_tool_call = p.supports_tool_call;
-                form.workbuddy_supports_images = p.supports_images;
-                form.workbuddy_supports_reasoning = p.supports_reasoning;
-                form.workbuddy_reasoning_only = p.reasoning_only;
-                form.workbuddy_can_disable_reasoning = p.can_disable_reasoning;
-                form.workbuddy_use_custom_protocol = p.use_custom_protocol;
-                form.workbuddy_max_input_tokens.update(cx, |input, cx| {
-                    input.set_value(
-                        p.max_input_tokens
-                            .map(|v| v.to_string())
-                            .unwrap_or_default(),
-                        window,
-                        cx,
-                    )
-                });
-                form.workbuddy_max_output_tokens.update(cx, |input, cx| {
-                    input.set_value(
-                        p.max_output_tokens
-                            .map(|v| v.to_string())
-                            .unwrap_or_default(),
-                        window,
-                        cx,
-                    )
-                });
-                form.workbuddy_reasoning_effort = p.reasoning_effort.to_string();
-                if let Some(ref effort_select) = form.workbuddy_reasoning_effort_select {
-                    let options = ["low", "medium", "high", "xhigh", "max"];
-                    let idx = options
-                        .iter()
-                        .position(|o| *o == p.reasoning_effort)
-                        .map(|i| gpui_component::IndexPath::default().row(i));
-                    effort_select.update(cx, |select, cx| {
-                        select.set_selected_index(idx, window, cx);
-                    });
-                }
-                form.workbuddy_supported_effort_low = p.reasoning_effort == "low";
-                form.workbuddy_supported_effort_medium = true;
-                form.workbuddy_supported_effort_high = p.reasoning_effort == "high";
-                form.workbuddy_supported_effort_xhigh = false;
-                form.workbuddy_supported_effort_max = false;
+        {
+            let Some(form) = self.form.as_mut() else {
+                return;
+            };
+            form.is_official = preset.is_official;
+            form.uses_workbuddy_auth = is_workbuddy_preset;
+            form.workbuddy_auth_dropdown_open = false;
+            form.name
+                .update(cx, |input, cx| input.set_value(preset.name, window, cx));
+            form.website_url.update(cx, |input, cx| {
+                input.set_value(preset.website_url, window, cx)
+            });
+            form.base_url
+                .update(cx, |input, cx| input.set_value(preset.base_url, window, cx));
+            form.model
+                .update(cx, |input, cx| input.set_value(preset.model, window, cx));
+            if form.app == AppKind::ZCode {
+                form.zcode_modality_text = preset.modality_text;
+                form.zcode_modality_image = preset.modality_image;
             }
+            if form.app == AppKind::WorkBuddy {
+                if let Some(p) = WORKBUDDY_PRESETS.iter().find(|p| p.id == preset.id) {
+                    form.workbuddy_supports_tool_call = p.supports_tool_call;
+                    form.workbuddy_supports_images = p.supports_images;
+                    form.workbuddy_supports_reasoning = p.supports_reasoning;
+                    form.workbuddy_reasoning_only = p.reasoning_only;
+                    form.workbuddy_can_disable_reasoning = p.can_disable_reasoning;
+                    form.workbuddy_use_custom_protocol = p.use_custom_protocol;
+                    form.workbuddy_max_input_tokens.update(cx, |input, cx| {
+                        input.set_value(
+                            p.max_input_tokens
+                                .map(|v| v.to_string())
+                                .unwrap_or_default(),
+                            window,
+                            cx,
+                        )
+                    });
+                    form.workbuddy_max_output_tokens.update(cx, |input, cx| {
+                        input.set_value(
+                            p.max_output_tokens
+                                .map(|v| v.to_string())
+                                .unwrap_or_default(),
+                            window,
+                            cx,
+                        )
+                    });
+                    form.workbuddy_reasoning_effort = p.reasoning_effort.to_string();
+                    if let Some(ref effort_select) = form.workbuddy_reasoning_effort_select {
+                        let options = ["low", "medium", "high", "xhigh", "max"];
+                        let idx = options
+                            .iter()
+                            .position(|o| *o == p.reasoning_effort)
+                            .map(|i| gpui_component::IndexPath::default().row(i));
+                        effort_select.update(cx, |select, cx| {
+                            select.set_selected_index(idx, window, cx);
+                        });
+                    }
+                    form.workbuddy_supported_effort_low = p.reasoning_effort == "low";
+                    form.workbuddy_supported_effort_medium = true;
+                    form.workbuddy_supported_effort_high = p.reasoning_effort == "high";
+                    form.workbuddy_supported_effort_xhigh = false;
+                    form.workbuddy_supported_effort_max = false;
+                }
+            }
+            if is_workbuddy_preset {
+                let protocol = RequestProtocol::OpenAiChat.as_str().to_string();
+                let idx = protocol_items()
+                    .iter()
+                    .position(|item| item.value == protocol)
+                    .map(|i| gpui_component::IndexPath::default().row(i));
+                form.protocol_select.update(cx, |select, cx| {
+                    select.set_selected_index(idx, window, cx);
+                });
+                if let Some(token) = workbuddy_token {
+                    form.api_key
+                        .update(cx, |input, cx| input.set_value(token, window, cx));
+                }
+            }
+            cx.notify();
         }
-        cx.notify();
+        if is_workbuddy_preset {
+            self.fetch_models_for_form(window, cx);
+        }
     }
 
     fn toggle_desktop_role_one_m(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -3365,6 +3443,7 @@ impl RouterApp {
                                                 || current_model == DEFAULT_PI_MODEL
                                                 || current_model == DEFAULT_CURSOR_MODEL
                                                 || current_model == DEFAULT_ZCODE_MODEL
+                                                || current_model == DEFAULT_WORKBUDDY_MODEL
                                             {
                                                 let first = first.clone();
                                                 form.model.update(
@@ -3413,6 +3492,29 @@ impl RouterApp {
                                         // Update existing catalog rows
                                         for row in &mut form.catalog_rows {
                                             row.set_fetched_models(&models, window, cx);
+                                        }
+                                        if form.app == AppKind::Codex
+                                            && form.catalog_rows.is_empty()
+                                            && is_workbuddy_upstream(
+                                                &form.base_url.read(cx).value(),
+                                            )
+                                        {
+                                            let fetched = models.clone();
+                                            form.catalog_rows = models
+                                                .iter()
+                                                .map(|id| {
+                                                    CatalogRowDraft::new(
+                                                        id,
+                                                        id,
+                                                        Some(workbuddy_model_context_length(id)),
+                                                        Some("high"),
+                                                        None,
+                                                        &fetched,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                })
+                                                .collect();
                                         }
                                         // Claude Desktop 映射角色同样挂上下拉
                                         for role in &mut form.desktop_roles {
@@ -5406,6 +5508,18 @@ impl RouterApp {
                 t!("auth.login_xai").to_string(),
                 self.xai_oauth_status.as_ref(),
                 session::XAI_PROVIDER,
+                cx,
+            ))
+            .child(self.render_auth_card(
+                "auth-workbuddy",
+                CustomIcon::WorkBuddy,
+                rgb(0x6366F1).into(),
+                "CodeBuddy (WorkBuddy)",
+                t!("auth.workbuddy_subtitle").to_string().leak(),
+                t!("auth.workbuddy_status").to_string().leak(),
+                t!("auth.login_workbuddy").to_string(),
+                self.workbuddy_oauth_status.as_ref(),
+                session::WORKBUDDY_PROVIDER,
                 cx,
             ))
     }
@@ -9423,9 +9537,11 @@ impl RouterApp {
         };
 
         let login_type = if is_official {
-            "官方认证 / OAuth"
+            "官方认证 / OAuth".to_string()
+        } else if is_workbuddy_upstream(&endpoint) {
+            t!("provider.workbuddy_login_type").to_string()
         } else {
-            "API Key"
+            "API Key".to_string()
         };
 
         let dark = cx.theme().is_dark();
@@ -9788,7 +9904,7 @@ impl RouterApp {
                 .contains(&query);
 
         let auth_matches = query.is_empty()
-            || "认证 auth oauth 登录 login chatgpt codex openai xai grok 账号 account"
+            || "认证 auth oauth 登录 login chatgpt codex openai xai grok 账号 account workbuddy codebuddy 扫码"
                 .contains(&query);
 
         let advanced_matches = query.is_empty()
@@ -11809,6 +11925,234 @@ impl RouterApp {
             )
     }
 
+    fn render_workbuddy_auth_selector(
+        &self,
+        form: &FormDraft,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let auth_status = self.workbuddy_oauth_status.as_ref();
+        let is_authenticated = auth_status.map(|s| s.authenticated).unwrap_or(false);
+        let account_name = auth_status
+            .and_then(|s| s.account.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| t!("auth.workbuddy_account_title").to_string());
+        let pending = self
+            .oauth_pending
+            .as_ref()
+            .is_some_and(|login| login.provider == session::WORKBUDDY_PROVIDER);
+
+        let (current_label, current_sublabel) = if is_authenticated {
+            (
+                account_name.clone(),
+                t!("auth.workbuddy_account_ok").to_string(),
+            )
+        } else if pending {
+            (
+                t!("auth.waiting").to_string(),
+                t!("auth.open_browser_qr").to_string(),
+            )
+        } else {
+            (
+                t!("auth.status_none").to_string(),
+                t!("auth.workbuddy_account_none").to_string(),
+            )
+        };
+        let is_open = form.workbuddy_auth_dropdown_open;
+
+        v_flex()
+            .w_full()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.foreground)
+                    .child(t!("auth.login_method").to_string()),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(px(4.))
+                    .child(
+                        h_flex()
+                            .id("workbuddy-auth-trigger-btn")
+                            .w_full()
+                            .p(px(10.))
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.secondary.opacity(0.35))
+                            .hover(|s| s.bg(theme.secondary.opacity(0.6)))
+                            .cursor_pointer()
+                            .items_center()
+                            .justify_between()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(form) = this.form.as_mut() {
+                                    form.workbuddy_auth_dropdown_open =
+                                        !form.workbuddy_auth_dropdown_open;
+                                    cx.notify();
+                                }
+                            }))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(
+                                        div()
+                                            .size(px(28.))
+                                            .rounded(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .bg(theme.secondary.opacity(0.6))
+                                            .child(
+                                                Icon::new(CustomIcon::WorkBuddy)
+                                                    .size(px(16.))
+                                                    .text_color(rgb(0x6366F1)),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.foreground)
+                                                    .child(current_label),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(theme.muted_foreground)
+                                                    .child(current_sublabel),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                Icon::new(if is_open {
+                                    IconName::ChevronUp
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .size(px(16.))
+                                .text_color(theme.muted_foreground),
+                            ),
+                    )
+                    .when(is_open, |this| {
+                        let is_auth = is_authenticated;
+                        let acc = account_name.clone();
+                        this.child(
+                            v_flex()
+                                .w_full()
+                                .p(px(4.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.background)
+                                .gap(px(2.))
+                                .shadow_sm()
+                                .child(
+                                    h_flex()
+                                        .id("workbuddy-auth-add-btn")
+                                        .w_full()
+                                        .p(px(8.))
+                                        .rounded(px(4.))
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .hover(|s| s.bg(theme.primary.opacity(0.12)))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            if let Some(form) = this.form.as_mut() {
+                                                form.workbuddy_auth_dropdown_open = false;
+                                            }
+                                            this.start_oauth_login(
+                                                session::WORKBUDDY_PROVIDER,
+                                                window,
+                                                cx,
+                                            );
+                                        }))
+                                        .child(
+                                            Icon::new(IconName::Plus)
+                                                .size(px(14.))
+                                                .text_color(theme.primary),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.primary)
+                                                .child(
+                                                    t!("auth.workbuddy_add_account").to_string(),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(1.))
+                                        .bg(theme.border.opacity(0.5))
+                                        .my(px(2.)),
+                                )
+                                .when(is_auth, |this| {
+                                    this.child(
+                                        h_flex()
+                                            .id("workbuddy-auth-account-item")
+                                            .w_full()
+                                            .p(px(8.))
+                                            .rounded(px(4.))
+                                            .items_center()
+                                            .justify_between()
+                                            .hover(|s| s.bg(theme.secondary.opacity(0.4)))
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(form) = this.form.as_mut() {
+                                                    form.workbuddy_auth_dropdown_open = false;
+                                                    cx.notify();
+                                                }
+                                            }))
+                                            .child(
+                                                v_flex()
+                                                    .gap(px(2.))
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(theme.foreground)
+                                                            .child(acc),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(
+                                                                t!("auth.workbuddy_account_ok")
+                                                                    .to_string(),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                Icon::new(IconName::Check)
+                                                    .size(px(14.))
+                                                    .text_color(theme.primary),
+                                            ),
+                                    )
+                                })
+                                .when(!is_auth, |this| {
+                                    this.child(
+                                        div()
+                                            .p(px(8.))
+                                            .text_size(px(11.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(t!("auth.workbuddy_no_account").to_string()),
+                                    )
+                                }),
+                        )
+                    }),
+            )
+    }
+
     fn render_form_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(form) = self.form.as_ref() else {
             return div().into_any_element();
@@ -11816,6 +12160,14 @@ impl RouterApp {
 
         let codex_auth_selector = if form.is_official && form.app == AppKind::Codex {
             Some(self.render_codex_auth_selector(form, cx).into_any_element())
+        } else {
+            None
+        };
+        let workbuddy_auth_selector = if form.uses_workbuddy_auth {
+            Some(
+                self.render_workbuddy_auth_selector(form, cx)
+                    .into_any_element(),
+            )
         } else {
             None
         };
@@ -11889,17 +12241,19 @@ impl RouterApp {
                         h_flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(
-                                Button::new("clipboard-import-header-btn")
-                                    .outline()
-                                    .small()
-                                    .icon(IconName::Copy)
-                                    .label(t!("provider.clipboard_import").to_string())
-                                    .tooltip(t!("provider.clipboard_import_tip").to_string())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.import_from_clipboard(window, cx);
-                                    })),
-                            )
+                            .when(!form.uses_workbuddy_auth, |this| {
+                                this.child(
+                                    Button::new("clipboard-import-header-btn")
+                                        .outline()
+                                        .small()
+                                        .icon(IconName::Copy)
+                                        .label(t!("provider.clipboard_import").to_string())
+                                        .tooltip(t!("provider.clipboard_import_tip").to_string())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.import_from_clipboard(window, cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("cancel-page-btn")
                                     .outline()
@@ -11960,7 +12314,7 @@ impl RouterApp {
                         ),
                 ),
             )
-            .when(form.is_official, |this| {
+            .when(form.is_official || form.uses_workbuddy_auth, |this| {
                 this.child(
                     theme::tile(cx).child(
                         v_flex()
@@ -11983,11 +12337,13 @@ impl RouterApp {
                                     ),
                             )
                             .child(form_field("官网链接", Input::new(&form.website_url)))
-                            .when_some(codex_auth_selector, |this, sel| this.child(sel)),
+                            .when_some(codex_auth_selector, |this, sel| this.child(sel))
+                            .when_some(workbuddy_auth_selector, |this, sel| this.child(sel)),
                     ),
                 )
             })
             .when(!form.is_official, |this| {
+                let uses_workbuddy_auth = form.uses_workbuddy_auth;
                 this.child(
                 // Basic & API Credentials Card
                 theme::tile(cx).child(
@@ -11999,58 +12355,71 @@ impl RouterApp {
                                 .w_full()
                                 .items_center()
                                 .justify_between()
-                                .child(theme::tile_label("BASIC & API CREDENTIALS / 基础配置与接口凭证", cx))
-                                .child(
-                                    Button::new("clipboard-import-card-btn")
-                                        .ghost()
-                                        .small()
-                                        .icon(IconName::Copy)
-                                        .label(t!("provider.clipboard_import").to_string())
-                                        .tooltip(t!("provider.clipboard_import_tip").to_string())
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.import_from_clipboard(window, cx);
-                                        })),
-                                ),
+                                .child(theme::tile_label(
+                                    if uses_workbuddy_auth {
+                                        "PROTOCOL & MODEL / 协议与模型"
+                                    } else {
+                                        "BASIC & API CREDENTIALS / 基础配置与接口凭证"
+                                    },
+                                    cx,
+                                ))
+                                .when(!uses_workbuddy_auth, |this| {
+                                    this.child(
+                                        Button::new("clipboard-import-card-btn")
+                                            .ghost()
+                                            .small()
+                                            .icon(IconName::Copy)
+                                            .label(t!("provider.clipboard_import").to_string())
+                                            .tooltip(t!("provider.clipboard_import_tip").to_string())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.import_from_clipboard(window, cx);
+                                            })),
+                                    )
+                                }),
                         )
-                        .child(form_field("服务商名称", Input::new(&form.name)))
-                        .child(form_field(
-                            "API Key / 凭据",
-                            Input::new(&form.api_key).mask_toggle(),
-                        ))
+                        .when(!uses_workbuddy_auth, |this| {
+                            this.child(form_field("服务商名称", Input::new(&form.name)))
+                                .child(form_field(
+                                    "API Key / 凭据",
+                                    Input::new(&form.api_key).mask_toggle(),
+                                ))
+                        })
                         .child(
                             v_flex()
                                 .gap(px(6.))
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(theme.foreground)
-                                        .child("API 端点 (Base URL)"),
-                                )
-                                .child(
-                                    h_flex()
-                                        .w_full()
-                                        .gap(px(8.))
-                                        .items_center()
-                                        .child(
-                                            div().flex_1().child(Input::new(&form.base_url))
-                                        )
-                                        .child(
-                                            Button::new("test-form-connectivity-btn")
-                                                .outline()
-                                                .icon(CustomIcon::Activity)
-                                                .label(if form.is_testing_connectivity {
-                                                    t!("provider.testing_connectivity").to_string()
-                                                } else {
-                                                    t!("provider.test_connectivity").to_string()
-                                                })
-                                                .tooltip("测试当前 API 端点网络连通性")
-                                                .disabled(form.is_testing_connectivity)
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.test_form_connectivity(window, cx);
-                                                })),
-                                        ),
-                                )
+                                .when(!uses_workbuddy_auth, |this| {
+                                    this.child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.foreground)
+                                            .child("API 端点 (Base URL)"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap(px(8.))
+                                            .items_center()
+                                            .child(
+                                                div().flex_1().child(Input::new(&form.base_url))
+                                            )
+                                            .child(
+                                                Button::new("test-form-connectivity-btn")
+                                                    .outline()
+                                                    .icon(CustomIcon::Activity)
+                                                    .label(if form.is_testing_connectivity {
+                                                        t!("provider.testing_connectivity").to_string()
+                                                    } else {
+                                                        t!("provider.test_connectivity").to_string()
+                                                    })
+                                                    .tooltip("测试当前 API 端点网络连通性")
+                                                    .disabled(form.is_testing_connectivity)
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.test_form_connectivity(window, cx);
+                                                    })),
+                                            ),
+                                    )
+                                })
                                 .child(
                                     v_flex()
                                         .gap(px(6.))
@@ -12065,7 +12434,8 @@ impl RouterApp {
                                             t!("provider.request_protocol_placeholder").to_string(),
                                         )),
                                 )
-                                .when_some(form.connectivity_result.as_ref(), |this, res| {
+                                .when(!uses_workbuddy_auth, |this| {
+                                    this.when_some(form.connectivity_result.as_ref(), |this, res| {
                                     let (tag_text, is_success, is_warn) = match res.status {
                                         domain::HealthStatus::Operational => (
                                             format!(
@@ -12105,6 +12475,7 @@ impl RouterApp {
                                         Tag::danger().small().child(tag_text)
                                     };
                                     this.child(div().pt(px(2.)).child(tag))
+                                })
                                 }),
                         )
                         .when(form.app != AppKind::ClaudeDesktop, |this| {
@@ -12736,12 +13107,14 @@ impl RouterApp {
                                     ),
                             )
                         })
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(theme.muted_foreground)
-                                .child(t!("provider.clipboard_helper_tip").to_string()),
-                        ),
+                        .when(!uses_workbuddy_auth, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(t!("provider.clipboard_helper_tip").to_string()),
+                            )
+                        }),
                 ),
             )
             .when(form.app == AppKind::ClaudeDesktop, |this| {
@@ -14040,11 +14413,13 @@ impl FormDraft {
             app,
             editing_id,
             is_official,
+            uses_workbuddy_auth: is_workbuddy_upstream(&base_url),
             name: field(window, cx, &name, "输入服务商名称，如 OpenAI Official"),
             notes: field(window, cx, "", "例如：公司专用账号"),
             website_url: field(window, cx, &website_url, "https://chatgpt.com/codex"),
             codex_auth_mode: "follow".to_string(),
             codex_auth_dropdown_open: false,
+            workbuddy_auth_dropdown_open: false,
             api_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("sk-...")

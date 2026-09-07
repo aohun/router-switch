@@ -221,6 +221,7 @@ impl CursorSessionRegistry {
             settings.base_url.clone(),
             settings.api_key.clone(),
             model,
+            Vec::new(),
         ))
     }
 

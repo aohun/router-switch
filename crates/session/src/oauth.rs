@@ -1,6 +1,6 @@
-//! ChatGPT (Codex) 与 xAI (Grok) 的 OAuth 设备码登录(移植自 cc-switch)。
+//! ChatGPT (Codex)、xAI (Grok) 设备码登录，以及 CodeBuddy 扫码登录。
 //!
-//! 流程: `auth_start` 获取设备码 → 用户在浏览器完成授权 → `auth_poll`
+//! 流程: `auth_start` 获取设备码/登录 URL → 用户在浏览器完成授权 → `auth_poll`
 //! 轮询换 token → 会话层把凭据写入原生配置/本地存储。
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use std::time::Duration;
 
 pub const CODEX_PROVIDER: &str = "codex";
 pub const XAI_PROVIDER: &str = "xai";
+pub const WORKBUDDY_PROVIDER: &str = "workbuddy";
 
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_DEVICE_USERCODE_URL: &str = "https://auth.openai.com/api/accounts/deviceauth/usercode";
@@ -59,13 +60,22 @@ pub enum DevicePollStatus {
 }
 
 /// 授权得到的令牌
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct AuthTokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
     pub account_id: Option<String>,
     pub email: Option<String>,
+    /// CodeBuddy: access token 到期 unix 秒
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    /// CodeBuddy: 登录域
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// CodeBuddy: 企业 ID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +268,7 @@ pub async fn codex_poll_device(
         id_token: tokens.id_token,
         account_id,
         email,
+        ..AuthTokens::default()
     }))
 }
 
@@ -346,6 +357,7 @@ pub async fn xai_poll_device(
         id_token: tokens.id_token,
         account_id: None,
         email,
+        ..AuthTokens::default()
     }))
 }
 

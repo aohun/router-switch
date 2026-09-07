@@ -155,6 +155,16 @@ pub const OPENCODE_PRESETS: &[OpenCodePreset] = &[
         provider_label: "Third-Party",
     },
     OpenCodePreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: OpenCodeKind::ThirdParty,
+        npm: "@ai-sdk/openai-compatible",
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_label: "CodeBuddy",
+    },
+    OpenCodePreset {
         id: "custom",
         name: "自定义模板",
         website_url: "",

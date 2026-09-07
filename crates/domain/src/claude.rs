@@ -174,6 +174,15 @@ pub const CLAUDE_PRESETS: &[ClaudePreset] = &[
         provider_label: "Third-Party",
     },
     ClaudePreset {
+        id: crate::WORKBUDDY_CODEBUDDY_PRESET_ID,
+        name: "WorkBuddy (CodeBuddy)",
+        website_url: crate::WORKBUDDY_WEBSITE_URL,
+        kind: ClaudeKind::ThirdParty,
+        base_url: crate::WORKBUDDY_UPSTREAM_BASE,
+        model: crate::WORKBUDDY_DEFAULT_CODEBUDDY_MODEL,
+        provider_label: "CodeBuddy",
+    },
+    ClaudePreset {
         id: "custom",
         name: "自定义服务商",
         website_url: "",

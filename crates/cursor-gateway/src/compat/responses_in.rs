@@ -437,11 +437,25 @@ impl DialectRenderer for ResponsesRenderer {
     }
 
     fn error_frames(&mut self, message: &str) -> Vec<String> {
+        if self.finished {
+            return Vec::new();
+        }
         self.finished = true;
-        vec![self.event(
-            "error",
-            json!({"code": "api_error", "message": message, "param": Value::Null}),
-        )]
+        let mut frames = self.close_open_item();
+        let response = json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": chrono::Utc::now().timestamp(),
+            "status": "failed",
+            "model": self.model,
+            "output": self.output_items,
+            "error": {
+                "code": "api_error",
+                "message": message,
+            },
+        });
+        frames.push(self.event("response.failed", json!({"response": response})));
+        frames
     }
 }
 
