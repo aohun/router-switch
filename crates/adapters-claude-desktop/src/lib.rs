@@ -70,7 +70,12 @@ impl ClaudeDesktopPaths {
                 home.join("Library").join("Application Support"),
             ));
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            let app_data = dirs::data_dir().ok_or(ClaudeDesktopError::HomeDir)?;
+            return Ok(Self::from_app_support(app_data));
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             let _ = override_home;
             Err(ClaudeDesktopError::UnsupportedPlatform)
@@ -526,5 +531,14 @@ mod tests {
         settings.env = json!({"ANTHROPIC_AUTH_TOKEN": "sk-mock"});
         assert!(!is_compatible_direct_settings(&settings));
         assert!(is_compatible_direct_settings(&third_party()));
+    }
+
+    #[test]
+    fn resolve_paths_does_not_fail_on_supported_platforms() {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let paths = ClaudeDesktopPaths::resolve(None);
+            assert!(paths.is_ok());
+        }
     }
 }

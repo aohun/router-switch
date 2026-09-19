@@ -268,7 +268,14 @@ impl Workspace {
         let codex_paths = resolve_codex_paths(override_codex.as_deref())?;
         let claude_paths = resolve_claude_paths(settings.claude_home.as_deref())?;
         let claude_desktop_paths =
-            resolve_claude_desktop_paths(settings.claude_desktop_home.as_deref())?;
+            match resolve_claude_desktop_paths(settings.claude_desktop_home.as_deref()) {
+                Ok(paths) => paths,
+                Err(ClaudeDesktopError::UnsupportedPlatform) => {
+                    tracing::warn!("Claude Desktop is not supported on this platform; using fallback path");
+                    ClaudeDesktopPaths::from_app_support(std::env::temp_dir().join("claude-desktop-fallback"))
+                }
+                Err(e) => return Err(e.into()),
+            };
         let grok_paths = resolve_grok_paths(settings.grok_home.as_deref())?;
         let opencode_paths = resolve_opencode_paths(settings.opencode_home.as_deref())?;
         let pi_paths = resolve_pi_paths(settings.pi_home.as_deref())?;

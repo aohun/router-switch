@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapters-claude"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-claude-desktop"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-codex"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-grok"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-opencode"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-pi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-workbuddy"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "adapters-zcode"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -1642,7 +1642,7 @@ checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "cursor-gateway"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-stream",
  "axum",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "dirs 6.0.0",
@@ -5874,7 +5874,7 @@ dependencies = [
 
 [[package]]
 name = "router-switch"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "gpui",
  "gpui-component",
@@ -6472,7 +6472,7 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "adapters-claude",
  "adapters-claude-desktop",
@@ -6775,7 +6775,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "store"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "dirs 6.0.0",
  "domain",
@@ -7319,7 +7319,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokens-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bincode",
  "chrono",
@@ -7779,7 +7779,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "chrono",
  "cocoa 0.26.0",
@@ -7930,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "usage-query"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "domain",
  "reqwest",
