@@ -2,9 +2,12 @@ use chrono::{Datelike, Duration, Local, NaiveDate, TimeZone};
 use domain::AppKind;
 use gpui::{rgb, Hsla};
 use std::collections::HashMap;
-use tokens_core::{generate_graph, GroupBy, ReportOptions};
+use tokens_core::{generate_graph, generate_insights, GroupBy, InsightsSnapshot, ReportOptions};
 
 use crate::assets::CustomIcon;
+
+/// Days of history loaded for the Insights / heatmap window (~53 weeks + buffer).
+const INSIGHTS_LOOKBACK_DAYS: i64 = 400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageWindowChoice {
@@ -207,7 +210,7 @@ pub fn model_icon_and_color(model_id: &str) -> (CustomIcon, Hsla) {
     } else if lower.contains("deepseek") {
         (CustomIcon::DeepSeek, rgb(0x4D6BFE).into())
     } else if lower.contains("gemini") || lower.contains("google") {
-        (CustomIcon::DeepSeek, rgb(0x3B82F6).into())
+        (CustomIcon::Gemini, rgb(0x3B82F6).into())
     } else if lower.contains("qwen") {
         (CustomIcon::OpenCode, rgb(0x6366F1).into())
     } else if lower.contains("kimi") || lower.contains("moonshot") {
@@ -263,18 +266,7 @@ pub async fn load_dashboard_usage(
     let since_str = since_date.format("%Y-%m-%d").to_string();
     let until_str = until_date.format("%Y-%m-%d").to_string();
 
-    let client_filters: Option<Vec<String>> = match app_filter {
-        None => None,
-        Some(AppKind::Claude) => Some(vec!["claude".to_string()]),
-        Some(AppKind::ClaudeDesktop) => Some(vec!["claude-desktop".to_string()]),
-        Some(AppKind::Codex) => Some(vec!["codex".to_string()]),
-        Some(AppKind::Grok) => Some(vec!["grok".to_string()]),
-        Some(AppKind::OpenCode) => Some(vec!["opencode".to_string()]),
-        Some(AppKind::Pi) => Some(vec!["pi".to_string()]),
-        Some(AppKind::Cursor) => Some(vec!["cursor".to_string()]),
-        Some(AppKind::ZCode) => Some(vec!["zcode".to_string()]),
-        Some(AppKind::WorkBuddy) => Some(vec!["workbuddy".to_string(), "codebuddy".to_string()]),
-    };
+    let client_filters: Option<Vec<String>> = client_filters_for_app(app_filter);
 
     let options = ReportOptions {
         home_dir: None,
@@ -568,5 +560,59 @@ pub async fn load_dashboard_usage(
         range_desc,
         max_daily_cost,
         max_daily_tokens,
+    }
+}
+
+fn client_filters_for_app(app_filter: Option<AppKind>) -> Option<Vec<String>> {
+    match app_filter {
+        None => None,
+        Some(AppKind::Claude) => Some(vec!["claude".to_string()]),
+        Some(AppKind::ClaudeDesktop) => Some(vec!["claude-desktop".to_string()]),
+        Some(AppKind::Codex) => Some(vec!["codex".to_string()]),
+        Some(AppKind::Grok) => Some(vec!["grok".to_string()]),
+        Some(AppKind::OpenCode) => Some(vec!["opencode".to_string()]),
+        Some(AppKind::Pi) => Some(vec!["pi".to_string()]),
+        Some(AppKind::Cursor) => Some(vec!["cursor".to_string()]),
+        Some(AppKind::ZCode) => Some(vec!["zcode".to_string()]),
+        Some(AppKind::WorkBuddy) => Some(vec!["workbuddy".to_string(), "codebuddy".to_string()]),
+    }
+}
+
+/// Load a Wake-style Insights snapshot (~400 days / full heatmap window).
+pub async fn load_insights_snapshot(app_filter: Option<AppKind>) -> InsightsSnapshot {
+    let today = Local::now().date_naive();
+    let since = today - Duration::days(INSIGHTS_LOOKBACK_DAYS);
+    let options = ReportOptions {
+        home_dir: None,
+        use_env_roots: true,
+        clients: client_filters_for_app(app_filter),
+        since: Some(since.format("%Y-%m-%d").to_string()),
+        until: Some(today.format("%Y-%m-%d").to_string()),
+        year: None,
+        group_by: GroupBy::ClientModel,
+        scanner_settings: Default::default(),
+        today_only: false,
+        since_ts_ms: None,
+    };
+
+    match session::tokio_runtime()
+        .spawn(async move { generate_insights(options).await })
+        .await
+    {
+        Ok(Ok(snap)) => snap,
+        Ok(Err(err)) => {
+            eprintln!("[router-switch] generate_insights error: {}", err);
+            InsightsSnapshot {
+                as_of: today,
+                ..Default::default()
+            }
+        }
+        Err(err) => {
+            eprintln!("[router-switch] tokio task join error: {}", err);
+            InsightsSnapshot {
+                as_of: today,
+                ..Default::default()
+            }
+        }
     }
 }

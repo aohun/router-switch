@@ -40,7 +40,7 @@ use session::Workspace;
 use std::path::PathBuf;
 use store::{AppLanguage, ThemePreference};
 
-use crate::assets::CustomIcon;
+use crate::assets::{brand_img, brand_icon_path, custom_icon_brand_id, CustomIcon};
 use crate::theme;
 use crate::update_dialog::open_app_update_dialog;
 pub use crate::usage_service::*;
@@ -995,9 +995,11 @@ pub struct RouterApp {
     unify_dialog_migrate: bool,
     unify_dialog_restore: bool,
     settings_tab: SettingsTab,
-    dashboard_app_filter: Option<AppKind>,
+    pub(crate) dashboard_app_filter: Option<AppKind>,
     dashboard_data: Option<DashboardUsageData>,
-    is_loading_dashboard: bool,
+    pub(crate) insights_data: Option<tokens_core::InsightsSnapshot>,
+    pub(crate) insights_range: crate::insights_view::InsightsRange,
+    pub(crate) is_loading_dashboard: bool,
     usage_breakdown_tab: UsageBreakdownTab,
     usage_window: UsageWindowChoice,
     usage_metric: UsageMetric,
@@ -1059,7 +1061,7 @@ pub struct RouterApp {
     skills_import_selected: std::collections::HashSet<String>,
     skills_checking_updates: bool,
     skills_installing_key: Option<String>,
-    usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
+    pub(crate) usage_refresh_select: Entity<SelectState<Vec<UsageRefreshSelectItem>>>,
     _usage_refresh_sub: Option<Subscription>,
     log_config: store::LogConfig,
     log_level_select: Entity<SelectState<Vec<LogLevelSelectItem>>>,
@@ -1314,6 +1316,8 @@ impl RouterApp {
             settings_tab: SettingsTab::General,
             dashboard_app_filter: None,
             dashboard_data: None,
+            insights_data: None,
+            insights_range: crate::insights_view::InsightsRange::default(),
             is_loading_dashboard: false,
             usage_breakdown_tab: UsageBreakdownTab::Model,
             usage_window: UsageWindowChoice::Hours6,
@@ -1946,8 +1950,6 @@ impl RouterApp {
 
     pub fn refresh_dashboard_data(&mut self, cx: &mut Context<Self>) {
         let app_filter = self.dashboard_app_filter;
-        let window_choice = self.usage_window;
-        let metric = self.usage_metric;
         self.is_loading_dashboard = true;
         cx.notify();
 
@@ -1955,16 +1957,12 @@ impl RouterApp {
             move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut cx = cx.clone();
                 async move {
-                    let data = crate::usage_service::load_dashboard_usage(
-                        app_filter,
-                        window_choice,
-                        metric,
-                    )
-                    .await;
+                    let data =
+                        crate::usage_service::load_insights_snapshot(app_filter).await;
                     let _ = this.update(
                         &mut cx,
                         |this: &mut RouterApp, cx: &mut Context<RouterApp>| {
-                            this.dashboard_data = Some(data);
+                            this.insights_data = Some(data);
                             this.is_loading_dashboard = false;
                             cx.notify();
                         },
@@ -3756,6 +3754,7 @@ impl RouterApp {
         let active = self.route == route;
         let accent = cx.theme().sidebar_accent;
         let fg = cx.theme().sidebar_foreground;
+        let dark = cx.theme().is_dark();
         let app_id_str = app_id.to_string();
         let target_app_id = app_id.to_string();
 
@@ -3775,7 +3774,7 @@ impl RouterApp {
                 this.bg(accent).font_weight(FontWeight::SEMIBOLD)
             })
             .when(!disabled, |this| this.hover(|this| this.bg(accent)))
-            .child(
+            .child(if app_id == "amp" {
                 Icon::new(icon)
                     .size(px(18.))
                     .flex_shrink_0()
@@ -3783,8 +3782,11 @@ impl RouterApp {
                         cx.theme().foreground
                     } else {
                         fg.opacity(0.85)
-                    })),
-            )
+                    }))
+                    .into_any_element()
+            } else {
+                brand_img(app_id, dark, px(18.)).into_any_element()
+            })
             .child(div().flex_1().truncate().child(label))
             .when_some(badge, |this, b| {
                 this.child(
@@ -3882,7 +3884,7 @@ impl RouterApp {
                     false,
                     cx,
                 )),
-                "deepseek" | "gemini" => Some(self.draggable_nav_item(
+                "deepseek" => Some(self.draggable_nav_item(
                     "deepseek",
                     CustomIcon::DeepSeek,
                     Some(rgb(0x3B82F6).into()),
@@ -3892,11 +3894,31 @@ impl RouterApp {
                     true,
                     cx,
                 )),
-                "fx" | "hermes" => Some(self.draggable_nav_item(
+                "gemini" => Some(self.draggable_nav_item(
+                    "gemini",
+                    CustomIcon::Gemini,
+                    Some(rgb(0x2563EB).into()),
+                    "Gemini CLI",
+                    Route::Codex,
+                    Some(t!("nav.soon").to_string()),
+                    true,
+                    cx,
+                )),
+                "fx" => Some(self.draggable_nav_item(
                     "fx",
                     CustomIcon::Fx,
                     Some(rgb(0x4B5563).into()),
                     "Fx",
+                    Route::Codex,
+                    Some(t!("nav.soon").to_string()),
+                    true,
+                    cx,
+                )),
+                "hermes" => Some(self.draggable_nav_item(
+                    "hermes",
+                    CustomIcon::Fx,
+                    Some(rgb(0x4B5563).into()),
+                    "Hermes",
                     Route::Codex,
                     Some(t!("nav.soon").to_string()),
                     true,
@@ -3932,11 +3954,21 @@ impl RouterApp {
                     true,
                     cx,
                 )),
-                "ohmypi" | "openclaw" => Some(self.draggable_nav_item(
+                "ohmypi" => Some(self.draggable_nav_item(
                     "ohmypi",
                     CustomIcon::OhMyPi,
                     Some(rgb(0xEC4899).into()),
                     "Oh My Pi",
+                    Route::Codex,
+                    Some(t!("nav.soon").to_string()),
+                    true,
+                    cx,
+                )),
+                "openclaw" => Some(self.draggable_nav_item(
+                    "openclaw",
+                    CustomIcon::OhMyPi,
+                    Some(rgb(0xEC4899).into()),
+                    "OpenClaw",
                     Route::Codex,
                     Some(t!("nav.soon").to_string()),
                     true,
@@ -4358,15 +4390,12 @@ impl RouterApp {
                                 // Dynamic Tool Legends
                                 .child(h_flex().items_center().gap(px(12.)).children(
                                     if data.active_clients.is_empty() {
+                                        let dark = theme.is_dark();
                                         vec![
                                             h_flex()
                                                 .items_center()
                                                 .gap(px(5.))
-                                                .child(
-                                                    Icon::new(CustomIcon::Claude)
-                                                        .size(px(14.))
-                                                        .text_color(rgb(0xD97757)),
-                                                )
+                                                .child(brand_img("claude", dark, px(14.)))
                                                 .child(
                                                     div()
                                                         .text_size(px(12.))
@@ -4377,11 +4406,7 @@ impl RouterApp {
                                             h_flex()
                                                 .items_center()
                                                 .gap(px(5.))
-                                                .child(
-                                                    Icon::new(CustomIcon::OpenAI)
-                                                        .size(px(14.))
-                                                        .text_color(rgb(0x10A37F)),
-                                                )
+                                                .child(brand_img("codex", dark, px(14.)))
                                                 .child(
                                                     div()
                                                         .text_size(px(12.))
@@ -4391,74 +4416,59 @@ impl RouterApp {
                                                 .into_any_element(),
                                         ]
                                     } else {
+                                        let dark = theme.is_dark();
                                         data.active_clients
                                             .iter()
                                             .take(4)
                                             .map(|client| {
-                                                let (icon, color, name): (
-                                                    CustomIcon,
-                                                    Hsla,
+                                                let (brand_id, name): (
+                                                    Option<&'static str>,
                                                     String,
                                                 ) = match client.as_str() {
                                                     "claude" => (
-                                                        CustomIcon::Claude,
-                                                        rgb(0xD97757).into(),
+                                                        Some("claude"),
                                                         "Claude Code".to_string(),
                                                     ),
-                                                    "codex" => (
-                                                        CustomIcon::OpenAI,
-                                                        rgb(0x10A37F).into(),
-                                                        "Codex".to_string(),
-                                                    ),
-                                                    "grok" => (
-                                                        CustomIcon::Grok,
-                                                        rgb(0x8B5CF6).into(),
-                                                        "Grok".to_string(),
-                                                    ),
-                                                    "opencode" => (
-                                                        CustomIcon::OpenCode,
-                                                        rgb(0x6366F1).into(),
-                                                        "OpenCode".to_string(),
-                                                    ),
-                                                    "pi" => (
-                                                        CustomIcon::Pi,
-                                                        rgb(0x10B981).into(),
-                                                        "Pi".to_string(),
-                                                    ),
-                                                    "zcode" => (
-                                                        CustomIcon::ZCode,
-                                                        rgb(0x06B6D4).into(),
-                                                        "ZCode".to_string(),
-                                                    ),
-                                                    "cursor" => (
-                                                        CustomIcon::Cursor,
-                                                        rgb(0x06B6D4).into(),
-                                                        "Cursor".to_string(),
-                                                    ),
+                                                    "codex" => {
+                                                        (Some("codex"), "Codex".to_string())
+                                                    }
+                                                    "grok" => {
+                                                        (Some("grok"), "Grok".to_string())
+                                                    }
+                                                    "opencode" => {
+                                                        (Some("opencode"), "OpenCode".to_string())
+                                                    }
+                                                    "pi" => (Some("pi"), "Pi".to_string()),
+                                                    "zcode" => {
+                                                        (Some("zcode"), "ZCode".to_string())
+                                                    }
+                                                    "cursor" => {
+                                                        (Some("cursor"), "Cursor".to_string())
+                                                    }
                                                     "workbuddy" | "codebuddy" => (
-                                                        CustomIcon::WorkBuddy,
-                                                        rgb(0xF59E0B).into(),
+                                                        Some("workbuddy"),
                                                         "WorkBuddy".to_string(),
                                                     ),
-                                                    "gemini" => (
-                                                        CustomIcon::DeepSeek,
-                                                        rgb(0x3B82F6).into(),
-                                                        "Gemini".to_string(),
-                                                    ),
-                                                    other => (
-                                                        CustomIcon::Activity,
-                                                        rgb(0x64748B).into(),
-                                                        other.to_string(),
-                                                    ),
+                                                    "gemini" => {
+                                                        (Some("gemini"), "Gemini".to_string())
+                                                    }
+                                                    "openclaw" => {
+                                                        (Some("openclaw"), "OpenClaw".to_string())
+                                                    }
+                                                    other => (None, other.to_string()),
                                                 };
                                                 h_flex()
                                                     .items_center()
                                                     .gap(px(5.))
-                                                    .child(
-                                                        Icon::new(icon)
+                                                    .child(if let Some(id) = brand_id {
+                                                        brand_img(id, dark, px(14.))
+                                                            .into_any_element()
+                                                    } else {
+                                                        Icon::new(CustomIcon::Activity)
                                                             .size(px(14.))
-                                                            .text_color(color),
-                                                    )
+                                                            .text_color(rgb(0x64748B))
+                                                            .into_any_element()
+                                                    })
                                                     .child(
                                                         div()
                                                             .text_size(px(12.))
@@ -4627,321 +4637,7 @@ impl RouterApp {
     }
 
     fn render_dashboard_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let default_data = DashboardUsageData::default();
-        let data = self.dashboard_data.as_ref().unwrap_or(&default_data);
-
-        v_flex()
-            .w_full()
-            .gap(px(14.))
-            // 1. CCSwitch Brand Filter Chips & Date / Refresh Selectors
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(10.))
-                    .p(px(8.))
-                    .rounded(px(10.))
-                    .bg(theme.secondary.opacity(0.35))
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(
-                        // Time window: segmented control
-                        h_flex()
-                            .p(px(2.))
-                            .rounded(px(8.))
-                            .bg(theme.background)
-                            .border_1()
-                            .border_color(theme.border)
-                            .gap(px(2.))
-                            .children(
-                                [
-                                    (UsageWindowChoice::Hours6, t!("usage.hours_6").to_string()),
-                                    (UsageWindowChoice::Hours24, t!("usage.hours_24").to_string()),
-                                    (UsageWindowChoice::Days7, t!("usage.days_7").to_string()),
-                                    (UsageWindowChoice::Days30, t!("usage.days_30").to_string()),
-                                ]
-                                .into_iter()
-                                .map(|(choice, label)| {
-                                    self.render_usage_window_chip(choice, label, cx)
-                                }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(px(80.))
-                            .child(Select::new(&self.usage_refresh_select).small()),
-                    )
-                    .child(
-                        Button::new("dash-refresh-btn")
-                            .outline()
-                            .small()
-                            .icon(CustomIcon::RotateCw)
-                            .tooltip(t!("about.refresh").to_string())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.refresh_dashboard_data(cx);
-                                let msg = if this.language == AppLanguage::En {
-                                    "Dashboard stats refreshed"
-                                } else {
-                                    "仪表盘数据已刷新"
-                                };
-                                notify_success(msg, window, cx);
-                            })),
-                    ),
-            )
-            // 2. 5-Tile Metric Strip (Processed, Cached Input, Uncached Input, Output, Cache Savings)
-            .child(
-                theme::tile(cx).p(px(0.)).overflow_hidden().child(
-                    h_flex()
-                        .w_full()
-                        // Tile 1: Processed Tokens / Total Spend
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .p(px(12.))
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.muted_foreground)
-                                        .child(if self.usage_metric == UsageMetric::Cost {
-                                            t!("usage.total_cost").to_string()
-                                        } else {
-                                            t!("usage.processed_tokens").to_string()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(17.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.foreground)
-                                        .child(if self.usage_metric == UsageMetric::Cost {
-                                            data.total_cost_formatted.clone()
-                                        } else {
-                                            data.total_tokens_formatted.clone()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme.muted_foreground)
-                                        .child(
-                                            t!(
-                                                "usage.per_active_day",
-                                                count = data.per_active_day_formatted.as_str()
-                                            )
-                                            .to_string(),
-                                        ),
-                                ),
-                        )
-                        // Tile 2: Cached Input
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .p(px(12.))
-                                .border_l_1()
-                                .border_color(theme.border)
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.muted_foreground)
-                                        .child(t!("usage.cached_input").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(17.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.foreground)
-                                        .child(data.cached_input_formatted.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme.muted_foreground)
-                                        .child(
-                                            t!(
-                                                "usage.observed_input_share",
-                                                share =
-                                                    data.observed_input_share_formatted.as_str()
-                                            )
-                                            .to_string(),
-                                        ),
-                                ),
-                        )
-                        // Tile 3: Uncached Input
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .p(px(12.))
-                                .border_l_1()
-                                .border_color(theme.border)
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.muted_foreground)
-                                        .child(t!("usage.uncached_input").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(17.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.foreground)
-                                        .child(data.uncached_input_formatted.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme.muted_foreground)
-                                        .child(
-                                            t!(
-                                                "usage.cache_writes",
-                                                count = data.cache_write_formatted.as_str()
-                                            )
-                                            .to_string(),
-                                        ),
-                                ),
-                        )
-                        // Tile 4: Output
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .p(px(12.))
-                                .border_l_1()
-                                .border_color(theme.border)
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.muted_foreground)
-                                        .child(t!("usage.output_tokens").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(17.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.foreground)
-                                        .child(data.output_formatted.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme.muted_foreground)
-                                        .child(
-                                            t!(
-                                                "usage.includes_reasoning",
-                                                count = data.reasoning_formatted.as_str()
-                                            )
-                                            .to_string(),
-                                        ),
-                                ),
-                        )
-                        // Tile 5: Cache Savings
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .p(px(12.))
-                                .border_l_1()
-                                .border_color(theme.border)
-                                .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(theme.muted_foreground)
-                                        .child(t!("usage.cache_savings").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(17.))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0x10B981))
-                                        .child(data.cache_savings_cost_formatted.clone()),
-                                )
-                                .child(
-                                    div().text_size(px(11.)).text_color(rgb(0x10B981)).child(
-                                        t!(
-                                            "usage.raw_cost_multiple",
-                                            multiple =
-                                                data.cache_savings_multiple_formatted.as_str()
-                                        )
-                                        .to_string(),
-                                    ),
-                                ),
-                        ),
-                ),
-            )
-            // 3. Line Chart (折线图) directly below 5-Tile metric strip
-            .child(self.render_usage_line_chart(cx))
-            // 4. Detail Breakdown Table (Full-Width)
-            .child(
-                theme::tile(cx).w_full().child(
-                    v_flex()
-                        .w_full()
-                        .gap(px(10.))
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .justify_between()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(theme.foreground)
-                                        .child(t!("usage.breakdown_title").to_string()),
-                                )
-                                .child(
-                                    h_flex()
-                                        .p(px(2.))
-                                        .rounded(px(7.))
-                                        .bg(theme.secondary.opacity(0.5))
-                                        .border_1()
-                                        .border_color(theme.border)
-                                        .gap(px(2.))
-                                        .child(
-                                            Button::new("tab-breakdown-model")
-                                                .ghost()
-                                                .xsmall()
-                                                .selected(
-                                                    self.usage_breakdown_tab
-                                                        == UsageBreakdownTab::Model,
-                                                )
-                                                .label(t!("usage.tab_model"))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.usage_breakdown_tab =
-                                                        UsageBreakdownTab::Model;
-                                                    cx.notify();
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("tab-breakdown-day")
-                                                .ghost()
-                                                .xsmall()
-                                                .selected(
-                                                    self.usage_breakdown_tab
-                                                        == UsageBreakdownTab::Day,
-                                                )
-                                                .label(t!("usage.tab_day"))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.usage_breakdown_tab =
-                                                        UsageBreakdownTab::Day;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                ),
-                        )
-                        .child(match self.usage_breakdown_tab {
-                            UsageBreakdownTab::Model => {
-                                self.render_usage_daily_table(cx).into_any_element()
-                            }
-                            UsageBreakdownTab::Day => {
-                                self.render_usage_day_table(cx).into_any_element()
-                            }
-                        }),
-                ),
-            )
+        crate::insights_view::render_insights_page(self, cx)
     }
 
     fn render_cursor_gateway_banner(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4981,15 +4677,9 @@ impl RouterApp {
                                         } else {
                                             theme.border.opacity(0.5)
                                         })
-                                        .child(
-                                            Icon::new(CustomIcon::Cursor).size(px(18.)).text_color(
-                                                if is_running {
-                                                    rgb(0x10B981).into()
-                                                } else {
-                                                    theme.muted_foreground
-                                                },
-                                            ),
-                                        ),
+                                        .child(brand_img("cursor", dark, px(18.)).opacity(
+                                            if is_running { 1. } else { 0.45 },
+                                        )),
                                 )
                                 .child(
                                     v_flex()
@@ -5411,7 +5101,16 @@ impl RouterApp {
                                 .items_center()
                                 .justify_center()
                                 .bg(theme.secondary.opacity(0.6))
-                                .child(Icon::new(icon).size(px(20.)).text_color(icon_color)),
+                                .child(
+                                    if let Some(id) = custom_icon_brand_id(icon) {
+                                        brand_img(id, theme.is_dark(), px(20.)).into_any_element()
+                                    } else {
+                                        Icon::new(icon)
+                                            .size(px(20.))
+                                            .text_color(icon_color)
+                                            .into_any_element()
+                                    },
+                                ),
                         )
                         .child(
                             v_flex()
@@ -7047,41 +6746,42 @@ impl RouterApp {
             })
             .collect();
 
-        let app_meta: &[(&'static str, CustomIcon, Hsla, &'static str)] = &[
+        let app_meta: &[(&'static str, &'static str, Hsla, &'static str)] = &[
             (
                 session::skills::APP_CLAUDE,
-                CustomIcon::Claude,
+                "claude",
                 rgb(0xD97757).into(),
                 "Claude",
             ),
             (
                 session::skills::APP_CODEX,
-                CustomIcon::OpenAI,
+                "codex",
                 rgb(0x10A37F).into(),
                 "Codex",
             ),
             (
                 session::skills::APP_GROK,
-                CustomIcon::Grok,
+                "grok",
                 rgb(0x8B5CF6).into(),
                 "Grok Build",
             ),
             (
                 session::skills::APP_OPENCODE,
-                CustomIcon::OpenCode,
+                "opencode",
                 rgb(0x6366F1).into(),
                 "OpenCode",
             ),
             (
                 session::skills::APP_PI,
-                CustomIcon::Pi,
+                "pi",
                 rgb(0x3B82F6).into(),
                 "Pi",
             ),
         ];
 
+        let dark = theme.is_dark();
         // 每应用计数
-        let count_chips = app_meta.iter().map(|(app, icon, color, label)| {
+        let count_chips = app_meta.iter().map(|(app, brand_id, color, label)| {
             let count = self
                 .skills_list
                 .iter()
@@ -7091,7 +6791,7 @@ impl RouterApp {
                 h_flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(Icon::new(*icon).size(px(12.)).text_color(*color))
+                    .child(brand_img(brand_id, dark, px(12.)))
                     .child(
                         div()
                             .text_size(px(11.5))
@@ -7200,16 +6900,17 @@ impl RouterApp {
         &self,
         entry: session::skills::SkillEntry,
         divider: bool,
-        app_meta: &[(&'static str, CustomIcon, Hsla, &'static str)],
+        app_meta: &[(&'static str, &'static str, Hsla, &'static str)],
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let dark = theme.is_dark();
         let display_name = entry.name.clone().unwrap_or_else(|| entry.dir_name.clone());
         let description = entry.description.clone().unwrap_or_default();
 
         let app_icons = app_meta
             .iter()
-            .map(|(app, icon, color, label)| {
+            .map(|(app, brand_id, color, label)| {
                 let installed = entry.installs.iter().any(|install| install.app == *app);
                 let entry_for_click = entry.clone();
                 let app_for_click = *app;
@@ -7230,6 +6931,7 @@ impl RouterApp {
                     } else {
                         theme.secondary.opacity(0.35)
                     })
+                    .opacity(if installed { 1. } else { 0.45 })
                     .tooltip(move |window, cx| {
                         let text = if installed {
                             format!("{label_for_tooltip}: 已安装，点击移除")
@@ -7246,11 +6948,7 @@ impl RouterApp {
                             cx,
                         );
                     }))
-                    .child(Icon::new(*icon).size(px(14.)).text_color(if installed {
-                        *color
-                    } else {
-                        theme.muted_foreground.opacity(0.45)
-                    }))
+                    .child(brand_img(brand_id, dark, px(14.)))
             })
             .collect::<Vec<_>>();
 
@@ -7425,43 +7123,7 @@ impl RouterApp {
                                                 Button::new("sessions-filter-toggle")
                                                     .ghost()
                                                     .xsmall()
-                                                    .icon({
-                                                        let icon: Icon =
-                                                            match self.sessions_filter.as_deref() {
-                                                                Some("codex") => {
-                                                                    CustomIcon::OpenAI.into()
-                                                                }
-                                                                Some("grok") => {
-                                                                    CustomIcon::Grok.into()
-                                                                }
-                                                                Some("claude") => {
-                                                                    CustomIcon::Claude.into()
-                                                                }
-                                                                Some("opencode") => {
-                                                                    CustomIcon::OpenCode.into()
-                                                                }
-                                                                Some("openclaw") => {
-                                                                    CustomIcon::OhMyPi.into()
-                                                                }
-                                                                Some("gemini") => {
-                                                                    CustomIcon::Gemini.into()
-                                                                }
-                                                                Some("pi") => {
-                                                                    CustomIcon::Pi.into()
-                                                                }
-                                                                Some("zcode") => {
-                                                                    CustomIcon::ZCode.into()
-                                                                }
-                                                                Some("workbuddy") => {
-                                                                    CustomIcon::WorkBuddy.into()
-                                                                }
-                                                                Some("cursor") => {
-                                                                    CustomIcon::Cursor.into()
-                                                                }
-                                                                _ => IconName::Asterisk.into(),
-                                                            };
-                                                        icon
-                                                    })
+                                                    .icon(IconName::Asterisk)
                                                     .tooltip(
                                                         t!("sessions.filter_tooltip").to_string(),
                                                     )
@@ -7640,18 +7302,13 @@ impl RouterApp {
                                                         let source = meta.source_path.clone().unwrap_or_default();
                                                         let checked = this.session_checked.contains(&source);
                                                         let is_selected = selected_path == meta.source_path;
-                                                        let (icon, icon_color) = match meta.provider_id.as_str() {
-                                                            "codex" => (CustomIcon::OpenAI, rgb(0x10A37F)),
-                                                            "grok" => (CustomIcon::Grok, rgb(0x8B5CF6)),
-                                                            "claude" => (CustomIcon::Claude, rgb(0xD97757)),
-                                                            "opencode" => (CustomIcon::OpenCode, rgb(0x0284C7)),
-                                                            "openclaw" => (CustomIcon::OhMyPi, rgb(0xEC4899)),
-                                                            "gemini" => (CustomIcon::Gemini, rgb(0x2563EB)),
-                                                            "pi" => (CustomIcon::Pi, rgb(0x3B82F6)),
-                                                            "zcode" => (CustomIcon::ZCode, rgb(0x3B82F6)),
-                                                            "workbuddy" => (CustomIcon::WorkBuddy, rgb(0x6366F1)),
-                                                            "cursor" => (CustomIcon::Cursor, if dark { rgb(0xFFFFFF) } else { rgb(0x000000) }),
-                                                            _ => (CustomIcon::OpenAI, rgb(0x10A37F)),
+                                                        let brand_id = match meta.provider_id.as_str() {
+                                                            "codex" | "grok" | "claude" | "opencode"
+                                                            | "openclaw" | "gemini" | "pi" | "zcode"
+                                                            | "workbuddy" | "cursor" => {
+                                                                meta.provider_id.as_str()
+                                                            }
+                                                            _ => "codex",
                                                         };
                                                         let now_secs = std::time::SystemTime::now()
                                                             .duration_since(std::time::UNIX_EPOCH)
@@ -7763,11 +7420,7 @@ impl RouterApp {
                                                                                                     }),
                                                                                             )
                                                                                         })
-                                                                                        .child(
-                                                                                            Icon::new(icon)
-                                                                                                .size(px(16.))
-                                                                                                .text_color(icon_color),
-                                                                                        )
+                                                                                        .child(brand_img(brand_id, dark, px(16.)))
                                                                                         .child(
                                                                                             div()
                                                                                                 .flex_1()
@@ -7820,17 +7473,18 @@ impl RouterApp {
                             )
                             // 应用筛选下拉菜单 (在 DOM 末尾渲染以确保绘制在最上层，避免被列表遮挡)
                             .when(self.sessions_filter_menu_open, |this| {
-                                let filter_options: [(Option<String>, &str, Option<CustomIcon>, Hsla); 10] = [
-                                    (None, "全部", None, theme.foreground),
-                                    (Some("codex".to_string()), "Codex", Some(CustomIcon::OpenAI), rgb(0x10A37F).into()),
-                                    (Some("grok".to_string()), "Grok Build", Some(CustomIcon::Grok), rgb(0x8B5CF6).into()),
-                                    (Some("claude".to_string()), "Claude Code", Some(CustomIcon::Claude), rgb(0xD97757).into()),
-                                    (Some("opencode".to_string()), "OpenCode", Some(CustomIcon::OpenCode), rgb(0x0284C7).into()),
-                                    (Some("openclaw".to_string()), "OpenClaw", Some(CustomIcon::OhMyPi), rgb(0xEC4899).into()),
-                                    (Some("gemini".to_string()), "Gemini CLI", Some(CustomIcon::Gemini), rgb(0x2563EB).into()),
-                                    (Some("pi".to_string()), "Pi", Some(CustomIcon::Pi), rgb(0x3B82F6).into()),
-                                    (Some("zcode".to_string()), "ZCode", Some(CustomIcon::ZCode), rgb(0x3B82F6).into()),
-                                    (Some("workbuddy".to_string()), "WorkBuddy", Some(CustomIcon::WorkBuddy), rgb(0x6366F1).into()),
+                                let dark = theme.is_dark();
+                                let filter_options: [(Option<String>, &str); 10] = [
+                                    (None, "全部"),
+                                    (Some("codex".to_string()), "Codex"),
+                                    (Some("grok".to_string()), "Grok Build"),
+                                    (Some("claude".to_string()), "Claude Code"),
+                                    (Some("opencode".to_string()), "OpenCode"),
+                                    (Some("openclaw".to_string()), "OpenClaw"),
+                                    (Some("gemini".to_string()), "Gemini CLI"),
+                                    (Some("pi".to_string()), "Pi"),
+                                    (Some("zcode".to_string()), "ZCode"),
+                                    (Some("workbuddy".to_string()), "WorkBuddy"),
                                 ];
                                 this.child(
                                     div()
@@ -7848,8 +7502,9 @@ impl RouterApp {
                                             v_flex().gap(px(2.)).children(
                                                 filter_options
                                                     .into_iter()
-                                                    .map(|(filter, label, icon, icon_color)| {
+                                                    .map(|(filter, label)| {
                                                         let active = self.sessions_filter == filter;
+                                                        let brand_id = filter.clone();
                                                         div()
                                                             .id(SharedString::from(format!(
                                                                     "sessions-filter-menu-{:?}",
@@ -7894,10 +7549,8 @@ impl RouterApp {
                                                                     .flex()
                                                                     .items_center()
                                                                     .justify_center()
-                                                                    .child(if let Some(ic) = icon {
-                                                                        Icon::new(ic)
-                                                                            .size(px(16.))
-                                                                            .text_color(icon_color)
+                                                                    .child(if let Some(ref f) = brand_id {
+                                                                        brand_img(f, dark, px(16.))
                                                                             .into_any_element()
                                                                     } else {
                                                                         div()
@@ -7973,21 +7626,10 @@ impl RouterApp {
         let theme = cx.theme().clone();
         let muted = theme.muted_foreground;
         let dark = theme.is_dark();
-        let (icon, icon_color) = match selected.provider_id.as_str() {
-            "codex" => (CustomIcon::OpenAI, rgb(0x10A37F)),
-            "grok" => (CustomIcon::Grok, rgb(0x8B5CF6)),
-            "claude" => (CustomIcon::Claude, rgb(0xD97757)),
-            "opencode" => (CustomIcon::OpenCode, rgb(0x0284C7)),
-            "openclaw" => (CustomIcon::OhMyPi, rgb(0xEC4899)),
-            "gemini" => (CustomIcon::Gemini, rgb(0x2563EB)),
-            "pi" => (CustomIcon::Pi, rgb(0x3B82F6)),
-            "zcode" => (CustomIcon::ZCode, rgb(0x3B82F6)),
-            "workbuddy" => (CustomIcon::WorkBuddy, rgb(0x6366F1)),
-            "cursor" => (
-                CustomIcon::Cursor,
-                if dark { rgb(0xFFFFFF) } else { rgb(0x000000) },
-            ),
-            _ => (CustomIcon::OpenAI, rgb(0x10A37F)),
+        let brand_id = match selected.provider_id.as_str() {
+            "codex" | "grok" | "claude" | "opencode" | "openclaw" | "gemini" | "pi" | "zcode"
+            | "workbuddy" | "cursor" => selected.provider_id.as_str(),
+            _ => "codex",
         };
         let title = selected
             .title
@@ -8040,7 +7682,7 @@ impl RouterApp {
                         h_flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(Icon::new(icon).size(px(20.)).text_color(icon_color))
+                            .child(brand_img(brand_id, dark, px(20.)))
                             .child(
                                 div()
                                     .text_size(px(16.))
@@ -8669,7 +8311,6 @@ impl RouterApp {
 
     fn render_prompts_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let dark = theme.is_dark();
         let app = self.prompts_app;
         let search_value = self.prompts_search.read(cx).value().to_lowercase();
         let search = search_value.trim().to_lowercase();
@@ -8697,26 +8338,48 @@ impl RouterApp {
         let target_file_str = domain::prompt_display_path(app);
 
         let apps = [
-            (AppKind::Codex, CustomIcon::OpenAI, "Codex"),
-            (AppKind::Claude, CustomIcon::Claude, "Claude Code"),
-            (AppKind::Grok, CustomIcon::Grok, "Grok Build"),
-            (AppKind::OpenCode, CustomIcon::OpenCode, "OpenCode"),
-            (AppKind::Pi, CustomIcon::Pi, "Pi"),
-            (AppKind::Cursor, CustomIcon::Cursor, "Cursor"),
-            (AppKind::ZCode, CustomIcon::ZCode, "ZCode"),
-            (AppKind::WorkBuddy, CustomIcon::WorkBuddy, "WorkBuddy"),
+            (AppKind::Codex, "Codex"),
+            (AppKind::Claude, "Claude Code"),
+            (AppKind::Grok, "Grok Build"),
+            (AppKind::OpenCode, "OpenCode"),
+            (AppKind::Pi, "Pi"),
+            (AppKind::Cursor, "Cursor"),
+            (AppKind::ZCode, "ZCode"),
+            (AppKind::WorkBuddy, "WorkBuddy"),
         ];
 
+        let dark = theme.is_dark();
         let app_chips = apps
             .into_iter()
-            .map(|(kind, icon, label)| {
+            .map(|(kind, label)| {
                 let selected = self.prompts_app == kind;
-                Button::new(SharedString::from(format!("prompt-app-{}", kind.as_str())))
-                    .outline()
-                    .small()
-                    .selected(selected)
-                    .icon(icon)
-                    .label(label)
+                let brand_id = kind.as_str();
+                div()
+                    .id(SharedString::from(format!("prompt-app-{}", brand_id)))
+                    .h(px(28.))
+                    .px(px(10.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .border_1()
+                    .border_color(if selected {
+                        theme.primary
+                    } else {
+                        theme.border
+                    })
+                    .bg(if selected {
+                        theme.primary.opacity(0.12)
+                    } else {
+                        theme.secondary.opacity(0.4)
+                    })
+                    .text_color(theme.foreground)
+                    .hover(|this| this.bg(theme.secondary.opacity(0.7)))
+                    .child(brand_img(brand_id, dark, px(14.)))
+                    .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.switch_prompts_app(kind, cx);
                     }))
@@ -10069,6 +9732,7 @@ impl RouterApp {
     ) -> impl IntoElement {
         let is_active = self.main_apps.iter().any(|a| a == id);
         let theme = cx.theme();
+        let dark = theme.is_dark();
 
         div()
             .id(SharedString::from(format!("app-chip-{}", id)))
@@ -10091,11 +9755,18 @@ impl RouterApp {
                     .border_color(theme.border)
                     .hover(|this| this.bg(theme.secondary))
             })
-            .child(Icon::new(icon).size(px(14.)).text_color(if is_active {
-                rgb(0xFFFFFF).into()
+            .child(if id == "amp" {
+                Icon::new(icon)
+                    .size(px(14.))
+                    .text_color(if is_active {
+                        rgb(0xFFFFFF).into()
+                    } else {
+                        icon_color
+                    })
+                    .into_any_element()
             } else {
-                icon_color
-            }))
+                brand_img(id, dark, px(14.)).into_any_element()
+            })
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_main_app(id, window, cx);
@@ -10547,7 +10218,15 @@ impl RouterApp {
                                     .items_center()
                                     .gap(px(7.))
                                     .child(
-                                        Icon::new(row.app_icon).size(px(14.)).text_color(row.color),
+                                        if let Some(id) = custom_icon_brand_id(row.app_icon) {
+                                            brand_img(id, theme.is_dark(), px(14.))
+                                                .into_any_element()
+                                        } else {
+                                            Icon::new(row.app_icon)
+                                                .size(px(14.))
+                                                .text_color(row.color)
+                                                .into_any_element()
+                                        },
                                     )
                                     .child(
                                         div()
@@ -11134,21 +10813,22 @@ impl RouterApp {
     fn render_about_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
 
-        fn tool_icon_and_color(icon_kind: &str) -> (CustomIcon, Hsla) {
+        fn tool_brand_id(icon_kind: &str) -> &'static str {
             match icon_kind {
-                "claude" => (CustomIcon::Claude, rgb(0xD97757).into()),
-                "codex" => (CustomIcon::OpenAI, rgb(0x10A37F).into()),
-                "gemini" => (CustomIcon::DeepSeek, rgb(0x3B82F6).into()),
-                "grok" => (CustomIcon::Grok, rgb(0x8B5CF6).into()),
-                "opencode" => (CustomIcon::OpenCode, rgb(0x0284C7).into()),
-                "pi" => (CustomIcon::Pi, rgb(0x3B82F6).into()),
-                "openclaw" => (CustomIcon::OhMyPi, rgb(0xEC4899).into()),
-                "hermes" => (CustomIcon::Fx, rgb(0x4B5563).into()),
-                _ => (CustomIcon::OpenAI, rgb(0x10A37F).into()),
+                "claude" => "claude",
+                "codex" => "codex",
+                "gemini" => "gemini",
+                "grok" => "grok",
+                "opencode" => "opencode",
+                "pi" => "pi",
+                "openclaw" => "openclaw",
+                "hermes" => "hermes",
+                _ => "codex",
             }
         }
 
         let upgradable_count = self.env_tools.iter().filter(|t| t.is_upgradable).count();
+        let dark = theme.is_dark();
 
         v_flex()
             .w_full()
@@ -11372,7 +11052,7 @@ impl RouterApp {
                                             .w_full()
                                             .gap(px(10.))
                                             .children(pair.iter().map(|tool| {
-                                                let (icon, icon_color) = tool_icon_and_color(&tool.icon_kind);
+                                                let brand_id = tool_brand_id(&tool.icon_kind);
                                                 let tool_id = tool.id.clone();
                                                 let tool_name = tool.name.clone();
                                                 let is_up = tool.is_upgradable;
@@ -11426,7 +11106,11 @@ impl RouterApp {
                                                                             .flex()
                                                                             .items_center()
                                                                             .justify_center()
-                                                                            .child(Icon::new(icon).size(px(18.)).text_color(icon_color)),
+                                                                            .child(brand_img(
+                                                                                brand_id,
+                                                                                dark,
+                                                                                px(18.),
+                                                                            )),
                                                                     )
                                                                     .child(
                                                                         v_flex()
@@ -11741,11 +11425,7 @@ impl RouterApp {
                                             .items_center()
                                             .justify_center()
                                             .bg(theme.secondary.opacity(0.6))
-                                            .child(
-                                                Icon::new(CustomIcon::OpenAI)
-                                                    .size(px(16.))
-                                                    .text_color(rgb(0x10A37F)),
-                                            ),
+                                            .child(brand_img("codex", theme.is_dark(), px(16.))),
                                     )
                                     .child(
                                         v_flex()
@@ -12006,11 +11686,11 @@ impl RouterApp {
                                             .items_center()
                                             .justify_center()
                                             .bg(theme.secondary.opacity(0.6))
-                                            .child(
-                                                Icon::new(CustomIcon::WorkBuddy)
-                                                    .size(px(16.))
-                                                    .text_color(rgb(0x6366F1)),
-                                            ),
+                                            .child(brand_img(
+                                                "workbuddy",
+                                                theme.is_dark(),
+                                                px(16.),
+                                            )),
                                     )
                                     .child(
                                         v_flex()

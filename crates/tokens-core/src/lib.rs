@@ -5,6 +5,7 @@ pub mod bucket_tz;
 mod cc_mirror;
 pub mod clients;
 pub mod fs_atomic;
+pub mod insights;
 pub mod mcp;
 mod message_cache;
 pub mod model_alias;
@@ -19,6 +20,7 @@ pub mod sessions;
 pub use aggregator::*;
 pub use bucket_tz::{bucket_timezone, parse_bucket_timezone, set_bucket_timezone, BucketTimezone};
 pub use clients::{ClientCounts, ClientDef, ClientId, PathRoot};
+pub use insights::*;
 pub use model_alias::ModelAliasMap;
 pub use scanner::*;
 pub use sessionize::{
@@ -2213,6 +2215,49 @@ async fn generate_graph_with_loaded_pricing(
 pub async fn generate_graph(options: ReportOptions) -> Result<GraphResult, String> {
     let pricing = pricing::PricingService::get_or_init().await?;
     generate_graph_with_loaded_pricing(options, Some(&pricing)).await
+}
+
+/// Load messages the same way as [`generate_graph`], then aggregate a Wake-style
+/// [`InsightsSnapshot`]. Prefer a wide date window (~400 days) so the heatmap
+/// and trend charts are populated.
+pub async fn generate_insights(options: ReportOptions) -> Result<InsightsSnapshot, String> {
+    let pricing = pricing::PricingService::get_or_init().await?;
+    generate_insights_with_loaded_pricing(options, Some(&pricing)).await
+}
+
+async fn generate_insights_with_loaded_pricing(
+    options: ReportOptions,
+    pricing: Option<&pricing::PricingService>,
+) -> Result<InsightsSnapshot, String> {
+    let home_dir = get_home_dir_string(&options.home_dir)?;
+
+    let clients: Vec<String> = options.clients.clone().unwrap_or_else(|| {
+        let mut clients: Vec<String> = ClientId::ALL
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect();
+        clients.push("synthetic".to_string());
+        clients
+    });
+
+    let all_messages = parse_all_messages_with_pricing_with_env_strategy(
+        &home_dir,
+        &clients,
+        pricing,
+        options.use_env_roots,
+        &options.scanner_settings,
+        options.today_only,
+    );
+
+    let filtered = filter_messages_for_report(all_messages, &options);
+
+    let as_of = options
+        .until
+        .as_deref()
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| crate::bucket_timezone().today());
+
+    Ok(compute_insights(&filtered, as_of))
 }
 
 fn filter_messages_for_report(
