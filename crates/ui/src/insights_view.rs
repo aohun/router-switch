@@ -99,6 +99,15 @@ fn month_year(ts_ms: i64) -> String {
         .unwrap_or_default()
 }
 
+/// Wake Insights chart accent (macOS system blue). Page-local only — does not
+/// touch the app-wide theme palette (RS primary stays neutral black/gray).
+fn chart_accent(cx: &App) -> Hsla {
+    let dark = cx.theme().is_dark();
+    // Wake theme.rs: light primary 0x0A84FF, dark primary 0x4C8DFF
+    rgb(if dark { 0x4C8DFF } else { 0x0A84FF }).into()
+}
+
+/// Wake `theme::agent_series_color` — brand hues for the stacked trend chart.
 fn agent_series_color(client: &str) -> Hsla {
     let c = client.to_lowercase();
     let hex = if c.contains("claude") {
@@ -123,7 +132,9 @@ fn agent_series_color(client: &str) -> Hsla {
         0xE04A4A
     } else if c.contains("zcode") {
         0x8B95A5
-    } else if c.contains("workbuddy") || c.contains("codebuddy") {
+    } else if c.contains("codebuddy") {
+        0x6C4DFF
+    } else if c.contains("workbuddy") {
         0x0EC8A9
     } else if c.contains("antigravity") {
         0x648AB5
@@ -134,7 +145,7 @@ fn agent_series_color(client: &str) -> Hsla {
     } else if c.contains("omp") {
         0xB05CE6
     } else {
-        0x64748B
+        0x4C8DFF // Wake SERIES_FALLBACK
     };
     rgb(hex).into()
 }
@@ -446,12 +457,13 @@ fn trend_layers(series: &[TrendSeries], cx: &App) -> Rc<Vec<TrendLayer>> {
 
 fn week_change_note(now: i64, before: i64, cx: &App) -> (SharedString, Hsla) {
     let theme = cx.theme();
+    let accent = chart_accent(cx);
     match (now, before) {
         (0, 0) => (
             t!("stats.no_activity").to_string().into(),
             theme.muted_foreground,
         ),
-        (_, 0) => (t!("stats.new_this_week").to_string().into(), theme.primary),
+        (_, 0) => (t!("stats.new_this_week").to_string().into(), accent),
         _ => {
             let pct = ((now - before) as f64 * 100. / before as f64).round() as i64;
             match pct {
@@ -464,7 +476,7 @@ fn week_change_note(now: i64, before: i64, cx: &App) -> (SharedString, Hsla) {
                         .to_string()
                         .into(),
                     if p > 0 {
-                        theme.primary
+                        accent
                     } else {
                         theme.muted_foreground
                     },
@@ -554,12 +566,13 @@ fn render_heatmap(d: &InsightsSnapshot, cx: &App) -> AnyElement {
             heat_max = heat_max.max(n);
         }
     }
+    let accent = chart_accent(cx);
     let heat_color = |n: i64| -> Hsla {
         if n == 0 {
             return theme.muted;
         }
         let quartile = ((n as f32 / heat_max as f32) * 4.).ceil().clamp(1., 4.) as usize;
-        theme.primary.opacity(HEAT[quartile - 1])
+        accent.opacity(HEAT[quartile - 1])
     };
 
     let dow_col = div()
@@ -649,7 +662,7 @@ fn render_heatmap(d: &InsightsSnapshot, cx: &App) -> AnyElement {
                         .bg(if a == 0. {
                             theme.muted
                         } else {
-                            theme.primary.opacity(a)
+                            accent.opacity(a)
                         })
                 }))
                 .child(t!("stats.more").to_string()),
@@ -793,6 +806,7 @@ fn dist_caption(range: InsightsRange, peak: usize, _peak_n: i64) -> String {
 
 fn render_distribution(range: InsightsRange, values: &[i64], peak: usize, cx: &App) -> AnyElement {
     let theme = cx.theme();
+    let accent = chart_accent(cx);
     let max = values.iter().copied().max().unwrap_or(0).max(1);
     let gap = match range {
         InsightsRange::Hour => px(4.),
@@ -827,9 +841,9 @@ fn render_distribution(range: InsightsRange, values: &[i64], peak: usize, cx: &A
                         (
                             px((frac * CHART_H).max(3.)),
                             if i == peak {
-                                theme.primary
+                                accent
                             } else {
-                                theme.primary.opacity(0.55)
+                                accent.opacity(0.55)
                             },
                         )
                     };
@@ -928,15 +942,40 @@ fn render_usage_board(
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
-    let max_req = rows.iter().map(|r| r.requests).max().unwrap_or(0).max(1);
+    // Wake Tokens metric: skip groups with no reported usage (0 ≠ "used zero").
+    let mut sorted: Vec<&tokens_core::UsageTally> =
+        rows.iter().filter(|r| r.tokens > 0).collect();
+    sorted.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    if show_brand {
+        // Agents: Wake lists all that reported tokens.
+    } else {
+        sorted.truncate(6);
+    }
+    let max_tok = sorted.iter().map(|r| r.tokens).max().unwrap_or(0).max(1);
+
+    if sorted.is_empty() {
+        return div().into_any_element();
+    }
+
     v_flex()
         .gap(px(14.))
-        .child(section_head(title, None, None, cx))
+        .child(section_head(
+            title,
+            None,
+            Some(
+                div()
+                    .text_size(px(FONT_CAPTION))
+                    .text_color(theme.muted_foreground)
+                    .child(t!("stats.tokens").to_string())
+                    .into_any_element(),
+            ),
+            cx,
+        ))
         .child(
             v_flex()
                 .gap(px(8.))
-                .children(rows.iter().take(8).map(|row| {
-                    let frac = (row.requests as f32 / max_req as f32).clamp(0.02, 1.);
+                .children(sorted.into_iter().map(|row| {
+                    let frac = (row.tokens as f32 / max_tok as f32).clamp(0.02, 1.);
                     let brand = show_brand.then(|| brand_id_for_client(&row.name)).flatten();
                     let name = if show_brand {
                         display_agent_name(&row.name)
@@ -968,21 +1007,21 @@ fn render_usage_board(
                                 .h(px(6.))
                                 .rounded(px(3.))
                                 .bg(theme.muted)
-                                .child(div().h_full().w(relative(frac)).rounded(px(3.)).bg(
-                                    if show_brand {
-                                        agent_series_color(&row.name)
-                                    } else {
-                                        theme.primary.opacity(0.7)
-                                    },
-                                )),
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(frac))
+                                        .rounded(px(3.))
+                                        .bg(chart_accent(cx)),
+                                ),
                         )
                         .child(
                             div()
-                                .w(px(64.))
+                                .w(px(72.))
                                 .text_right()
                                 .text_size(px(FONT_LABEL))
                                 .text_color(theme.muted_foreground)
-                                .child(thousands(row.requests)),
+                                .child(format_tokens(row.tokens)),
                         )
                 })),
         )

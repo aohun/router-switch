@@ -272,6 +272,23 @@ impl Store {
                 updated_at INTEGER,
                 PRIMARY KEY (id, app)
             );
+            CREATE TABLE IF NOT EXISTS session_user_data (
+                session_key TEXT PRIMARY KEY,
+                favorite INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS session_index (
+                session_key TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                title TEXT,
+                project_name TEXT,
+                source_path TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                tokens INTEGER NOT NULL DEFAULT 0
+            );
             ",
         )?;
         let data_dir = path
@@ -767,6 +784,157 @@ impl Store {
         }
         Ok(())
     }
+
+    // ---- Wake-style session index + user_data (favorite / pinned) ----
+
+    pub fn replace_session_index(
+        &self,
+        rows: &[SessionIndexRow],
+    ) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM session_index", [])?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO session_index
+             (session_key, agent_id, session_id, title, project_name, source_path,
+              created_at, updated_at, message_count, tokens)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        )?;
+        for row in rows {
+            stmt.execute(params![
+                row.session_key,
+                row.agent_id,
+                row.session_id,
+                row.title,
+                row.project_name,
+                row.source_path,
+                row.created_at,
+                row.updated_at,
+                row.message_count,
+                row.tokens,
+            ])?;
+        }
+        Ok(())
+    }
+
+    pub fn list_session_index(&self) -> Result<Vec<SessionIndexRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_key, agent_id, session_id, title, project_name, source_path,
+                    created_at, updated_at, message_count, tokens
+             FROM session_index
+             ORDER BY COALESCE(updated_at, created_at, 0) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionIndexRow {
+                session_key: row.get(0)?,
+                agent_id: row.get(1)?,
+                session_id: row.get(2)?,
+                title: row.get(3)?,
+                project_name: row.get(4)?,
+                source_path: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                message_count: row.get(8)?,
+                tokens: row.get(9)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn get_session_user_data(
+        &self,
+        session_key: &str,
+    ) -> Result<SessionUserData, StoreError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT favorite, pinned FROM session_user_data WHERE session_key = ?1",
+                params![session_key],
+                |row| {
+                    Ok(SessionUserData {
+                        favorite: row.get::<_, i64>(0)? != 0,
+                        pinned: row.get::<_, i64>(1)? != 0,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row.unwrap_or_default())
+    }
+
+    pub fn list_session_user_data(&self) -> Result<Vec<(String, SessionUserData)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_key, favorite, pinned FROM session_user_data")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SessionUserData {
+                    favorite: row.get::<_, i64>(1)? != 0,
+                    pinned: row.get::<_, i64>(2)? != 0,
+                },
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn set_session_favorite(
+        &self,
+        session_key: &str,
+        favorite: bool,
+    ) -> Result<(), StoreError> {
+        self.upsert_session_user_flag(session_key, Some(favorite), None)
+    }
+
+    pub fn set_session_pinned(&self, session_key: &str, pinned: bool) -> Result<(), StoreError> {
+        self.upsert_session_user_flag(session_key, None, Some(pinned))
+    }
+
+    fn upsert_session_user_flag(
+        &self,
+        session_key: &str,
+        favorite: Option<bool>,
+        pinned: Option<bool>,
+    ) -> Result<(), StoreError> {
+        let current = self.get_session_user_data(session_key)?;
+        let favorite = favorite.unwrap_or(current.favorite);
+        let pinned = pinned.unwrap_or(current.pinned);
+        if !favorite && !pinned {
+            self.conn.execute(
+                "DELETE FROM session_user_data WHERE session_key = ?1",
+                params![session_key],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO session_user_data (session_key, favorite, pinned)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_key) DO UPDATE SET
+                   favorite = excluded.favorite,
+                   pinned = excluded.pinned",
+                params![session_key, favorite as i64, pinned as i64],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionUserData {
+    pub favorite: bool,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionIndexRow {
+    pub session_key: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub title: Option<String>,
+    pub project_name: Option<String>,
+    pub source_path: Option<String>,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
+    pub message_count: i64,
+    pub tokens: i64,
 }
 
 pub fn default_data_dir() -> Result<PathBuf, StoreError> {

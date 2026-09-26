@@ -169,6 +169,13 @@ const DOWNLOAD_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
   <line x1="12" x2="12" y1="15" y2="3"/>
 </svg>"#;
 
+const ARROW_UP_DOWN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="m21 16-4 4-4-4"/>
+  <path d="M17 20V4"/>
+  <path d="m3 8 4-4 4 4"/>
+  <path d="M7 4v16"/>
+</svg>"#;
+
 const HELP_CIRCLE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <circle cx="12" cy="12" r="10"/>
   <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
@@ -242,6 +249,7 @@ pub enum CustomIcon {
     KeyRound,
     HelpCircle,
     Download,
+    ArrowUpDown,
 }
 
 impl IconNamed for CustomIcon {
@@ -275,6 +283,7 @@ impl IconNamed for CustomIcon {
             Self::KeyRound => "icons/custom/key-round.svg",
             Self::HelpCircle => "icons/custom/help-circle.svg",
             Self::Download => "icons/custom/download.svg",
+            Self::ArrowUpDown => "icons/custom/arrow-up-down.svg",
         }
         .into()
     }
@@ -297,6 +306,9 @@ impl AssetSource for AppAssets {
             "icons/custom/key-round.svg" => Ok(Some(Cow::Borrowed(KEY_ROUND_SVG.as_bytes()))),
             "icons/custom/help-circle.svg" => Ok(Some(Cow::Borrowed(HELP_CIRCLE_SVG.as_bytes()))),
             "icons/custom/download.svg" => Ok(Some(Cow::Borrowed(DOWNLOAD_SVG.as_bytes()))),
+            "icons/custom/arrow-up-down.svg" => {
+                Ok(Some(Cow::Borrowed(ARROW_UP_DOWN_SVG.as_bytes())))
+            }
             _ => gpui_component_assets::Assets.load(path),
         }
     }

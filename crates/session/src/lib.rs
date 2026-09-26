@@ -77,6 +77,7 @@ pub mod oauth;
 pub mod prompts;
 pub mod sessions;
 pub mod skills;
+pub mod session_index;
 mod workbuddy_auth;
 
 pub use prompts::PromptService;
@@ -1569,6 +1570,23 @@ impl Workspace {
             ],
             self.claude_paths.home.join("projects"),
         )
+    }
+
+    /// Wake-style: full multi-agent scan → persist index → return rows with flags.
+    pub fn refresh_wake_sessions(&self) -> Result<Vec<session_index::IndexedSession>, String> {
+        session_index::refresh_and_load(&self.store)
+    }
+
+    pub fn load_wake_sessions(&self) -> Result<Vec<session_index::IndexedSession>, String> {
+        session_index::load_indexed(&self.store)
+    }
+
+    pub fn set_wake_session_favorite(&self, key: &str, favorite: bool) -> Result<(), String> {
+        session_index::set_favorite(&self.store, key, favorite)
+    }
+
+    pub fn set_wake_session_pinned(&self, key: &str, pinned: bool) -> Result<(), String> {
+        session_index::set_pinned(&self.store, key, pinned)
     }
 
     /// 扫描全部会话(最近活跃优先)

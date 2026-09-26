@@ -5,6 +5,7 @@ mod theme;
 pub mod tray;
 pub mod update_dialog;
 pub mod usage_service;
+mod sessions_workbench;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;
@@ -87,7 +88,8 @@ pub fn run() {
         theme::apply_palette(cx);
         cx.activate(true);
 
-        let window_size = size(px(1213.), px(816.));
+        // Align with Wake defaults: MAIN_SIZE 1180×760, min 940×620.
+        let window_size = size(px(1180.), px(760.));
         let bounds = Bounds::centered(None, window_size, cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -96,8 +98,10 @@ pub fn run() {
                 appears_transparent: true,
                 traffic_light_position: Some(gpui::point(px(16.), px(16.))),
             }),
-            window_background: WindowBackgroundAppearance::Blurred,
-            window_min_size: Some(size(px(880.), px(600.))),
+            // Wake uses default Opaque. Blurred forces NSVisualEffectView /
+            // backdrop blur on every live-resize frame and is a major lag source.
+            window_background: WindowBackgroundAppearance::Opaque,
+            window_min_size: Some(size(px(940.), px(620.))),
             kind: WindowKind::Normal,
             ..Default::default()
         };

@@ -6,9 +6,6 @@ use tokens_core::{generate_graph, generate_insights, GroupBy, InsightsSnapshot, 
 
 use crate::assets::CustomIcon;
 
-/// Days of history loaded for the Insights / heatmap window (~53 weeks + buffer).
-const INSIGHTS_LOOKBACK_DAYS: i64 = 400;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UsageWindowChoice {
     #[default]
@@ -578,16 +575,17 @@ fn client_filters_for_app(app_filter: Option<AppKind>) -> Option<Vec<String>> {
     }
 }
 
-/// Load a Wake-style Insights snapshot (~400 days / full heatmap window).
+/// Load a Wake-style Insights snapshot over **all-time** session history
+/// (agent Tokens match Wake's unscoped `SUM(tokens_used)`; heatmap still
+/// renders the trailing [`tokens_core::TREND_WEEKS`] from `as_of`).
 pub async fn load_insights_snapshot(app_filter: Option<AppKind>) -> InsightsSnapshot {
     let today = Local::now().date_naive();
-    let since = today - Duration::days(INSIGHTS_LOOKBACK_DAYS);
     let options = ReportOptions {
         home_dir: None,
         use_env_roots: true,
         clients: client_filters_for_app(app_filter),
-        since: Some(since.format("%Y-%m-%d").to_string()),
-        until: Some(today.format("%Y-%m-%d").to_string()),
+        since: None,
+        until: None,
         year: None,
         group_by: GroupBy::ClientModel,
         scanner_settings: Default::default(),

@@ -2218,8 +2218,8 @@ pub async fn generate_graph(options: ReportOptions) -> Result<GraphResult, Strin
 }
 
 /// Load messages the same way as [`generate_graph`], then aggregate a Wake-style
-/// [`InsightsSnapshot`]. Prefer a wide date window (~400 days) so the heatmap
-/// and trend charts are populated.
+/// [`InsightsSnapshot`]. Pass `since`/`until` as `None` for all-time totals
+/// (Wake agent Tokens); heatmap/trend still clip to [`TREND_WEEKS`] from `as_of`.
 pub async fn generate_insights(options: ReportOptions) -> Result<InsightsSnapshot, String> {
     let pricing = pricing::PricingService::get_or_init().await?;
     generate_insights_with_loaded_pricing(options, Some(&pricing)).await

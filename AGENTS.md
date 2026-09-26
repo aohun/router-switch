@@ -4,6 +4,26 @@
 
 ---
 
+## 📚 0. 参考项目（Wake）
+
+会话管理与 Insights 仪表盘的 **UX / 交互 / 统计口径** 以 [Wake](https://github.com/) 为对照实现：
+
+| 项 | 路径 |
+|----|------|
+| 本地仓库 | `/Users/wayne/Desktop/git/Wake` |
+| 源码快照（可读对照） | `/tmp/Wake-src`（`crates/wake`、`crates/wake-core`） |
+| 三栏会话工作台 | `wake/src/workbench.rs`（侧栏范围筛选 + 中栏列表 + 右栏 transcript） |
+| 会话索引 / 适配器 | `wake-core/src/db.rs`、`wake-core/src/adapters/*`、`scanner.rs` |
+| Insights 配色 / Agent Tokens | `wake/src/theme.rs`（系统蓝 `#0A84FF` / `#4C8DFF`）、`workbench.rs` usage board |
+
+**对齐约定：**
+
+- 会话管理目标形态：Wake 三栏（全部 / 已收藏 / Agent / 项目 → 会话列表 → transcript + 收藏/置顶/复制路径/恢复）。
+- 仪表盘（原「统计」菜单名保持 **仪表盘**）图表色与 Tokens 榜口径对齐 Wake；扫描数据仍走本仓 `tokens-core`。
+- 实现时可参考 Wake，但 **不得** 把 Wake 用户库、会话文件或密钥拷进本仓库；本机索引落在 `~/.router-switch/`。
+
+---
+
 ## 🔒 1. 安全与凭据隔离规范（最高优先级）
 
 在提交代码、执行测试或触发 GitHub Actions 工作流时，**严禁将本机的真实服务商配置、API Key、Token 或数据库文件提交至代码仓库**。
@@ -46,9 +66,10 @@ router-switch/
 │   ├── adapters-pi/         # Pi Live 配置适配器 (~/.pi/agent)
 │   ├── adapters-zcode/      # ZCode Live 配置适配器 (~/.zcode/v2/config.json)
 │   ├── cursor-gateway/      # Cursor 本地代理与中间人网关服务
-│   ├── store/               # SQLite SSOT 数据库访问层 (~/.router-switch/app.db)
-│   ├── session/             # 业务编排层：服务商生命周期管理、原子写入与回滚
-│   ├── ui/                  # GPUI 视图、主题渲染、国际化与用户交互逻辑
+│   ├── tokens-core/         # 多 Agent 会话扫描与 Insights 聚合（对齐 Wake 统计）
+│   ├── store/               # SQLite SSOT（~/.router-switch/app.db；含会话索引 / 收藏置顶）
+│   ├── session/             # 业务编排 + Wake 风格会话索引 / transcript 加载
+│   ├── ui/                  # GPUI 视图（含 Route::Sessions 三栏会话管理）
 │   └── app/                 # 桌面主程序入口 main.rs
 ├── assets/                  # 应用元数据（Info.plist、图标等）
 └── scripts/                 # 跨平台打包脚本（bundle-dmg.sh 等）

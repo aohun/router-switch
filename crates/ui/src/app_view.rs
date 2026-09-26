@@ -26,7 +26,7 @@ use gpui_component::{
     checkbox::Checkbox,
     dialog::DialogButtonProps,
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     notification::Notification,
     scroll::ScrollableElement,
     select::{Select, SelectEvent, SelectItem, SelectState},
@@ -1029,10 +1029,27 @@ pub struct RouterApp {
     session_messages: Vec<session::sessions::SessionMessage>,
     session_messages_loading: bool,
     session_checked: std::collections::HashSet<String>,
-    sessions_search: Entity<InputState>,
+    pub(crate) sessions_search: Entity<InputState>,
     sessions_batch_mode: bool,
     sessions_search_open: bool,
     sessions_filter_menu_open: bool,
+    _sessions_search_sub: Option<Subscription>,
+    /// Wake-style sessions workbench state
+    pub(crate) wake_sessions: Vec<session::session_index::IndexedSession>,
+    pub(crate) wake_sessions_loading: bool,
+    pub(crate) wake_scope: session::session_index::SessionScope,
+    pub(crate) wake_agent_filter: Option<String>,
+    pub(crate) wake_project_filter: Option<String>,
+    pub(crate) wake_sort: session::session_index::SessionSort,
+    pub(crate) wake_selected: Option<session::session_index::IndexedSession>,
+    pub(crate) wake_messages: Vec<session::sessions::SessionMessage>,
+    pub(crate) wake_messages_loading: bool,
+    /// Variable-height transcript virtual list (Wake-style gpui::ListState).
+    pub(crate) wake_msg_list: gpui::ListState,
+    /// Cached Open In target icons (`OpenTarget::id` → extracted .app png).
+    pub(crate) open_target_icons: std::collections::HashMap<String, std::path::PathBuf>,
+    /// Last chosen Open In target (left-half of split button).
+    pub(crate) preferred_open_target: Option<session::session_index::OpenTarget>,
     prompts_app: AppKind,
     prompts_list: Vec<domain::Prompt>,
     prompts_loading: bool,
@@ -1284,8 +1301,22 @@ impl RouterApp {
         let usage_timeout = cx.new(|cx| InputState::new(window, cx));
         let usage_interval = cx.new(|cx| InputState::new(window, cx));
         let usage_code = cx.new(|cx| InputState::new(window, cx).code_editor("javascript"));
-        let sessions_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("sessions.search").to_string()));
+        let sessions_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("session_hub.search_placeholder").to_string())
+        });
+        let sessions_search_sub = cx.subscribe(
+            &sessions_search,
+            |this: &mut RouterApp,
+             _emitter: Entity<InputState>,
+             event: &InputEvent,
+             cx: &mut Context<Self>| {
+                if matches!(event, InputEvent::Change) {
+                    // Keep 3-pane list in sync while typing.
+                    let _ = this;
+                    cx.notify();
+                }
+            },
+        );
         let prompts_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("prompts.search_placeholder").to_string())
         });
@@ -1352,6 +1383,19 @@ impl RouterApp {
             sessions_batch_mode: false,
             sessions_search_open: true,
             sessions_filter_menu_open: false,
+            _sessions_search_sub: Some(sessions_search_sub),
+            wake_sessions: Vec::new(),
+            wake_sessions_loading: false,
+            wake_scope: session::session_index::SessionScope::All,
+            wake_agent_filter: None,
+            wake_project_filter: None,
+            wake_sort: session::session_index::SessionSort::default(),
+            wake_selected: None,
+            wake_messages: Vec::new(),
+            wake_messages_loading: false,
+            wake_msg_list: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(512.)),
+            open_target_icons: std::collections::HashMap::new(),
+            preferred_open_target: None,
             prompts_app: AppKind::Codex,
             prompts_list: Vec::new(),
             prompts_loading: false,
@@ -2052,18 +2096,23 @@ impl RouterApp {
     }
 
     fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
+        // Skills / Prompts / Notifications are hidden from the sidebar during
+        // the Wake sessions migration — bounce any stray navigation home.
+        let route = match route {
+            Route::Skills | Route::Prompts | Route::Notifications => Route::Dashboard,
+            other => other,
+        };
         if self.route != route {
             self.previous_route = self.route;
             self.form = None;
         }
-        if route == Route::Sessions && self.sessions_list.is_empty() && !self.sessions_loading {
-            self.refresh_sessions(cx);
-        }
-        if route == Route::Prompts && self.prompts_list.is_empty() && !self.prompts_loading {
-            self.refresh_prompts(cx);
-        }
-        if route == Route::Skills && self.skills_list.is_empty() && !self.skills_loading {
-            self.refresh_skills(cx);
+        if route == Route::Sessions
+            && self.wake_sessions.is_empty()
+            && !self.wake_sessions_loading
+        {
+            self.refresh_wake_sessions(cx);
+        } else if route == Route::Sessions && self.open_target_icons.is_empty() {
+            self.ensure_open_target_icons(cx);
         }
         self.route = route;
         cx.notify();
@@ -4031,26 +4080,8 @@ impl RouterApp {
             ))
             .children(app_nav_items)
             .child(div().flex_1())
-            .child(self.nav_item(
-                "nav-skills",
-                IconName::Asterisk,
-                Some(rgb(0x6366F1).into()), // Indigo
-                t!("nav.skills").to_string(),
-                Route::Skills,
-                None,
-                false,
-                cx,
-            ))
-            .child(self.nav_item(
-                "nav-prompts",
-                CustomIcon::BookOpen,
-                Some(rgb(0x10B981).into()), // Emerald
-                t!("nav.prompts").to_string(),
-                Route::Prompts,
-                None,
-                false,
-                cx,
-            ))
+            // Skills / Prompts / Notifications: hidden during Wake sessions migration.
+            // Sessions: Wake-style 3-pane (keep entry so the migrated UI is reachable).
             .child(self.nav_item(
                 "nav-sessions",
                 CustomIcon::History,
@@ -4058,20 +4089,6 @@ impl RouterApp {
                 t!("nav.sessions").to_string(),
                 Route::Sessions,
                 None,
-                false,
-                cx,
-            ))
-            .child(self.nav_item(
-                "nav-notifications",
-                IconName::Bell,
-                Some(rgb(0xF59E0B).into()), // Amber
-                t!("nav.notifications").to_string(),
-                Route::Notifications,
-                if self.logs.len() > 1 {
-                    Some(format!("{}", self.logs.len()))
-                } else {
-                    None
-                },
                 false,
                 cx,
             ))
@@ -6585,6 +6602,292 @@ impl RouterApp {
             },
         )
         .detach();
+    }
+
+    fn ensure_open_target_icons(&mut self, cx: &mut Context<Self>) {
+        if !self.open_target_icons.is_empty() {
+            return;
+        }
+        cx.spawn(move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            let mut cx = cx.clone();
+            async move {
+                let icons = session::tokio_runtime()
+                    .spawn(async move {
+                        let icons_dir = store::default_data_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            .join("app-icons");
+                        session::session_index::ensure_open_target_icons(&icons_dir)
+                    })
+                    .await
+                    .unwrap_or_default();
+                let _ = this.update(&mut cx, |this, cx| {
+                    if !icons.is_empty() {
+                        this.open_target_icons = icons;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn refresh_wake_sessions(&mut self, cx: &mut Context<Self>) {
+        self.wake_sessions_loading = true;
+        cx.notify();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let result = session::tokio_runtime()
+                        .spawn(async move {
+                            let db = store::default_db_path().map_err(|e| e.to_string())?;
+                            let store = store::Store::open(db).map_err(|e| e.to_string())?;
+                            let rows = session::session_index::refresh_and_load(&store)?;
+                            let icons_dir = store::default_data_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                                .join("app-icons");
+                            let icons = session::session_index::ensure_open_target_icons(&icons_dir);
+                            Ok((rows, icons))
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(format!("join error: {e}")));
+                    let _ = this.update(&mut cx, |this, cx| {
+                        this.wake_sessions_loading = false;
+                        match result {
+                            Ok((rows, icons)) => {
+                                this.wake_sessions = rows;
+                                if !icons.is_empty() {
+                                    this.open_target_icons = icons;
+                                }
+                                if let Some(sel) = &this.wake_selected {
+                                    let key = sel.key.clone();
+                                    this.wake_selected =
+                                        this.wake_sessions.iter().find(|s| s.key == key).cloned();
+                                    if this.wake_selected.is_none() {
+                                        this.wake_messages.clear();
+                                        this.wake_msg_list = gpui::ListState::new(
+                                            0,
+                                            gpui::ListAlignment::Bottom,
+                                            px(512.),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("[router-switch] refresh_wake_sessions: {err}");
+                            }
+                        }
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    pub(crate) fn select_wake_session(
+        &mut self,
+        meta: session::session_index::IndexedSession,
+        cx: &mut Context<Self>,
+    ) {
+        self.wake_selected = Some(meta.clone());
+        self.wake_messages.clear();
+        self.wake_msg_list = gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(512.));
+        self.wake_messages_loading = true;
+        cx.notify();
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let messages = session::tokio_runtime()
+                        .spawn(async move {
+                            session::session_index::load_transcript(&meta).unwrap_or_default()
+                        })
+                        .await
+                        .unwrap_or_default();
+                    let _ = this.update(&mut cx, |this, cx| {
+                        let n = messages.len();
+                        this.wake_messages = messages;
+                        this.wake_msg_list =
+                            gpui::ListState::new(n, gpui::ListAlignment::Bottom, px(512.));
+                        this.wake_messages_loading = false;
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// Row renderer for the transcript virtual list (called from layout via entity.update).
+    pub(crate) fn render_wake_msg_row(&self, ix: usize, cx: &App) -> gpui::AnyElement {
+        use gpui::{div, prelude::FluentBuilder as _, relative, IntoElement, ParentElement, Styled};
+        use gpui_component::{h_flex, ActiveTheme as _};
+
+        let theme = cx.theme();
+        let Some(m) = self.wake_messages.get(ix) else {
+            return div().into_any_element();
+        };
+        let is_user = m.role == "user";
+        h_flex()
+            .w_full()
+            .px(px(16.))
+            .py(px(5.))
+            .when(is_user, |r| r.justify_end())
+            .when(!is_user, |r| r.justify_start())
+            .child(
+                div()
+                    .max_w(relative(0.85))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(12.))
+                    .bg(if is_user {
+                        theme.secondary
+                    } else {
+                        theme.muted.opacity(0.5)
+                    })
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme.foreground)
+                            .whitespace_normal()
+                            .child(m.content.clone()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    pub(crate) fn toggle_wake_favorite(&mut self, cx: &mut Context<Self>) {
+        let Some(sel) = self.wake_selected.clone() else {
+            return;
+        };
+        let next = !sel.favorite;
+        if let Err(err) = self.workspace.set_wake_session_favorite(&sel.key, next) {
+            eprintln!("[router-switch] set favorite: {err}");
+            return;
+        }
+        if let Some(s) = self.wake_sessions.iter_mut().find(|s| s.key == sel.key) {
+            s.favorite = next;
+        }
+        if let Some(s) = self.wake_selected.as_mut() {
+            s.favorite = next;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_wake_pin(&mut self, cx: &mut Context<Self>) {
+        let Some(sel) = self.wake_selected.clone() else {
+            return;
+        };
+        let next = !sel.pinned;
+        if let Err(err) = self.workspace.set_wake_session_pinned(&sel.key, next) {
+            eprintln!("[router-switch] set pinned: {err}");
+            return;
+        }
+        if let Some(s) = self.wake_sessions.iter_mut().find(|s| s.key == sel.key) {
+            s.pinned = next;
+        }
+        if let Some(s) = self.wake_selected.as_mut() {
+            s.pinned = next;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn copy_wake_session_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .wake_selected
+            .as_ref()
+            .and_then(|s| s.source_path.clone())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path));
+        notify_success(t!("session_hub.path_copied").to_string(), window, cx);
+    }
+
+    pub(crate) fn reveal_wake_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .wake_selected
+            .as_ref()
+            .and_then(|s| s.source_path.clone())
+        else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").args(["-R", &path]).output();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("explorer")
+                .args(["/select,", &path])
+                .output();
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                let _ = std::process::Command::new("xdg-open").arg(parent).output();
+            }
+        }
+        notify_success(t!("session_hub.revealed").to_string(), window, cx);
+    }
+
+    pub(crate) fn export_wake_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self
+            .wake_selected
+            .as_ref()
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "session".into());
+        let mut md = format!("# {}\n\n", title);
+        for m in &self.wake_messages {
+            md.push_str(&format!("**{}**\n\n{}\n\n", m.role, m.content));
+        }
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(md));
+        notify_success(t!("session_hub.exported").to_string(), window, cx);
+    }
+
+    pub(crate) fn open_wake_session(
+        &mut self,
+        target: session::session_index::OpenTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sel) = self.wake_selected.clone() else {
+            return;
+        };
+        match session::session_index::open_session_in(&sel, target) {
+            Ok(cmd) => {
+                self.preferred_open_target = Some(target);
+                let msg = if target == session::session_index::OpenTarget::ClaudeDesktop {
+                    t!("session_hub.opened_in_app", cmd = cmd.as_str()).to_string()
+                } else {
+                    t!("session_hub.opened_in_terminal", cmd = cmd.as_str()).to_string()
+                };
+                notify_success(msg, window, cx);
+                cx.notify();
+            }
+            Err(err) => {
+                notify_info(
+                    t!("session_hub.open_failed", err = err.as_str()).to_string(),
+                    window,
+                    cx,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn resume_wake_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Default Open In → Terminal (or first installed).
+        let target = session::session_index::open_targets_for(
+            self.wake_selected
+                .as_ref()
+                .map(|s| s.agent_id.as_str())
+                .unwrap_or(""),
+        )
+        .into_iter()
+        .next()
+        .unwrap_or(session::session_index::OpenTarget::Terminal);
+        self.open_wake_session(target, window, cx);
     }
 
     fn select_session(&mut self, meta: session::sessions::SessionMeta, cx: &mut Context<Self>) {
@@ -13342,7 +13645,8 @@ impl Render for RouterApp {
         } else {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
-                Route::Sessions => self.render_sessions_page(cx).into_any_element(),
+                Route::Sessions => crate::sessions_workbench::render_sessions_workbench(self, cx)
+                    .into_any_element(),
                 Route::Skills => self.render_skills_page(cx).into_any_element(),
                 Route::Prompts => self.render_prompts_page(cx).into_any_element(),
                 Route::Codex => self
@@ -13392,13 +13696,23 @@ impl Render for RouterApp {
                     .font_family(".SystemUIFont")
                     .key_context("RouterApp")
                     .on_key_down(
-                        cx.listener(|this, event: &gpui::KeyDownEvent, _window, cx| {
+                        cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                             if (event.keystroke.modifiers.platform
                                 || event.keystroke.modifiers.control)
                                 && event.keystroke.key == "b"
                             {
                                 this.sidebar_open = !this.sidebar_open;
                                 cx.notify();
+                            }
+                            // Wake ⌘K: focus sessions search when on Sessions route.
+                            if this.route == Route::Sessions
+                                && (event.keystroke.modifiers.platform
+                                    || event.keystroke.modifiers.control)
+                                && event.keystroke.key.eq_ignore_ascii_case("k")
+                            {
+                                this.sessions_search.update(cx, |input, cx| {
+                                    input.focus(window, cx);
+                                });
                             }
                         }),
                     )
