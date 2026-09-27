@@ -48,7 +48,7 @@ brands!(
     "hermes-light",
 );
 
-/// Resolve brand PNG path for a tool / app id (aligns with Wake `AgentId::brand_icon`).
+/// Resolve brand PNG/SVG path for a tool / app id (aligns with Wake `AgentId::brand_icon`).
 pub fn brand_icon_path(app_id: &str, dark: bool) -> &'static str {
     match app_id {
         "claude" | "claude-desktop" | "claude-code" | "anthropic" => "brands/claude-code.png",
@@ -81,7 +81,7 @@ pub fn brand_icon_path(app_id: &str, dark: bool) -> &'static str {
                 "brands/grok-light.png"
             }
         }
-        "kimi" => {
+        "kimi" | "moonshot" => {
             if dark {
                 "brands/kimi.png"
             } else {
@@ -109,6 +109,12 @@ pub fn brand_icon_path(app_id: &str, dark: bool) -> &'static str {
                 "brands/hermes-light.png"
             }
         }
+        "newapi" => "brands/newapi-logo.svg",
+        "qwen" => "brands/qwen.svg",
+        "glm" | "zhipu" => "brands/glm.svg",
+        "minimax" => "brands/minimax.svg",
+        "doubao" => "brands/doubao.svg",
+        "custom" => "brands/custom.svg",
         _ => "brands/codex.png",
     }
 }
@@ -309,6 +315,24 @@ impl AssetSource for AppAssets {
             "icons/custom/arrow-up-down.svg" => {
                 Ok(Some(Cow::Borrowed(ARROW_UP_DOWN_SVG.as_bytes())))
             }
+            "brands/newapi-logo.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/newapi-logo.svg"
+            )))),
+            "brands/qwen.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/qwen.svg"
+            )))),
+            "brands/glm.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/glm.svg"
+            )))),
+            "brands/minimax.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/minimax.svg"
+            )))),
+            "brands/doubao.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/doubao.svg"
+            )))),
+            "brands/custom.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/brands/custom.svg"
+            )))),
             _ => gpui_component_assets::Assets.load(path),
         }
     }

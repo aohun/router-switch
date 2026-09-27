@@ -1,11 +1,12 @@
 use domain::{
-    check_app_update, extract_claude_base_url, extract_claude_model, extract_codex_base_url,
+    apply_downloaded_update, check_app_update, download_release_asset,
+    extract_claude_base_url, extract_claude_model, extract_codex_base_url,
     extract_codex_model, extract_cursor_base_url, extract_cursor_model, extract_grok_base_url,
     extract_grok_model, extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url,
     extract_zcode_model, is_workbuddy_upstream, parse_clipboard_provider_info,
-    workbuddy_model_context_length, AppKind, AppRelease, ClaudeForm, ClaudeKind,
-    ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping, CursorForm,
-    CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
+    workbuddy_model_context_length, AppKind, AppRelease, ApplyUpdateOutcome, ClaudeForm,
+    ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping,
+    CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
     OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm,
     ProviderSettings, RequestProtocol, ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind,
     ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL,
@@ -40,7 +41,7 @@ use session::Workspace;
 use std::path::PathBuf;
 use store::{AppLanguage, ThemePreference};
 
-use crate::assets::{brand_img, brand_icon_path, custom_icon_brand_id, CustomIcon};
+use crate::assets::{brand_icon_path, brand_img, custom_icon_brand_id, CustomIcon};
 use crate::theme;
 use crate::update_dialog::open_app_update_dialog;
 pub use crate::usage_service::*;
@@ -788,6 +789,8 @@ impl CatalogRowDraft {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Dashboard,
+    /// Gateway upstream registry (AstrLink ServiceManager alignment).
+    ApiProviders,
     Skills,
     Sessions,
     Prompts,
@@ -980,7 +983,7 @@ fn log_retention_to_row(days: u32) -> usize {
 }
 
 pub struct RouterApp {
-    workspace: Workspace,
+    pub(crate) workspace: Workspace,
     providers: Vec<Provider>,
     route: Route,
     previous_route: Route,
@@ -1050,6 +1053,8 @@ pub struct RouterApp {
     pub(crate) open_target_icons: std::collections::HashMap<String, std::path::PathBuf>,
     /// Last chosen Open In target (left-half of split button).
     pub(crate) preferred_open_target: Option<session::session_index::OpenTarget>,
+    /// AstrLink-aligned gateway API providers page state.
+    pub(crate) api_providers: crate::api_providers_view::ApiProvidersState,
     prompts_app: AppKind,
     prompts_list: Vec<domain::Prompt>,
     prompts_loading: bool,
@@ -1094,7 +1099,9 @@ pub struct RouterApp {
     is_inspecting_env: bool,
     auto_check_update: bool,
     skipped_update_version: Option<String>,
+    pending_app_update: Option<AppRelease>,
     is_checking_update: bool,
+    is_installing_update: bool,
     testing_provider_ids: std::collections::HashSet<String>,
     provider_health: std::collections::HashMap<String, domain::ConnectivityCheckResult>,
 }
@@ -1302,7 +1309,8 @@ impl RouterApp {
         let usage_interval = cx.new(|cx| InputState::new(window, cx));
         let usage_code = cx.new(|cx| InputState::new(window, cx).code_editor("javascript"));
         let sessions_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("session_hub.search_placeholder").to_string())
+            InputState::new(window, cx)
+                .placeholder(t!("session_hub.search_placeholder").to_string())
         });
         let sessions_search_sub = cx.subscribe(
             &sessions_search,
@@ -1396,6 +1404,7 @@ impl RouterApp {
             wake_msg_list: gpui::ListState::new(0, gpui::ListAlignment::Bottom, px(512.)),
             open_target_icons: std::collections::HashMap::new(),
             preferred_open_target: None,
+            api_providers: crate::api_providers_view::ApiProvidersState::new(window, cx),
             prompts_app: AppKind::Codex,
             prompts_list: Vec::new(),
             prompts_loading: false,
@@ -1439,7 +1448,32 @@ impl RouterApp {
             is_inspecting_env: false,
             auto_check_update: settings.auto_check_update,
             skipped_update_version: settings.skipped_update_version,
+            pending_app_update: {
+                // Debug: seed a fake pending release so the sidebar download icon can be tested
+                // while the published version matches the local build (currently also v0.1.7).
+                #[cfg(debug_assertions)]
+                {
+                    Some(AppRelease {
+                        version: "9.9.9-test".into(),
+                        title: "Router Switch 9.9.9 (test)".into(),
+                        body: "## 新变化\n- 测试侧栏更新下载图标\n\n## What's new\n- Test sidebar update download icon".into(),
+                        release_notes_zh: vec!["测试侧栏更新下载图标".into()],
+                        release_notes_en: vec!["Test sidebar update download icon".into()],
+                        // Point at a real asset name pattern so download path can be exercised;
+                        // GitHub releases page HTML will fail installer check and fall back.
+                        download_url: "https://github.com/aohun/router-switch/releases/latest/download/Router-Switch-0.1.7-aarch64-apple-darwin.dmg".into(),
+                        html_url: "https://github.com/aohun/router-switch/releases".into(),
+                        published_at: None,
+                        is_prerelease: true,
+                    })
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    None
+                }
+            },
             is_checking_update: false,
+            is_installing_update: false,
             testing_provider_ids: std::collections::HashSet::new(),
             provider_health: std::collections::HashMap::new(),
         };
@@ -2001,8 +2035,7 @@ impl RouterApp {
             move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
                 let mut cx = cx.clone();
                 async move {
-                    let data =
-                        crate::usage_service::load_insights_snapshot(app_filter).await;
+                    let data = crate::usage_service::load_insights_snapshot(app_filter).await;
                     let _ = this.update(
                         &mut cx,
                         |this: &mut RouterApp, cx: &mut Context<RouterApp>| {
@@ -2106,13 +2139,13 @@ impl RouterApp {
             self.previous_route = self.route;
             self.form = None;
         }
-        if route == Route::Sessions
-            && self.wake_sessions.is_empty()
-            && !self.wake_sessions_loading
+        if route == Route::Sessions && self.wake_sessions.is_empty() && !self.wake_sessions_loading
         {
             self.refresh_wake_sessions(cx);
         } else if route == Route::Sessions && self.open_target_icons.is_empty() {
             self.ensure_open_target_icons(cx);
+        } else if route == Route::ApiProviders {
+            self.refresh_api_providers(cx);
         }
         self.route = route;
         cx.notify();
@@ -2638,6 +2671,7 @@ impl RouterApp {
                             this.is_checking_update = false;
                             match check_res {
                                 Ok(Some(release)) => {
+                                    this.pending_app_update = Some(release.clone());
                                     // If skipped and not manual check, don't popup
                                     if !manual && skipped_ver.as_deref() == Some(&release.version) {
                                         cx.notify();
@@ -4078,6 +4112,16 @@ impl RouterApp {
                 false,
                 cx,
             ))
+            .child(self.nav_item(
+                "nav-api-providers",
+                IconName::Globe,
+                Some(rgb(0x0A84FF).into()), // AstrLink system blue
+                t!("nav.api_providers").to_string(),
+                Route::ApiProviders,
+                None,
+                false,
+                cx,
+            ))
             .children(app_nav_items)
             .child(div().flex_1())
             // Skills / Prompts / Notifications: hidden during Wake sessions migration.
@@ -4093,16 +4137,206 @@ impl RouterApp {
                 cx,
             ))
             .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(border))
-            .child(self.nav_item(
-                "nav-settings",
-                IconName::Settings,
-                Some(rgb(0x64748B).into()), // Slate
-                t!("nav.settings").to_string(),
-                Route::Settings,
-                None,
-                false,
-                cx,
-            ))
+            .child(self.render_settings_nav_item(cx))
+    }
+
+    /// 偏好设置：有待更新版本时在右侧显示蓝色下载圆标。
+    /// 主行与下载按钮拆开，悬停下载按钮时不会整行高亮。
+    fn render_settings_nav_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.route == Route::Settings;
+        let accent = cx.theme().sidebar_accent;
+        let fg = cx.theme().sidebar_foreground;
+        let has_update = self.pending_app_update.is_some();
+        let installing = self.is_installing_update;
+
+        h_flex()
+            .id("nav-settings-row")
+            .h(px(38.))
+            .w_full()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                h_flex()
+                    .id("nav-settings")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px(px(10.))
+                    .rounded(px(8.))
+                    .items_center()
+                    .gap(px(10.))
+                    .text_size(px(14.))
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .when(active, |this| {
+                        this.bg(accent).font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!active, |this| this.hover(|this| this.bg(accent)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_route(Route::Settings, cx);
+                    }))
+                    .child(
+                        Icon::new(IconName::Settings)
+                            .size(px(18.))
+                            .flex_shrink_0()
+                            .text_color(if active {
+                                cx.theme().foreground
+                            } else {
+                                Hsla::from(rgb(0x64748B))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .child(t!("nav.settings").to_string()),
+                    ),
+            )
+            .when(has_update, |this| {
+                let tip = if installing {
+                    t!("update.installing").to_string()
+                } else {
+                    t!("update.download_available").to_string()
+                };
+                this.child(
+                    div()
+                        .id("nav-settings-update")
+                        .size(px(22.))
+                        .mr(px(8.))
+                        .rounded_full()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(if installing {
+                            rgb(0x93C5FD)
+                        } else {
+                            rgb(0x2563EB)
+                        })
+                        .cursor_pointer()
+                        .when(!installing, |el| el.hover(|s| s.bg(rgb(0x1D4ED8))))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(tip.clone()).build(window, cx)
+                        })
+                        .when(!installing, |el| {
+                            el.on_click(cx.listener(|this, _, window, cx| {
+                                this.start_install_pending_update(window, cx);
+                            }))
+                        })
+                        .child(if installing {
+                            Icon::new(IconName::Loader)
+                                .size(px(12.))
+                                .text_color(Hsla::from(rgb(0xFFFFFF)))
+                                .into_any_element()
+                        } else {
+                            Icon::new(CustomIcon::Download)
+                                .size(px(12.))
+                                .text_color(Hsla::from(rgb(0xFFFFFF)))
+                                .into_any_element()
+                        }),
+                )
+            })
+    }
+
+    /// Download the pending release asset, install it, then relaunch (cc-switch style).
+    pub fn start_install_pending_update(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(release) = self.pending_app_update.clone() else {
+            return;
+        };
+        if self.is_installing_update {
+            return;
+        }
+        self.is_installing_update = true;
+        cx.notify();
+        window.push_notification(
+            Notification::info(t!("update.installing").to_string()),
+            cx,
+        );
+
+        let url = release.download_url.clone();
+        let html_url = release.html_url.clone();
+        let version = release.version.clone();
+        let view = cx.entity().downgrade();
+
+        window
+            .spawn(cx, move |cx: &mut gpui::AsyncWindowContext| {
+                let mut cx = cx.clone();
+                async move {
+                    let download_res = cx
+                        .background_executor()
+                        .spawn({
+                            let url = url.clone();
+                            async move { download_release_asset(&url, |_, _| {}) }
+                        })
+                        .await;
+
+                    let outcome = match download_res {
+                        Ok(path) => cx
+                            .background_executor()
+                            .spawn(async move { apply_downloaded_update(&path) })
+                            .await,
+                        Err(err) => Err(err),
+                    };
+
+                    let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.is_installing_update = false;
+                            match outcome {
+                                Ok(ApplyUpdateOutcome::Relunched) => {
+                                    this.pending_app_update = None;
+                                    this.logs.push(format!(
+                                        "已安装并启动新版本 v{version}"
+                                    ));
+                                    window.push_notification(
+                                        Notification::success(
+                                            t!("update.install_success").to_string(),
+                                        ),
+                                        cx,
+                                    );
+                                    cx.notify();
+                                    // Quit after the new app was opened.
+                                    cx.quit();
+                                }
+                                Ok(ApplyUpdateOutcome::OpenedPackage) => {
+                                    this.logs.push(format!(
+                                        "已打开更新安装包 v{version}"
+                                    ));
+                                    window.push_notification(
+                                        Notification::success(
+                                            t!("update.install_opened").to_string(),
+                                        ),
+                                        cx,
+                                    );
+                                    cx.notify();
+                                }
+                                Err(err) => {
+                                    this.logs.push(format!("更新安装失败: {err}"));
+                                    // Fallback: open release page / asset URL in browser.
+                                    let fallback = if url.contains("://") {
+                                        url.clone()
+                                    } else {
+                                        html_url.clone()
+                                    };
+                                    crate::update_dialog::open_url(&fallback);
+                                    window.push_notification(
+                                        Notification::warning(format!(
+                                            "{} ({err})",
+                                            t!("update.install_failed_fallback")
+                                        )),
+                                        cx,
+                                    );
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    });
+                }
+            })
+            .detach();
     }
 
     fn chrome_button(
@@ -4442,30 +4676,22 @@ impl RouterApp {
                                                     Option<&'static str>,
                                                     String,
                                                 ) = match client.as_str() {
-                                                    "claude" => (
-                                                        Some("claude"),
-                                                        "Claude Code".to_string(),
-                                                    ),
-                                                    "codex" => {
-                                                        (Some("codex"), "Codex".to_string())
+                                                    "claude" => {
+                                                        (Some("claude"), "Claude Code".to_string())
                                                     }
-                                                    "grok" => {
-                                                        (Some("grok"), "Grok".to_string())
-                                                    }
+                                                    "codex" => (Some("codex"), "Codex".to_string()),
+                                                    "grok" => (Some("grok"), "Grok".to_string()),
                                                     "opencode" => {
                                                         (Some("opencode"), "OpenCode".to_string())
                                                     }
                                                     "pi" => (Some("pi"), "Pi".to_string()),
-                                                    "zcode" => {
-                                                        (Some("zcode"), "ZCode".to_string())
-                                                    }
+                                                    "zcode" => (Some("zcode"), "ZCode".to_string()),
                                                     "cursor" => {
                                                         (Some("cursor"), "Cursor".to_string())
                                                     }
-                                                    "workbuddy" | "codebuddy" => (
-                                                        Some("workbuddy"),
-                                                        "WorkBuddy".to_string(),
-                                                    ),
+                                                    "workbuddy" | "codebuddy" => {
+                                                        (Some("workbuddy"), "WorkBuddy".to_string())
+                                                    }
                                                     "gemini" => {
                                                         (Some("gemini"), "Gemini".to_string())
                                                     }
@@ -4694,9 +4920,10 @@ impl RouterApp {
                                         } else {
                                             theme.border.opacity(0.5)
                                         })
-                                        .child(brand_img("cursor", dark, px(18.)).opacity(
-                                            if is_running { 1. } else { 0.45 },
-                                        )),
+                                        .child(
+                                            brand_img("cursor", dark, px(18.))
+                                                .opacity(if is_running { 1. } else { 0.45 }),
+                                        ),
                                 )
                                 .child(
                                     v_flex()
@@ -5118,16 +5345,14 @@ impl RouterApp {
                                 .items_center()
                                 .justify_center()
                                 .bg(theme.secondary.opacity(0.6))
-                                .child(
-                                    if let Some(id) = custom_icon_brand_id(icon) {
-                                        brand_img(id, theme.is_dark(), px(20.)).into_any_element()
-                                    } else {
-                                        Icon::new(icon)
-                                            .size(px(20.))
-                                            .text_color(icon_color)
-                                            .into_any_element()
-                                    },
-                                ),
+                                .child(if let Some(id) = custom_icon_brand_id(icon) {
+                                    brand_img(id, theme.is_dark(), px(20.)).into_any_element()
+                                } else {
+                                    Icon::new(icon)
+                                        .size(px(20.))
+                                        .text_color(icon_color)
+                                        .into_any_element()
+                                }),
                         )
                         .child(
                             v_flex()
@@ -6608,26 +6833,28 @@ impl RouterApp {
         if !self.open_target_icons.is_empty() {
             return;
         }
-        cx.spawn(move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            let mut cx = cx.clone();
-            async move {
-                let icons = session::tokio_runtime()
-                    .spawn(async move {
-                        let icons_dir = store::default_data_dir()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                            .join("app-icons");
-                        session::session_index::ensure_open_target_icons(&icons_dir)
-                    })
-                    .await
-                    .unwrap_or_default();
-                let _ = this.update(&mut cx, |this, cx| {
-                    if !icons.is_empty() {
-                        this.open_target_icons = icons;
-                        cx.notify();
-                    }
-                });
-            }
-        })
+        cx.spawn(
+            move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let mut cx = cx.clone();
+                async move {
+                    let icons = session::tokio_runtime()
+                        .spawn(async move {
+                            let icons_dir = store::default_data_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                                .join("app-icons");
+                            session::session_index::ensure_open_target_icons(&icons_dir)
+                        })
+                        .await
+                        .unwrap_or_default();
+                    let _ = this.update(&mut cx, |this, cx| {
+                        if !icons.is_empty() {
+                            this.open_target_icons = icons;
+                            cx.notify();
+                        }
+                    });
+                }
+            },
+        )
         .detach();
     }
 
@@ -6646,7 +6873,8 @@ impl RouterApp {
                             let icons_dir = store::default_data_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
                                 .join("app-icons");
-                            let icons = session::session_index::ensure_open_target_icons(&icons_dir);
+                            let icons =
+                                session::session_index::ensure_open_target_icons(&icons_dir);
                             Ok((rows, icons))
                         })
                         .await
@@ -6721,7 +6949,9 @@ impl RouterApp {
 
     /// Row renderer for the transcript virtual list (called from layout via entity.update).
     pub(crate) fn render_wake_msg_row(&self, ix: usize, cx: &App) -> gpui::AnyElement {
-        use gpui::{div, prelude::FluentBuilder as _, relative, IntoElement, ParentElement, Styled};
+        use gpui::{
+            div, prelude::FluentBuilder as _, relative, IntoElement, ParentElement, Styled,
+        };
         use gpui_component::{h_flex, ActiveTheme as _};
 
         let theme = cx.theme();
@@ -6815,7 +7045,9 @@ impl RouterApp {
         };
         #[cfg(target_os = "macos")]
         {
-            let _ = std::process::Command::new("open").args(["-R", &path]).output();
+            let _ = std::process::Command::new("open")
+                .args(["-R", &path])
+                .output();
         }
         #[cfg(target_os = "windows")]
         {
@@ -7074,12 +7306,7 @@ impl RouterApp {
                 rgb(0x6366F1).into(),
                 "OpenCode",
             ),
-            (
-                session::skills::APP_PI,
-                "pi",
-                rgb(0x3B82F6).into(),
-                "Pi",
-            ),
+            (session::skills::APP_PI, "pi", rgb(0x3B82F6).into(), "Pi"),
         ];
 
         let dark = theme.is_dark();
@@ -10520,17 +10747,14 @@ impl RouterApp {
                                     .min_w_0()
                                     .items_center()
                                     .gap(px(7.))
-                                    .child(
-                                        if let Some(id) = custom_icon_brand_id(row.app_icon) {
-                                            brand_img(id, theme.is_dark(), px(14.))
-                                                .into_any_element()
-                                        } else {
-                                            Icon::new(row.app_icon)
-                                                .size(px(14.))
-                                                .text_color(row.color)
-                                                .into_any_element()
-                                        },
-                                    )
+                                    .child(if let Some(id) = custom_icon_brand_id(row.app_icon) {
+                                        brand_img(id, theme.is_dark(), px(14.)).into_any_element()
+                                    } else {
+                                        Icon::new(row.app_icon)
+                                            .size(px(14.))
+                                            .text_color(row.color)
+                                            .into_any_element()
+                                    })
                                     .child(
                                         div()
                                             .truncate()
@@ -11231,7 +11455,20 @@ impl RouterApp {
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.check_for_updates(true, window, cx);
                                             })),
-                                    ),
+                                    )
+                                    .when(self.pending_app_update.is_some(), |this| {
+                                        this.child(
+                                            Button::new("about-download-update")
+                                                .primary()
+                                                .small()
+                                                .disabled(self.is_installing_update)
+                                                .icon(CustomIcon::Download)
+                                                .tooltip(t!("update.download_available").to_string())
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.start_install_pending_update(window, cx);
+                                                })),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -13645,6 +13882,7 @@ impl Render for RouterApp {
         } else {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
+                Route::ApiProviders => self.render_api_providers_page(cx).into_any_element(),
                 Route::Sessions => crate::sessions_workbench::render_sessions_workbench(self, cx)
                     .into_any_element(),
                 Route::Skills => self.render_skills_page(cx).into_any_element(),
@@ -13695,27 +13933,24 @@ impl Render for RouterApp {
                     .text_color(cx.theme().foreground)
                     .font_family(".SystemUIFont")
                     .key_context("RouterApp")
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if (event.keystroke.modifiers.platform
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if (event.keystroke.modifiers.platform || event.keystroke.modifiers.control)
+                            && event.keystroke.key == "b"
+                        {
+                            this.sidebar_open = !this.sidebar_open;
+                            cx.notify();
+                        }
+                        // Wake ⌘K: focus sessions search when on Sessions route.
+                        if this.route == Route::Sessions
+                            && (event.keystroke.modifiers.platform
                                 || event.keystroke.modifiers.control)
-                                && event.keystroke.key == "b"
-                            {
-                                this.sidebar_open = !this.sidebar_open;
-                                cx.notify();
-                            }
-                            // Wake ⌘K: focus sessions search when on Sessions route.
-                            if this.route == Route::Sessions
-                                && (event.keystroke.modifiers.platform
-                                    || event.keystroke.modifiers.control)
-                                && event.keystroke.key.eq_ignore_ascii_case("k")
-                            {
-                                this.sessions_search.update(cx, |input, cx| {
-                                    input.focus(window, cx);
-                                });
-                            }
-                        }),
-                    )
+                            && event.keystroke.key.eq_ignore_ascii_case("k")
+                        {
+                            this.sessions_search.update(cx, |input, cx| {
+                                input.focus(window, cx);
+                            });
+                        }
+                    }))
                     .when(self.sidebar_open, |this| {
                         if self.route == Route::Settings {
                             this.child(self.render_settings_sidebar(cx))

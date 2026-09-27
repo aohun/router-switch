@@ -1,6 +1,7 @@
 //! Pure domain crate for AI provider management across Codex, Claude Code, Grok Build, OpenCode, Pi, Cursor, ZCode, and WorkBuddy.
 //! No filesystem or SQLite dependencies here.
 
+mod api_provider;
 mod app_kind;
 mod claude;
 mod clipboard;
@@ -21,6 +22,10 @@ mod usage_script;
 mod workbuddy;
 mod zcode;
 
+pub use api_provider::{
+    ApiAuthScheme, ApiCapability, ApiProvider, ApiProviderKind, ApiProviderKindGroup,
+    HttpConnection, SubscriptionConnection, SubscriptionStatus,
+};
 pub use app_kind::AppKind;
 pub use claude::{
     backfill_claude_settings, extract_claude_api_key, extract_claude_base_url,
@@ -82,7 +87,10 @@ pub use protocol::{
     normalize_thinking_effort, RequestProtocol, DEFAULT_THINKING_EFFORT, THINKING_EFFORTS,
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
-pub use updater::{check_app_update, parse_release_notes, sample_app_release, AppRelease};
+pub use updater::{
+    apply_downloaded_update, check_app_update, download_release_asset, parse_release_notes,
+    sample_app_release, AppRelease, ApplyUpdateOutcome,
+};
 pub use usage_script::{
     failed_usage_result, parse_usage_result, preset_template, template_display_name, UsageDataItem,
     UsageQueryResult, UsageScriptConfig, TEMPLATE_CUSTOM, TEMPLATE_GENERAL, TEMPLATE_NEW_API,

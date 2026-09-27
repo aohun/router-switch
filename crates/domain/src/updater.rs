@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::env_checker::{compare_semver, extract_version};
@@ -221,6 +222,370 @@ pub fn check_app_update(repo: &str, current_version: &str) -> Result<Option<AppR
     } else {
         Ok(None)
     }
+}
+
+/// Result of applying a downloaded update package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyUpdateOutcome {
+    /// New app was installed and launched; caller should quit.
+    Relunched,
+    /// Installer / DMG was opened for the user; caller may quit.
+    OpenedPackage,
+}
+
+fn update_download_dir() -> Result<PathBuf, String> {
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("router-switch")
+        .join("updates");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新目录失败: {e}"))?;
+    Ok(dir)
+}
+
+fn filename_from_url(url: &str) -> String {
+    url.split('?')
+        .next()
+        .and_then(|u| u.rsplit('/').next())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("router-switch-update.bin")
+        .to_string()
+}
+
+fn looks_like_installer(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".dmg")
+        || lower.ends_with(".pkg")
+        || lower.ends_with(".zip")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".msi")
+        || lower.ends_with(".appimage")
+        || lower.ends_with(".deb")
+        || lower.ends_with(".tar.gz")
+}
+
+/// Download a release asset to the local updates cache. `on_progress(downloaded, total)`.
+pub fn download_release_asset(
+    url: &str,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<PathBuf, String> {
+    if url.trim().is_empty() {
+        return Err("下载地址为空".into());
+    }
+    let name = filename_from_url(url);
+    if !looks_like_installer(&name) {
+        return Err(format!("下载地址不是安装包: {name}"));
+    }
+    let dest = update_download_dir()?.join(&name);
+
+    let resp = ureq::get(url)
+        .set("User-Agent", "router-switch-app")
+        .timeout(Duration::from_secs(120))
+        .call()
+        .map_err(|e| format!("下载失败: {e}"))?;
+
+    let total = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
+    let mut reader = resp.into_reader();
+    let mut file =
+        std::fs::File::create(&dest).map_err(|e| format!("写入更新文件失败: {e}"))?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut downloaded: u64 = 0;
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut buf)
+            .map_err(|e| format!("读取下载流失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buf[..n])
+            .map_err(|e| format!("写入更新文件失败: {e}"))?;
+        downloaded = downloaded.saturating_add(n as u64);
+        on_progress(downloaded, total);
+    }
+    Ok(dest)
+}
+
+/// Current `.app` bundle path when running from a packaged macOS app.
+#[cfg(target_os = "macos")]
+fn current_app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // .../AppName.app/Contents/MacOS/binary
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    if bundle.extension().and_then(|e| e.to_str()) == Some("app") {
+        Some(bundle.to_path_buf())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_dmg(dmg: &Path) -> Result<ApplyUpdateOutcome, String> {
+    let mount_root = update_download_dir()?.join("mnt");
+    let _ = std::fs::remove_dir_all(&mount_root);
+    std::fs::create_dir_all(&mount_root).map_err(|e| format!("创建挂载目录失败: {e}"))?;
+
+    let attach = std::process::Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly"])
+        .arg(dmg)
+        .arg("-mountroot")
+        .arg(&mount_root)
+        .output()
+        .map_err(|e| format!("挂载 DMG 失败: {e}"))?;
+    if !attach.status.success() {
+        return Err(format!(
+            "挂载 DMG 失败: {}",
+            String::from_utf8_lossy(&attach.stderr)
+        ));
+    }
+
+    let install_result = (|| -> Result<ApplyUpdateOutcome, String> {
+        let mut app_src: Option<PathBuf> = None;
+        for entry in walkdir_apps(&mount_root)? {
+            app_src = Some(entry);
+            break;
+        }
+        let Some(app_src) = app_src else {
+            // Fallback: open the DMG for manual install.
+            let _ = std::process::Command::new("open").arg(dmg).spawn();
+            return Ok(ApplyUpdateOutcome::OpenedPackage);
+        };
+
+        let dest = if let Some(bundle) = current_app_bundle() {
+            bundle
+        } else {
+            PathBuf::from("/Applications").join(
+                app_src
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("Router Switch.app")),
+            )
+        };
+
+        // Replace existing app atomically-ish via ditto into a sibling then rename.
+        let dest_parent = dest
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/Applications"));
+        let staging = dest_parent.join(format!(
+            ".{}.update",
+            dest.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("RouterSwitch.app")
+        ));
+        let _ = std::fs::remove_dir_all(&staging);
+        let ditto = std::process::Command::new("ditto")
+            .arg(&app_src)
+            .arg(&staging)
+            .output()
+            .map_err(|e| format!("复制应用失败: {e}"))?;
+        if !ditto.status.success() {
+            return Err(format!(
+                "复制应用失败: {}",
+                String::from_utf8_lossy(&ditto.stderr)
+            ));
+        }
+        // Clear quarantine so Gatekeeper doesn't block the new build.
+        let _ = std::process::Command::new("xattr")
+            .args(["-cr"])
+            .arg(&staging)
+            .status();
+
+        if dest.exists() {
+            let backup = dest_parent.join(format!(
+                ".{}.bak",
+                dest.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("RouterSwitch.app")
+            ));
+            let _ = std::fs::remove_dir_all(&backup);
+            std::fs::rename(&dest, &backup)
+                .map_err(|e| format!("备份旧版本失败: {e}"))?;
+            if let Err(err) = std::fs::rename(&staging, &dest) {
+                let _ = std::fs::rename(&backup, &dest);
+                return Err(format!("替换应用失败: {err}"));
+            }
+            let _ = std::fs::remove_dir_all(&backup);
+        } else {
+            std::fs::rename(&staging, &dest)
+                .map_err(|e| format!("安装应用失败: {e}"))?;
+        }
+
+        let _ = std::process::Command::new("open").arg(&dest).spawn();
+        Ok(ApplyUpdateOutcome::Relunched)
+    })();
+
+    // Always detach volumes under mount_root.
+    if let Ok(entries) = std::fs::read_dir(&mount_root) {
+        for entry in entries.flatten() {
+            let _ = std::process::Command::new("hdiutil")
+                .args(["detach", "-quiet"])
+                .arg(entry.path())
+                .status();
+        }
+    }
+    let _ = std::fs::remove_dir_all(&mount_root);
+    install_result
+}
+
+#[cfg(target_os = "macos")]
+fn walkdir_apps(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("读取挂载卷失败: {e}"))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("app") {
+                out.push(path);
+            } else if path.is_dir() {
+                walk(&path, out)?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, &mut found)?;
+    Ok(found)
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_zip(zip: &Path) -> Result<ApplyUpdateOutcome, String> {
+    let extract_dir = update_download_dir()?.join("extract");
+    let _ = std::fs::remove_dir_all(&extract_dir);
+    std::fs::create_dir_all(&extract_dir).map_err(|e| format!("创建解压目录失败: {e}"))?;
+    let unzip = std::process::Command::new("ditto")
+        .args(["-x", "-k"])
+        .arg(zip)
+        .arg(&extract_dir)
+        .output()
+        .map_err(|e| format!("解压失败: {e}"))?;
+    if !unzip.status.success() {
+        return Err(format!(
+            "解压失败: {}",
+            String::from_utf8_lossy(&unzip.stderr)
+        ));
+    }
+    let apps = walkdir_apps(&extract_dir)?;
+    let Some(app_src) = apps.into_iter().next() else {
+        let _ = std::process::Command::new("open").arg(zip).spawn();
+        return Ok(ApplyUpdateOutcome::OpenedPackage);
+    };
+    // Reuse ditto path by creating a temp dmg-like install via copy logic:
+    // Write a tiny helper by calling ditto to dest directly.
+    let dest = if let Some(bundle) = current_app_bundle() {
+        bundle
+    } else {
+        PathBuf::from("/Applications").join(
+            app_src
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("Router Switch.app")),
+        )
+    };
+    let dest_parent = dest
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("/Applications"));
+    let staging = dest_parent.join(format!(
+        ".{}.update",
+        dest.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("RouterSwitch.app")
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    let ditto = std::process::Command::new("ditto")
+        .arg(&app_src)
+        .arg(&staging)
+        .output()
+        .map_err(|e| format!("复制应用失败: {e}"))?;
+    if !ditto.status.success() {
+        return Err(format!(
+            "复制应用失败: {}",
+            String::from_utf8_lossy(&ditto.stderr)
+        ));
+    }
+    let _ = std::process::Command::new("xattr")
+        .args(["-cr"])
+        .arg(&staging)
+        .status();
+    if dest.exists() {
+        let backup = dest_parent.join(format!(
+            ".{}.bak",
+            dest.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("RouterSwitch.app")
+        ));
+        let _ = std::fs::remove_dir_all(&backup);
+        std::fs::rename(&dest, &backup).map_err(|e| format!("备份旧版本失败: {e}"))?;
+        if let Err(err) = std::fs::rename(&staging, &dest) {
+            let _ = std::fs::rename(&backup, &dest);
+            return Err(format!("替换应用失败: {err}"));
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+    } else {
+        std::fs::rename(&staging, &dest).map_err(|e| format!("安装应用失败: {e}"))?;
+    }
+    let _ = std::fs::remove_dir_all(&extract_dir);
+    let _ = std::process::Command::new("open").arg(&dest).spawn();
+    Ok(ApplyUpdateOutcome::Relunched)
+}
+
+/// Apply a downloaded update package (DMG / ZIP / EXE / MSI).
+pub fn apply_downloaded_update(path: &Path) -> Result<ApplyUpdateOutcome, String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    #[cfg(target_os = "macos")]
+    {
+        if name.ends_with(".dmg") {
+            return install_macos_dmg(path);
+        }
+        if name.ends_with(".zip") {
+            return install_macos_zip(path);
+        }
+        if name.ends_with(".pkg") {
+            let status = std::process::Command::new("open")
+                .arg(path)
+                .status()
+                .map_err(|e| format!("打开安装包失败: {e}"))?;
+            if status.success() {
+                return Ok(ApplyUpdateOutcome::OpenedPackage);
+            }
+            return Err("打开 PKG 安装包失败".into());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if name.ends_with(".exe") || name.ends_with(".msi") {
+            std::process::Command::new(path)
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {e}"))?;
+            return Ok(ApplyUpdateOutcome::OpenedPackage);
+        }
+        if name.ends_with(".zip") {
+            let _ = std::process::Command::new("explorer").arg(path).spawn();
+            return Ok(ApplyUpdateOutcome::OpenedPackage);
+        }
+    }
+
+    // Generic fallback: open with system handler.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
+    Ok(ApplyUpdateOutcome::OpenedPackage)
 }
 
 /// Returns a realistic sample release for local preview and testing.

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use domain::{
     official_claude_desktop_provider, official_claude_provider, official_codex_provider,
     official_cursor_provider, official_grok_provider, official_opencode_provider,
-    official_pi_provider, official_workbuddy_provider, official_zcode_provider, AppKind, Prompt,
-    Provider, OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
+    official_pi_provider, official_workbuddy_provider, official_zcode_provider, ApiProvider,
+    AppKind, Prompt, Provider, OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
     OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
     OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
@@ -288,6 +288,16 @@ impl Store {
                 updated_at INTEGER,
                 message_count INTEGER NOT NULL DEFAULT 0,
                 tokens INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS api_providers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                data_json TEXT NOT NULL,
+                sort_index INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             );
             ",
         )?;
@@ -785,12 +795,91 @@ impl Store {
         Ok(())
     }
 
+    // ---- Gateway API providers (AstrLink ServiceManager alignment) ----
+
+    pub fn list_api_providers(&self) -> Result<Vec<ApiProvider>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT data_json FROM api_providers ORDER BY sort_index ASC, updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let json: String = row.get(0)?;
+            Ok(json)
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let json = r?;
+            let p: ApiProvider = serde_json::from_str(&json)
+                .map_err(|e| StoreError::Corrupt(format!("api_provider json: {e}")))?;
+            out.push(p);
+        }
+        Ok(out)
+    }
+
+    pub fn get_api_provider(&self, id: &str) -> Result<Option<ApiProvider>, StoreError> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data_json FROM api_providers WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match json {
+            Some(j) => Ok(Some(serde_json::from_str(&j).map_err(|e| {
+                StoreError::Corrupt(format!("api_provider json: {e}"))
+            })?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn upsert_api_provider(&self, provider: &ApiProvider) -> Result<(), StoreError> {
+        let data_json = serde_json::to_string(provider)
+            .map_err(|e| StoreError::Corrupt(format!("serialize api_provider: {e}")))?;
+        self.conn.execute(
+            "INSERT INTO api_providers
+             (id, name, kind, enabled, data_json, sort_index, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name,
+               kind=excluded.kind,
+               enabled=excluded.enabled,
+               data_json=excluded.data_json,
+               sort_index=excluded.sort_index,
+               updated_at=excluded.updated_at",
+            params![
+                provider.id,
+                provider.name,
+                provider.kind.as_str(),
+                if provider.enabled { 1 } else { 0 },
+                data_json,
+                provider.sort_index,
+                provider.created_at,
+                provider.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_api_provider(&self, id: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM api_providers WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn replace_api_provider_order(&self, ordered_ids: &[String]) -> Result<(), StoreError> {
+        for (i, id) in ordered_ids.iter().enumerate() {
+            let Some(mut p) = self.get_api_provider(id)? else {
+                continue;
+            };
+            p.sort_index = i as i64;
+            self.upsert_api_provider(&p)?;
+        }
+        Ok(())
+    }
+
     // ---- Wake-style session index + user_data (favorite / pinned) ----
 
-    pub fn replace_session_index(
-        &self,
-        rows: &[SessionIndexRow],
-    ) -> Result<(), StoreError> {
+    pub fn replace_session_index(&self, rows: &[SessionIndexRow]) -> Result<(), StoreError> {
         self.conn.execute("DELETE FROM session_index", [])?;
         let mut stmt = self.conn.prepare(
             "INSERT INTO session_index
@@ -840,10 +929,7 @@ impl Store {
             .map_err(StoreError::from)
     }
 
-    pub fn get_session_user_data(
-        &self,
-        session_key: &str,
-    ) -> Result<SessionUserData, StoreError> {
+    pub fn get_session_user_data(&self, session_key: &str) -> Result<SessionUserData, StoreError> {
         let row = self
             .conn
             .query_row(

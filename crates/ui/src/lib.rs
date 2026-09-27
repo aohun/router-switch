@@ -1,11 +1,12 @@
+mod api_providers_view;
 mod app_view;
 pub mod assets;
 mod insights_view;
+mod sessions_workbench;
 mod theme;
 pub mod tray;
 pub mod update_dialog;
 pub mod usage_service;
-mod sessions_workbench;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::OnceLock;

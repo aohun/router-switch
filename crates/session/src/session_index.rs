@@ -630,9 +630,7 @@ fn should_skip_index_path(agent: &str, path: &Path) -> bool {
 
 fn resolve_title(agent: &str, path: &Path, session_id: &str) -> String {
     let title = match agent {
-        "grok" => read_grok_summary(path)
-            .title
-            .or_else(|| peek_title(path)),
+        "grok" => read_grok_summary(path).title.or_else(|| peek_title(path)),
         "kimi" => read_kimi_state_title(path).or_else(|| peek_title(path)),
         "workbuddy" => read_workbuddy_title(path),
         "openclaw" => peek_title(path),
@@ -652,7 +650,8 @@ fn open_sqlite_ro(path: &Path) -> Option<rusqlite::Connection> {
         .or_else(|_| {
             rusqlite::Connection::open_with_flags(
                 path,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
         })
         .ok()
@@ -722,11 +721,7 @@ fn list_cursor_sessions(home: &Path) -> Vec<SessionIndexRow> {
         if !proj_path.is_dir() {
             continue;
         }
-        let slug = proj
-            .file_name()
-            .to_str()
-            .unwrap_or_default()
-            .to_string();
+        let slug = proj.file_name().to_str().unwrap_or_default().to_string();
         let transcripts = proj_path.join("agent-transcripts");
         let Ok(sessions) = std::fs::read_dir(&transcripts) else {
             continue;
@@ -736,11 +731,7 @@ fn list_cursor_sessions(home: &Path) -> Vec<SessionIndexRow> {
             if !sess_dir.is_dir() {
                 continue;
             }
-            let id = sess
-                .file_name()
-                .to_str()
-                .unwrap_or_default()
-                .to_string();
+            let id = sess.file_name().to_str().unwrap_or_default().to_string();
             if id.is_empty() || id == "subagents" {
                 continue;
             }
@@ -779,11 +770,7 @@ fn list_qoder_sessions(home: &Path) -> Vec<SessionIndexRow> {
         if !proj_path.is_dir() {
             continue;
         }
-        let slug = proj
-            .file_name()
-            .to_str()
-            .unwrap_or_default()
-            .to_string();
+        let slug = proj.file_name().to_str().unwrap_or_default().to_string();
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&proj_path) {
             for entry in entries.flatten() {
@@ -993,40 +980,41 @@ pub fn refresh_and_load(store: &Store) -> Result<Vec<IndexedSession>, String> {
             let session_id = session_id_from_path(path);
             let key = format!("{agent}:{session_id}");
             let updated = mtime_ms(path);
-            let (title, project_name, created_at, updated_at, message_count) =
-                if agent == "grok" {
-                    let side = read_grok_summary(path);
-                    (
-                        side.title
-                            .or_else(|| peek_title(path))
-                            .and_then(|t| clean_title_candidate(&t))
-                            .unwrap_or_else(|| session_id.clone()),
-                        side.project_name.or_else(|| project_from_path(path, &agent)),
-                        side.created_at.or(updated),
-                        side.updated_at.or(updated),
-                        side.message_count.unwrap_or_else(|| count_jsonl_lines(path)),
-                    )
-                } else if agent == "kimi" {
-                    let state_title = read_kimi_state_title(path);
-                    (
-                        state_title
-                            .or_else(|| peek_title(path))
-                            .and_then(|t| clean_title_candidate(&t))
-                            .unwrap_or_else(|| session_id.clone()),
-                        project_from_path(path, &agent),
-                        updated,
-                        updated,
-                        count_jsonl_lines(path),
-                    )
-                } else {
-                    (
-                        resolve_title(&agent, path, &session_id),
-                        project_from_path(path, &agent),
-                        updated,
-                        updated,
-                        count_jsonl_lines(path),
-                    )
-                };
+            let (title, project_name, created_at, updated_at, message_count) = if agent == "grok" {
+                let side = read_grok_summary(path);
+                (
+                    side.title
+                        .or_else(|| peek_title(path))
+                        .and_then(|t| clean_title_candidate(&t))
+                        .unwrap_or_else(|| session_id.clone()),
+                    side.project_name
+                        .or_else(|| project_from_path(path, &agent)),
+                    side.created_at.or(updated),
+                    side.updated_at.or(updated),
+                    side.message_count
+                        .unwrap_or_else(|| count_jsonl_lines(path)),
+                )
+            } else if agent == "kimi" {
+                let state_title = read_kimi_state_title(path);
+                (
+                    state_title
+                        .or_else(|| peek_title(path))
+                        .and_then(|t| clean_title_candidate(&t))
+                        .unwrap_or_else(|| session_id.clone()),
+                    project_from_path(path, &agent),
+                    updated,
+                    updated,
+                    count_jsonl_lines(path),
+                )
+            } else {
+                (
+                    resolve_title(&agent, path, &session_id),
+                    project_from_path(path, &agent),
+                    updated,
+                    updated,
+                    count_jsonl_lines(path),
+                )
+            };
             let row = SessionIndexRow {
                 session_key: key.clone(),
                 agent_id: agent.clone(),
@@ -1106,10 +1094,7 @@ pub fn refresh_and_load(store: &Store) -> Result<Vec<IndexedSession>, String> {
             session_key: key.clone(),
             agent_id: agent,
             session_id: meta.session_id,
-            title: meta
-                .title
-                .or(meta.summary)
-                .filter(|s| !s.trim().is_empty()),
+            title: meta.title.or(meta.summary).filter(|s| !s.trim().is_empty()),
             project_name: meta.project_dir,
             source_path: meta.source_path,
             created_at: meta.created_at,
@@ -1227,14 +1212,12 @@ pub fn filter_sessions(
         // Pinned float to top (Wake behavior).
         b.pinned.cmp(&a.pinned).then_with(|| {
             let ord = match sort.key {
-                SessionSortKey::Updated => a
-                    .updated_at
-                    .unwrap_or(0)
-                    .cmp(&b.updated_at.unwrap_or(0)),
-                SessionSortKey::Created => a
-                    .created_at
-                    .unwrap_or(0)
-                    .cmp(&b.created_at.unwrap_or(0)),
+                SessionSortKey::Updated => {
+                    a.updated_at.unwrap_or(0).cmp(&b.updated_at.unwrap_or(0))
+                }
+                SessionSortKey::Created => {
+                    a.created_at.unwrap_or(0).cmp(&b.created_at.unwrap_or(0))
+                }
                 SessionSortKey::Messages => a.message_count.cmp(&b.message_count),
             };
             if sort.ascending {
@@ -1513,22 +1496,21 @@ fn load_grok_transcript(path: &Path) -> Result<Vec<SessionMessage>, String> {
     let mut cur_role: Option<&'static str> = None;
     let mut cur_text = String::new();
 
-    let flush = |role: &mut Option<&'static str>,
-                 text: &mut String,
-                 out: &mut Vec<SessionMessage>| {
-        if let Some(r) = role.take() {
-            let content = std::mem::take(text);
-            if !content.trim().is_empty() {
-                out.push(SessionMessage {
-                    role: r.to_string(),
-                    content,
-                    ts: None,
-                });
-            } else {
-                text.clear();
+    let flush =
+        |role: &mut Option<&'static str>, text: &mut String, out: &mut Vec<SessionMessage>| {
+            if let Some(r) = role.take() {
+                let content = std::mem::take(text);
+                if !content.trim().is_empty() {
+                    out.push(SessionMessage {
+                        role: r.to_string(),
+                        content,
+                        ts: None,
+                    });
+                } else {
+                    text.clear();
+                }
             }
-        }
-    };
+        };
 
     for line in reader.lines().flatten() {
         if line.trim().is_empty() {
@@ -1592,13 +1574,11 @@ fn load_generic_jsonl(path: &Path) -> Result<Vec<SessionMessage>, String> {
             .get("role")
             .or_else(|| v.pointer("/message/role"))
             .and_then(|x| x.as_str())
-            .unwrap_or_else(|| {
-                match v.get("type").and_then(|t| t.as_str()) {
-                    Some("user") | Some("human") => "user",
-                    Some("assistant") | Some("ai") => "assistant",
-                    Some("system") => "system",
-                    _ => "",
-                }
+            .unwrap_or_else(|| match v.get("type").and_then(|t| t.as_str()) {
+                Some("user") | Some("human") => "user",
+                Some("assistant") | Some("ai") => "assistant",
+                Some("system") => "system",
+                _ => "",
             });
         if role.is_empty() {
             continue;
@@ -1868,10 +1848,7 @@ pub fn open_targets_for(agent_id: &str) -> Vec<OpenTarget> {
 }
 
 /// Launch resume in the chosen app. Returns the shell command string for the toast.
-pub fn open_session_in(
-    session: &IndexedSession,
-    target: OpenTarget,
-) -> Result<String, String> {
+pub fn open_session_in(session: &IndexedSession, target: OpenTarget) -> Result<String, String> {
     if target == OpenTarget::ClaudeDesktop {
         if session.agent_id != "claude" {
             return Err("Claude Desktop 仅支持 Claude Code 会话".into());

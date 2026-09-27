@@ -943,8 +943,7 @@ fn render_usage_board(
 ) -> AnyElement {
     let theme = cx.theme();
     // Wake Tokens metric: skip groups with no reported usage (0 ≠ "used zero").
-    let mut sorted: Vec<&tokens_core::UsageTally> =
-        rows.iter().filter(|r| r.tokens > 0).collect();
+    let mut sorted: Vec<&tokens_core::UsageTally> = rows.iter().filter(|r| r.tokens > 0).collect();
     sorted.sort_by(|a, b| b.tokens.cmp(&a.tokens));
     if show_brand {
         // Agents: Wake lists all that reported tokens.
@@ -971,60 +970,56 @@ fn render_usage_board(
             ),
             cx,
         ))
-        .child(
-            v_flex()
-                .gap(px(8.))
-                .children(sorted.into_iter().map(|row| {
-                    let frac = (row.tokens as f32 / max_tok as f32).clamp(0.02, 1.);
-                    let brand = show_brand.then(|| brand_id_for_client(&row.name)).flatten();
-                    let name = if show_brand {
-                        display_agent_name(&row.name)
-                    } else {
-                        row.name.clone().into()
-                    };
+        .child(v_flex().gap(px(8.)).children(sorted.into_iter().map(|row| {
+            let frac = (row.tokens as f32 / max_tok as f32).clamp(0.02, 1.);
+            let brand = show_brand.then(|| brand_id_for_client(&row.name)).flatten();
+            let name = if show_brand {
+                display_agent_name(&row.name)
+            } else {
+                row.name.clone().into()
+            };
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(10.))
+                .child(
                     h_flex()
-                        .w_full()
+                        .w(px(140.))
                         .items_center()
-                        .gap(px(10.))
-                        .child(
-                            h_flex()
-                                .w(px(140.))
-                                .items_center()
-                                .gap(px(6.))
-                                .flex_shrink_0()
-                                .when_some(brand, |row, id| row.child(brand_img(id, dark, px(15.))))
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .text_color(theme.foreground)
-                                        .truncate()
-                                        .child(name),
-                                ),
-                        )
+                        .gap(px(6.))
+                        .flex_shrink_0()
+                        .when_some(brand, |row, id| row.child(brand_img(id, dark, px(15.))))
                         .child(
                             div()
-                                .flex_1()
-                                .h(px(6.))
+                                .text_size(px(13.))
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(name),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(6.))
+                        .rounded(px(3.))
+                        .bg(theme.muted)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(frac))
                                 .rounded(px(3.))
-                                .bg(theme.muted)
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(frac))
-                                        .rounded(px(3.))
-                                        .bg(chart_accent(cx)),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w(px(72.))
-                                .text_right()
-                                .text_size(px(FONT_LABEL))
-                                .text_color(theme.muted_foreground)
-                                .child(format_tokens(row.tokens)),
-                        )
-                })),
-        )
+                                .bg(chart_accent(cx)),
+                        ),
+                )
+                .child(
+                    div()
+                        .w(px(72.))
+                        .text_right()
+                        .text_size(px(FONT_LABEL))
+                        .text_color(theme.muted_foreground)
+                        .child(format_tokens(row.tokens)),
+                )
+        })))
         .into_any_element()
 }
 

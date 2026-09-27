@@ -75,9 +75,9 @@ mod auth_native;
 pub mod codex_history;
 pub mod oauth;
 pub mod prompts;
+pub mod session_index;
 pub mod sessions;
 pub mod skills;
-pub mod session_index;
 mod workbuddy_auth;
 
 pub use prompts::PromptService;
@@ -272,8 +272,12 @@ impl Workspace {
             match resolve_claude_desktop_paths(settings.claude_desktop_home.as_deref()) {
                 Ok(paths) => paths,
                 Err(ClaudeDesktopError::UnsupportedPlatform) => {
-                    tracing::warn!("Claude Desktop is not supported on this platform; using fallback path");
-                    ClaudeDesktopPaths::from_app_support(std::env::temp_dir().join("claude-desktop-fallback"))
+                    tracing::warn!(
+                        "Claude Desktop is not supported on this platform; using fallback path"
+                    );
+                    ClaudeDesktopPaths::from_app_support(
+                        std::env::temp_dir().join("claude-desktop-fallback"),
+                    )
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -376,6 +380,45 @@ impl Workspace {
 
     pub fn save_settings(&self, settings: AppSettings) -> Result<(), SessionError> {
         self.store.save_settings(&settings)?;
+        Ok(())
+    }
+
+    // ---- Gateway API providers (AstrLink alignment) ----
+
+    pub fn list_api_providers(&self) -> Result<Vec<domain::ApiProvider>, SessionError> {
+        Ok(self.store.list_api_providers()?)
+    }
+
+    pub fn upsert_api_provider(&self, provider: &domain::ApiProvider) -> Result<(), SessionError> {
+        self.store.upsert_api_provider(provider)?;
+        Ok(())
+    }
+
+    pub fn delete_api_provider(&self, id: &str) -> Result<(), SessionError> {
+        self.store.delete_api_provider(id)?;
+        Ok(())
+    }
+
+    pub fn set_api_provider_enabled(
+        &self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<domain::ApiProvider, SessionError> {
+        let mut p = self
+            .store
+            .get_api_provider(id)?
+            .ok_or_else(|| SessionError::Message(format!("API 服务商不存在: {id}")))?;
+        p.enabled = enabled;
+        p.updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.store.upsert_api_provider(&p)?;
+        Ok(p)
+    }
+
+    pub fn reorder_api_providers(&self, ordered_ids: &[String]) -> Result<(), SessionError> {
+        self.store.replace_api_provider_order(ordered_ids)?;
         Ok(())
     }
 

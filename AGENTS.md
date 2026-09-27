@@ -4,9 +4,11 @@
 
 ---
 
-## 📚 0. 参考项目（Wake）
+## 📚 0. 参考项目
 
-会话管理与 Insights 仪表盘的 **UX / 交互 / 统计口径** 以 [Wake](https://github.com/) 为对照实现：
+### 0.1 Wake（会话管理 / Insights）
+
+会话管理与 Insights 仪表盘的 **UX / 交互 / 统计口径** 以 Wake 为对照实现：
 
 | 项 | 路径 |
 |----|------|
@@ -21,6 +23,24 @@
 - 会话管理目标形态：Wake 三栏（全部 / 已收藏 / Agent / 项目 → 会话列表 → transcript + 收藏/置顶/复制路径/恢复）。
 - 仪表盘（原「统计」菜单名保持 **仪表盘**）图表色与 Tokens 榜口径对齐 Wake；扫描数据仍走本仓 `tokens-core`。
 - 实现时可参考 Wake，但 **不得** 把 Wake 用户库、会话文件或密钥拷进本仓库；本机索引落在 `~/.router-switch/`。
+
+### 0.2 AstrLink（网关中枢 / API 服务商）
+
+仪表盘下的 **API 服务商**（网关上游注册表）以 [AstrLink](https://github.com/) 为对照实现，**区别于**各 Agent 侧栏里的「按应用同步 Live 配置」服务商页：
+
+| 项 | 路径 |
+|----|------|
+| 本地仓库 | `/Users/wayne/Desktop/git/AstrLink` |
+| 列表 / 编辑主界面 | `apps/desktop/src/ServiceManager.tsx` |
+| 数据模型 / 预置类型 | `service-model.ts`、`service-presets.ts` |
+| 行组件 / 模型编辑 / 连通性测试 | `components/ServiceListRow.tsx`、`ServiceModelsEditor.tsx`、`ServiceTestDialog.tsx` |
+| 文档 | `docs/guides/provider-testing.md`、`pay-as-you-go-providers.md` |
+
+**对齐约定：**
+
+- 导航位置：仪表盘组下独立菜单 **API 服务商**（`Route::ApiProviders`），列表交互对齐 AstrLink：状态分段（全部 / 已启用 / 已停用）、搜索、按模型筛选、拖拽排序、启用开关、测试 / 编辑 / 更多菜单。
+- 能力面：创建 / 编辑（连接 · 模型 · 协议 · 失败处理）、订阅类 OAuth / Device Code、HTTP 密钥、模型探测、用量 / 费用展示——逐步对齐 AstrLink，数据落在 `~/.router-switch/app.db` 的 `api_providers` 表，**不得**把 AstrLink 本机密钥或数据库拷进本仓库。
+- 术语：对外文案用「**API 服务商**」；与既有 `provider.*`（各 Agent Live 配置）命名空间分开，使用 `api_providers.*`。
 
 ---
 
@@ -58,7 +78,7 @@
 router-switch/
 ├── Cargo.toml               # Workspace 根配置与依赖版本
 ├── crates/
-│   ├── domain/              # 纯领域模型：表单、模型映射、剪贴板解析、深度链接协议（无外部 I/O 依赖）
+│   ├── domain/              # 纯领域模型：表单、模型映射、剪贴板解析、深度链接、API 服务商（无外部 I/O 依赖）
 │   ├── adapters-codex/      # Codex Live 配置文件读写适配器 (~/.codex)
 │   ├── adapters-claude/     # Claude Code Live 配置适配器 (~/.claude)
 │   ├── adapters-grok/       # Grok Build Live 配置适配器 (~/.grok)
@@ -67,9 +87,9 @@ router-switch/
 │   ├── adapters-zcode/      # ZCode Live 配置适配器 (~/.zcode/v2/config.json)
 │   ├── cursor-gateway/      # Cursor 本地代理与中间人网关服务
 │   ├── tokens-core/         # 多 Agent 会话扫描与 Insights 聚合（对齐 Wake 统计）
-│   ├── store/               # SQLite SSOT（~/.router-switch/app.db；含会话索引 / 收藏置顶）
+│   ├── store/               # SQLite SSOT（~/.router-switch/app.db；含会话索引 / API 服务商）
 │   ├── session/             # 业务编排 + Wake 风格会话索引 / transcript 加载
-│   ├── ui/                  # GPUI 视图（含 Route::Sessions 三栏会话管理）
+│   ├── ui/                  # GPUI 视图（Insights / Route::Sessions / Route::ApiProviders）
 │   └── app/                 # 桌面主程序入口 main.rs
 ├── assets/                  # 应用元数据（Info.plist、图标等）
 └── scripts/                 # 跨平台打包脚本（bundle-dmg.sh 等）

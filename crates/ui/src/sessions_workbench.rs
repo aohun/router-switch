@@ -1,9 +1,11 @@
 //! Wake-style 3-pane sessions workbench (sidebar scope + list + transcript).
 
+use crate::app_view::RouterApp;
+use crate::assets::{brand_img, CustomIcon};
 use gpui::{
     div, img, list, prelude::FluentBuilder, px, rgb, uniform_list, AbsoluteLength, AnyElement,
-    Corner, Context, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window,
+    Context, Corner, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
@@ -21,8 +23,6 @@ use session::session_index::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::app_view::RouterApp;
-use crate::assets::{brand_img, CustomIcon};
 
 fn format_day(ts_ms: Option<i64>) -> String {
     let Some(ts) = ts_ms else {
@@ -79,7 +79,10 @@ fn open_target_icon(
 ) -> AnyElement {
     if let Some(t) = target {
         if let Some(path) = icons.get(t.id()) {
-            return img(path.clone()).size(size).flex_shrink_0().into_any_element();
+            return img(path.clone())
+                .size(size)
+                .flex_shrink_0()
+                .into_any_element();
         }
         if let Some(brand) = t.brand_icon() {
             return img(brand).size(size).flex_shrink_0().into_any_element();
@@ -90,10 +93,7 @@ fn open_target_icon(
         .into_any_element()
 }
 
-fn preferred_open_target(
-    app: &RouterApp,
-    targets: &[OpenTarget],
-) -> Option<OpenTarget> {
+fn preferred_open_target(app: &RouterApp, targets: &[OpenTarget]) -> Option<OpenTarget> {
     if let Some(pref) = app.preferred_open_target {
         if targets.contains(&pref) {
             return Some(pref);
