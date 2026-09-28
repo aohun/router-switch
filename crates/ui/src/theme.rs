@@ -150,11 +150,12 @@ pub fn apply_palette(cx: &mut App) {
 }
 
 /// The main content "inset card" background (sidebar-inset token).
+/// Light mode stays opaque white so page chrome matches cards/panels (no gray wash).
 pub fn inset_bg(dark: bool) -> Hsla {
     if dark {
         ha(0x0A0A0A, 0.80)
     } else {
-        ha(0xFFFFFF, 0.88)
+        h(0xFFFFFF)
     }
 }
 

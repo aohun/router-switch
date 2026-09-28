@@ -1,6 +1,7 @@
 //! Pure domain crate for AI provider management across Codex, Claude Code, Grok Build, OpenCode, Pi, Cursor, ZCode, and WorkBuddy.
 //! No filesystem or SQLite dependencies here.
 
+mod access_token;
 mod api_provider;
 mod app_kind;
 mod claude;
@@ -23,6 +24,11 @@ mod usage_script;
 mod workbuddy;
 mod zcode;
 
+pub use access_token::{
+    normalize_access_token_name, token_hint, AccessTokenSource, AccessTokenSummary,
+    AccessTokenUsage, CreatedAccessToken, NewAccessTokenRecord, ACCESS_TOKEN_ID_PREFIX,
+    ACCESS_TOKEN_LIMIT, ACCESS_TOKEN_PREFIX, DEFAULT_ACCESS_TOKEN_NAME,
+};
 pub use api_provider::{
     api_protocol_descriptor, fetch_http_connection_models, merge_discovered_api_models,
     merge_visible_api_provider_order, resolve_upstream_candidates, supports_local_conversion,

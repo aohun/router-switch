@@ -41,6 +41,7 @@ use adapters_zcode::{
     resolve_zcode_paths, write_live_for_provider as write_zcode_live, ZCodeAdapterError,
     ZCodePaths,
 };
+pub mod access_token;
 mod auth_native;
 pub use auth_native::{
     fetch_codex_models_and_usage, fetch_codex_models_with_refresh, fetch_codex_usage_with_refresh,
@@ -320,6 +321,7 @@ impl Workspace {
         // Tools whose live config points at the compat gateway (a previous
         // session routed them) must find it listening again after a restart.
         ws.restore_routing_gateways();
+        access_token::ensure_default_access_tokens(&ws.store)?;
         ws.write_diagnostic_log(
             LogLevel::Info,
             "workspace",
@@ -401,6 +403,48 @@ impl Workspace {
     ) -> Result<(), SessionError> {
         self.store.save_routing_settings(settings)?;
         Ok(())
+    }
+
+    // ---- Local access tokens (AstrLink accesstoken alignment) ----
+
+    pub fn list_access_tokens(&self) -> Result<Vec<domain::AccessTokenSummary>, SessionError> {
+        access_token::list_access_tokens(&self.store)
+    }
+
+    pub fn create_access_token(
+        &self,
+        name: &str,
+    ) -> Result<domain::CreatedAccessToken, SessionError> {
+        access_token::create_access_token(&self.store, name)
+    }
+
+    pub fn reveal_access_token(&self, id: &str) -> Result<String, SessionError> {
+        access_token::reveal_access_token(&self.store, id)
+    }
+
+    pub fn delete_access_token(&self, id: &str) -> Result<(), SessionError> {
+        access_token::delete_access_token(&self.store, id)
+    }
+
+    pub fn list_access_token_usage(
+        &self,
+        token_ids: &[String],
+    ) -> Result<Vec<domain::AccessTokenUsage>, SessionError> {
+        access_token::list_access_token_usage(&self.store, token_ids)
+    }
+
+    pub fn authenticate_access_token(&self, raw: &str) -> Result<String, SessionError> {
+        access_token::authenticate_access_token(&self.store, raw)
+    }
+
+    /// Canonical loopback inference URL for client configuration.
+    pub fn gateway_api_url(&self) -> Option<String> {
+        self.compat_gateway_port()
+            .map(|port| format!("http://127.0.0.1:{port}"))
+    }
+
+    pub fn is_gateway_ready(&self) -> bool {
+        self.compat_gateway_port().is_some()
     }
 
     // ---- Gateway API providers (AstrLink alignment) ----

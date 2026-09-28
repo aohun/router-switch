@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use domain::{
     official_claude_desktop_provider, official_claude_provider, official_codex_provider,
     official_cursor_provider, official_grok_provider, official_opencode_provider,
-    official_pi_provider, official_workbuddy_provider, official_zcode_provider, ApiProvider,
-    AppKind, Prompt, Provider, OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID, OFFICIAL_CODEX_ID,
-    OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
+    official_pi_provider, official_workbuddy_provider, official_zcode_provider, AccessTokenSource,
+    AccessTokenSummary, AccessTokenUsage, ApiProvider, AppKind, NewAccessTokenRecord, Prompt,
+    Provider, ACCESS_TOKEN_LIMIT, OFFICIAL_CLAUDE_DESKTOP_ID, OFFICIAL_CLAUDE_ID,
+    OFFICIAL_CODEX_ID, OFFICIAL_CURSOR_ID, OFFICIAL_GROK_ID, OFFICIAL_OPENCODE_ID, OFFICIAL_PI_ID,
     OFFICIAL_WORKBUDDY_ID, OFFICIAL_ZCODE_ID,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -298,6 +299,23 @@ impl Store {
                 sort_index INTEGER NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_access_tokens (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                name_key TEXT NOT NULL UNIQUE,
+                token_hash BLOB NOT NULL UNIQUE,
+                token_hint TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_access_token_secrets (
+                token_id TEXT PRIMARY KEY REFERENCES local_access_tokens(id) ON DELETE CASCADE,
+                token_value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_access_token_bootstrap_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                completed_at TEXT NOT NULL
             );
             ",
         )?;
@@ -928,6 +946,139 @@ impl Store {
         Ok(())
     }
 
+    // ---- Local access tokens (AstrLink accesstoken alignment) ----
+
+    pub fn ensure_default_access_token(
+        &self,
+        candidate: &NewAccessTokenRecord,
+    ) -> Result<Option<AccessTokenSummary>, StoreError> {
+        let completed: i64 = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM local_access_token_bootstrap_state WHERE singleton = 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if completed == 1 {
+            return Ok(None);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let summary = insert_access_token_tx(&tx, candidate)?;
+        tx.execute(
+            "INSERT INTO local_access_token_bootstrap_state (singleton, completed_at) VALUES (1, ?1)",
+            params![summary.created_at],
+        )?;
+        tx.commit()?;
+        Ok(Some(summary))
+    }
+
+    pub fn create_access_token(
+        &self,
+        candidate: &NewAccessTokenRecord,
+    ) -> Result<AccessTokenSummary, StoreError> {
+        let count: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM local_access_tokens", [], |row| {
+                    row.get(0)
+                })?;
+        if count as usize >= ACCESS_TOKEN_LIMIT {
+            return Err(StoreError::Conflict(format!(
+                "最多允许 {ACCESS_TOKEN_LIMIT} 个访问令牌"
+            )));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let summary = insert_access_token_tx(&tx, candidate)?;
+        tx.commit()?;
+        Ok(summary)
+    }
+
+    pub fn list_access_tokens(&self) -> Result<Vec<AccessTokenSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, token_hint, source, created_at
+             FROM local_access_tokens
+             ORDER BY created_at, id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let source_raw: String = row.get(3)?;
+            Ok(AccessTokenSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                hint: row.get(2)?,
+                source: AccessTokenSource::parse(&source_raw).unwrap_or(AccessTokenSource::User),
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn reveal_access_token(&self, id: &str) -> Result<String, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT s.token_value
+                 FROM local_access_tokens AS t
+                 JOIN local_access_token_secrets AS s ON s.token_id = t.id
+                 WHERE t.id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    StoreError::Conflict(format!("访问令牌不存在: {id}"))
+                }
+                other => StoreError::from(other),
+            })
+    }
+
+    pub fn delete_access_token(&self, id: &str) -> Result<(), StoreError> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM local_access_tokens WHERE id = ?1", params![id])?;
+        if deleted == 0 {
+            return Err(StoreError::Conflict(format!("访问令牌不存在: {id}")));
+        }
+        Ok(())
+    }
+
+    pub fn list_access_token_usage(
+        &self,
+        token_ids: &[String],
+    ) -> Result<Vec<AccessTokenUsage>, StoreError> {
+        // Usage aggregation from request records lands with gateway request logging.
+        Ok(token_ids
+            .iter()
+            .map(|id| AccessTokenUsage {
+                token_id: id.clone(),
+                today_tokens: 0,
+                total_tokens: 0,
+            })
+            .collect())
+    }
+
+    pub fn find_access_token_by_hash(
+        &self,
+        hash: &[u8],
+    ) -> Result<Option<AccessTokenSummary>, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT id, name, token_hint, source, created_at
+                 FROM local_access_tokens
+                 WHERE token_hash = ?1",
+                params![hash],
+                |row| {
+                    let source_raw: String = row.get(3)?;
+                    Ok(AccessTokenSummary {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        hint: row.get(2)?,
+                        source: AccessTokenSource::parse(&source_raw)
+                            .unwrap_or(AccessTokenSource::User),
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
     // ---- Wake-style session index + user_data (favorite / pinned) ----
 
     pub fn replace_session_index(&self, rows: &[SessionIndexRow]) -> Result<(), StoreError> {
@@ -1087,6 +1238,65 @@ pub fn default_data_dir() -> Result<PathBuf, StoreError> {
 
 pub fn default_db_path() -> Result<PathBuf, StoreError> {
     Ok(default_data_dir()?.join("app.db"))
+}
+
+fn insert_access_token_tx(
+    tx: &rusqlite::Transaction<'_>,
+    candidate: &NewAccessTokenRecord,
+) -> Result<AccessTokenSummary, StoreError> {
+    let exists: i64 = tx.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM local_access_tokens
+            WHERE id = ?1 OR name_key = ?2 OR token_hash = ?3
+         )",
+        params![candidate.id, candidate.name_key, candidate.hash.as_slice()],
+        |row| row.get(0),
+    )?;
+    if exists == 1 {
+        return Err(StoreError::Conflict(
+            "访问令牌名称已存在，请换一个名称。".into(),
+        ));
+    }
+
+    let created_at = if candidate.created_at.trim().is_empty() {
+        chrono_like_now_rfc3339()
+    } else {
+        candidate.created_at.clone()
+    };
+    tx.execute(
+        "INSERT INTO local_access_tokens (id, name, name_key, token_hash, token_hint, source, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            candidate.id,
+            candidate.name,
+            candidate.name_key,
+            candidate.hash.as_slice(),
+            candidate.hint,
+            candidate.source.as_str(),
+            created_at,
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO local_access_token_secrets (token_id, token_value) VALUES (?1, ?2)",
+        params![candidate.id, candidate.value],
+    )?;
+    Ok(AccessTokenSummary {
+        id: candidate.id.clone(),
+        name: candidate.name.clone(),
+        hint: candidate.hint.clone(),
+        source: candidate.source,
+        created_at,
+    })
+}
+
+fn chrono_like_now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Fallback only — prefer NewAccessTokenRecord.created_at (RFC3339 from session).
+    format!("{secs}")
 }
 
 struct Row {
@@ -1279,5 +1489,77 @@ mod tests {
             .replace_api_provider_order(&["api_c".into(), "api_a".into()])
             .unwrap_err();
         assert!(err.to_string().contains("不完整"));
+    }
+
+    #[test]
+    fn access_token_bootstrap_create_reveal_delete_and_auth() {
+        use domain::{
+            normalize_access_token_name, token_hint, AccessTokenSource, NewAccessTokenRecord,
+            ACCESS_TOKEN_PREFIX, DEFAULT_ACCESS_TOKEN_NAME,
+        };
+        use sha2::{Digest, Sha256};
+
+        let (_dir, store) = temp_store();
+
+        let make = |name: &str, source: AccessTokenSource, secret: &str| {
+            let (canonical, name_key) = normalize_access_token_name(name).unwrap();
+            let raw = format!("{ACCESS_TOKEN_PREFIX}{secret}");
+            let hash = Sha256::digest(raw.as_bytes());
+            NewAccessTokenRecord {
+                id: format!("access_token_{secret}"),
+                name: canonical,
+                name_key,
+                hash: hash.into(),
+                hint: token_hint(&raw),
+                source,
+                value: raw,
+                created_at: "2026-09-28T01:00:00Z".into(),
+            }
+        };
+
+        let first = make(
+            DEFAULT_ACCESS_TOKEN_NAME,
+            AccessTokenSource::SystemDefault,
+            "bootstrapsecretbytes_____aaaaaa",
+        );
+        let created = store.ensure_default_access_token(&first).unwrap();
+        assert!(created.is_some());
+        assert!(store.ensure_default_access_token(&first).unwrap().is_none());
+
+        let listed = store.list_access_tokens().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, DEFAULT_ACCESS_TOKEN_NAME);
+
+        let secret = store.reveal_access_token(&listed[0].id).unwrap();
+        assert!(secret.starts_with(ACCESS_TOKEN_PREFIX));
+
+        let by_hash = store
+            .find_access_token_by_hash(&Sha256::digest(secret.as_bytes()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_hash.id, listed[0].id);
+
+        let second = make(
+            "CI Agent",
+            AccessTokenSource::User,
+            "usersecretbytes__________bbbbbb",
+        );
+        store.create_access_token(&second).unwrap();
+        assert_eq!(store.list_access_tokens().unwrap().len(), 2);
+
+        let dup = make(
+            "ci agent",
+            AccessTokenSource::User,
+            "anothersecretbytes_______cccccc",
+        );
+        let err = store.create_access_token(&dup).unwrap_err();
+        assert!(matches!(err, StoreError::Conflict(_)));
+
+        store.delete_access_token(&listed[0].id).unwrap();
+        assert_eq!(store.list_access_tokens().unwrap().len(), 1);
+        // Bootstrap completed: deleting all tokens does not recreate default.
+        store.delete_access_token(&second.id).unwrap();
+        assert!(store.list_access_tokens().unwrap().is_empty());
+        assert!(store.ensure_default_access_token(&first).unwrap().is_none());
     }
 }

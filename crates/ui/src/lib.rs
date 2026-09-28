@@ -1,6 +1,7 @@
 mod api_providers_view;
 mod app_view;
 pub mod assets;
+mod gateway_view;
 mod insights_view;
 mod sessions_workbench;
 mod smart_routing_view;

@@ -791,6 +791,8 @@ pub enum Route {
     Dashboard,
     /// Gateway upstream registry (AstrLink ServiceManager alignment).
     ApiProviders,
+    /// Local gateway + access tokens (AstrLink AccessTokenManager alignment).
+    Gateway,
     /// AstrLink RoutingSettingsPanel (UI + autosave; runtime apply later).
     SmartRouting,
     Skills,
@@ -1057,6 +1059,8 @@ pub struct RouterApp {
     pub(crate) preferred_open_target: Option<session::session_index::OpenTarget>,
     /// AstrLink-aligned gateway API providers page state.
     pub(crate) api_providers: crate::api_providers_view::ApiProvidersState,
+    /// AstrLink-aligned gateway access tokens page state.
+    pub(crate) gateway: crate::gateway_view::GatewayState,
     /// AstrLink-aligned smart routing settings page state.
     pub(crate) smart_routing: crate::smart_routing_view::SmartRoutingState,
     prompts_app: AppKind,
@@ -1409,6 +1413,7 @@ impl RouterApp {
             open_target_icons: std::collections::HashMap::new(),
             preferred_open_target: None,
             api_providers: crate::api_providers_view::ApiProvidersState::new(window, cx),
+            gateway: crate::gateway_view::GatewayState::new(window, cx),
             smart_routing: crate::smart_routing_view::SmartRoutingState::new(window, cx),
             prompts_app: AppKind::Codex,
             prompts_list: Vec::new(),
@@ -2179,7 +2184,7 @@ impl RouterApp {
         }
     }
 
-    fn reload(&mut self) {
+    pub(crate) fn reload(&mut self) {
         let mut all = Vec::new();
         for app in AppKind::ALL {
             if let Ok(snapshot) = self.workspace.snapshot_for(*app) {
@@ -2220,6 +2225,8 @@ impl RouterApp {
             self.ensure_open_target_icons(cx);
         } else if route == Route::ApiProviders {
             self.refresh_api_providers(cx);
+        } else if route == Route::Gateway {
+            self.refresh_gateway_tokens(cx);
         } else if route == Route::SmartRouting {
             self.load_smart_routing(window, cx);
         }
@@ -4183,16 +4190,6 @@ impl RouterApp {
             .pt(px(48.))
             .gap(px(4.))
             .child(self.nav_item(
-                "nav-dashboard",
-                IconName::LayoutDashboard,
-                Some(rgb(0x3B82F6).into()), // Blue
-                t!("nav.dashboard").to_string(),
-                Route::Dashboard,
-                None,
-                false,
-                cx,
-            ))
-            .child(self.nav_item(
                 "nav-api-providers",
                 IconName::Globe,
                 Some(rgb(0x0A84FF).into()), // AstrLink system blue
@@ -4203,11 +4200,31 @@ impl RouterApp {
                 cx,
             ))
             .child(self.nav_item(
+                "nav-gateway",
+                IconName::CircleUser,
+                Some(rgb(0x0A84FF).into()),
+                t!("nav.gateway").to_string(),
+                Route::Gateway,
+                None,
+                false,
+                cx,
+            ))
+            .child(self.nav_item(
                 "nav-smart-routing",
                 IconName::Settings2,
                 Some(rgb(0x0A84FF).into()),
                 t!("nav.smart_routing").to_string(),
                 Route::SmartRouting,
+                None,
+                false,
+                cx,
+            ))
+            .child(self.nav_item(
+                "nav-dashboard",
+                IconName::LayoutDashboard,
+                Some(rgb(0x3B82F6).into()), // Blue
+                t!("nav.dashboard").to_string(),
+                Route::Dashboard,
                 None,
                 false,
                 cx,
@@ -4226,60 +4243,80 @@ impl RouterApp {
                 false,
                 cx,
             ))
-            .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(border))
+            // AstrLink: settings sits in the nav above the gateway status footer.
             .child(self.render_settings_nav_item(cx))
+            .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(border))
+            .child(self.render_gateway_status_footer(cx))
     }
 
-    /// 偏好设置：有待更新版本时在右侧显示蓝色下载圆标。
-    /// 主行与下载按钮拆开，悬停下载按钮时不会整行高亮。
-    fn render_settings_nav_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.route == Route::Settings;
-        let accent = cx.theme().sidebar_accent;
-        let fg = cx.theme().sidebar_foreground;
+    /// AstrLink sidebar footer: StatusDot + 「网关」+ phase label；更新按钮留在底栏右侧。
+    fn render_gateway_status_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ready = self.workspace.is_gateway_ready();
+        let theme = cx.theme().clone();
+        let status = if ready {
+            t!("nav.gateway_ready").to_string()
+        } else {
+            t!("nav.gateway_stopped").to_string()
+        };
+        let tip = t!("nav.gateway_status", status = status.as_str()).to_string();
+        let dot = if ready {
+            Hsla::from(rgb(0x22C55E)) // success / positive
+        } else {
+            theme.muted_foreground
+        };
         let has_update = self.pending_app_update.is_some();
         let installing = self.is_installing_update;
 
         h_flex()
-            .id("nav-settings-row")
-            .h(px(38.))
+            .id("nav-gateway-status-row")
             .w_full()
             .items_center()
             .gap(px(6.))
+            .pt(px(4.))
+            .pb(px(2.))
             .child(
                 h_flex()
-                    .id("nav-settings")
+                    .id("nav-gateway-status")
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .px(px(10.))
-                    .rounded(px(8.))
+                    .min_w(px(0.))
                     .items_center()
-                    .gap(px(10.))
-                    .text_size(px(14.))
-                    .text_color(fg)
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(8.))
                     .cursor_pointer()
-                    .when(active, |this| {
-                        this.bg(accent).font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .when(!active, |this| this.hover(|this| this.bg(accent)))
+                    .hover(|s| s.bg(theme.sidebar_accent))
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.set_route(Route::Settings, window, cx);
+                        this.set_route(Route::Gateway, window, cx);
                     }))
                     .child(
-                        Icon::new(IconName::Settings)
-                            .size(px(18.))
+                        div()
+                            .size(px(6.))
+                            .rounded_full()
                             .flex_shrink_0()
-                            .text_color(if active {
-                                cx.theme().foreground
-                            } else {
-                                Hsla::from(rgb(0x64748B))
-                            }),
+                            .bg(dot),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .child(t!("nav.settings").to_string()),
+                        h_flex()
+                            .min_w(px(0.))
+                            .items_baseline()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.foreground)
+                                    .child(t!("nav.gateway").to_string()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(status),
+                            ),
                     ),
             )
             .when(has_update, |this| {
@@ -4324,6 +4361,48 @@ impl RouterApp {
                         }),
                 )
             })
+    }
+
+    /// 偏好设置（更新下载按钮留在底栏网关状态行，不跟随本项上移）。
+    fn render_settings_nav_item(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.route == Route::Settings;
+        let accent = cx.theme().sidebar_accent;
+        let fg = cx.theme().sidebar_foreground;
+
+        h_flex()
+            .id("nav-settings")
+            .h(px(38.))
+            .w_full()
+            .px(px(10.))
+            .rounded(px(8.))
+            .items_center()
+            .gap(px(10.))
+            .text_size(px(14.))
+            .text_color(fg)
+            .cursor_pointer()
+            .when(active, |this| {
+                this.bg(accent).font_weight(FontWeight::SEMIBOLD)
+            })
+            .when(!active, |this| this.hover(|this| this.bg(accent)))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_route(Route::Settings, window, cx);
+            }))
+            .child(
+                Icon::new(IconName::Settings)
+                    .size(px(18.))
+                    .flex_shrink_0()
+                    .text_color(if active {
+                        cx.theme().foreground
+                    } else {
+                        Hsla::from(rgb(0x64748B))
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .child(t!("nav.settings").to_string()),
+            )
     }
 
     /// Download the pending release asset, install it, then relaunch (cc-switch style).
@@ -13961,6 +14040,7 @@ impl Render for RouterApp {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
                 Route::ApiProviders => self.render_api_providers_page(cx).into_any_element(),
+                Route::Gateway => self.render_gateway_page(cx).into_any_element(),
                 Route::SmartRouting => self.render_smart_routing_page(cx).into_any_element(),
                 Route::Sessions => crate::sessions_workbench::render_sessions_workbench(self, cx)
                     .into_any_element(),
@@ -15157,7 +15237,7 @@ fn field(
     })
 }
 
-fn notify_success(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
+pub(crate) fn notify_success(message: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::success(message), cx);
 }
 

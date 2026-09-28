@@ -46,6 +46,7 @@ brands!(
     "omp",
     "hermes",
     "hermes-light",
+    "cc-switch",
 );
 
 /// Resolve brand PNG/SVG path for a tool / app id (aligns with Wake `AgentId::brand_icon`).
@@ -193,6 +194,14 @@ const ROTATE_CW_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
   <path d="M21 3v5h-5"/>
 </svg>"#;
 
+/// AstrLink / Lucide RefreshCw (two arrows) — used on Gateway refresh.
+const REFRESH_CW_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+  <path d="M21 3v5h-5"/>
+  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+  <path d="M8 16H3v5"/>
+</svg>"#;
+
 const ARROW_LEFT_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56">
   <path fill="currentColor" d="M6.238 28c0 .586.258 1.125.727 1.57l15.562 15.54c.492.445.985.656 1.524.656c1.172 0 2.062-.844 2.062-2.016c0-.562-.21-1.125-.586-1.477l-5.226-5.343l-7.922-7.196l5.695.352H47.7c1.219 0 2.063-.867 2.063-2.086s-.844-2.086-2.063-2.086H18.074l-5.672.352l7.899-7.196l5.226-5.343c.399-.376.586-.915.586-1.477c0-1.172-.89-2.016-2.062-2.016c-.54 0-1.055.188-1.57.704L6.964 26.43c-.469.445-.727.984-.727 1.57"/>
 </svg>"#;
@@ -269,6 +278,8 @@ pub enum CustomIcon {
     Antigravity,
     Qoder,
     RotateCw,
+    /// AstrLink RefreshCw (two-arrow sync).
+    RefreshCw,
     ArrowLeft,
     Monitor,
     History,
@@ -309,6 +320,7 @@ impl IconNamed for CustomIcon {
             Self::Antigravity => "brands/antigravity.png",
             Self::Qoder => "brands/qoder.png",
             Self::RotateCw => "icons/custom/rotate-cw.svg",
+            Self::RefreshCw => "icons/custom/refresh-cw.svg",
             Self::ArrowLeft => "icons/custom/arrow-left.svg",
             Self::Monitor => "icons/custom/monitor.svg",
             Self::History => "icons/custom/history.svg",
@@ -335,6 +347,7 @@ impl AssetSource for AppAssets {
         match path {
             "icons/custom/amp.svg" => Ok(Some(Cow::Borrowed(AMP_SVG.as_bytes()))),
             "icons/custom/rotate-cw.svg" => Ok(Some(Cow::Borrowed(ROTATE_CW_SVG.as_bytes()))),
+            "icons/custom/refresh-cw.svg" => Ok(Some(Cow::Borrowed(REFRESH_CW_SVG.as_bytes()))),
             "icons/custom/arrow-left.svg" => Ok(Some(Cow::Borrowed(ARROW_LEFT_SVG.as_bytes()))),
             "icons/custom/monitor.svg" => Ok(Some(Cow::Borrowed(MONITOR_SVG.as_bytes()))),
             "icons/custom/history.svg" => Ok(Some(Cow::Borrowed(HISTORY_SVG.as_bytes()))),

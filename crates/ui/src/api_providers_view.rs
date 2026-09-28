@@ -91,7 +91,7 @@ fn astrlink_primary(alpha: f32) -> Hsla {
     Hsla::from(rgb(ASTRLINK_PRIMARY)).opacity(alpha)
 }
 
-fn astrlink_primary_btn(cx: &App) -> ButtonCustomVariant {
+pub(crate) fn astrlink_primary_btn(cx: &App) -> ButtonCustomVariant {
     ButtonCustomVariant::new(cx)
         .color(Hsla::from(rgb(ASTRLINK_PRIMARY)))
         .foreground(Hsla::from(rgb(0xFFFFFF)))

@@ -4,9 +4,10 @@
 use std::collections::BTreeSet;
 
 use domain::{
-    ensure_builtin_redirects, is_builtin_model_redirect, model_redirect_issues,
-    validate_routing_settings, FailoverStrategy, FailureAction, FailurePolicy, ModelRedirect,
-    ModelRedirectIssue, RoutingSettings, MAX_MODEL_REDIRECTS, MAX_REDIRECT_MODEL_LEN,
+    default_failure_policy, ensure_builtin_redirects, is_builtin_model_redirect,
+    model_redirect_issues, validate_routing_settings, FailoverStrategy, FailureAction,
+    ModelRedirect, ModelRedirectIssue, RoutingSettings, MAX_MODEL_REDIRECTS,
+    MAX_REDIRECT_MODEL_LEN,
 };
 use gpui::{
     div, prelude::FluentBuilder, px, App, AppContext, Context, Entity, FontWeight,
@@ -19,12 +20,15 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     notification::Notification,
+    scroll::ScrollableElement as _,
+    select::{Select, SelectEvent, SelectItem, SelectState},
     switch::Switch,
     v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
 };
 use rust_i18n::t;
 
 use crate::app_view::RouterApp;
+use crate::assets::CustomIcon;
 
 const AUTOSAVE_MS: u64 = 500;
 
@@ -46,6 +50,36 @@ pub enum RoutingSaveStatus {
     Saving,
     Saved,
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailoverStrategySelectItem {
+    pub strategy: FailoverStrategy,
+    pub label: String,
+}
+
+impl SelectItem for FailoverStrategySelectItem {
+    type Value = FailoverStrategy;
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.strategy
+    }
+}
+
+fn failover_strategy_select_items() -> Vec<FailoverStrategySelectItem> {
+    // AstrLink RecoveryOrderControls: retry_first + failover_only only.
+    vec![
+        FailoverStrategySelectItem {
+            strategy: FailoverStrategy::RetryFirst,
+            label: t!("smart_routing.strategy_retry_first").to_string(),
+        },
+        FailoverStrategySelectItem {
+            strategy: FailoverStrategy::FailoverOnly,
+            label: t!("smart_routing.strategy_failover_only").to_string(),
+        },
+    ]
 }
 
 pub struct SmartRoutingState {
@@ -74,11 +108,18 @@ pub struct SmartRoutingState {
     pub redirect_filter_baseline: String,
     /// After choose / Enter / chevron-close, ignore the next Focus-driven reopen.
     pub redirect_block_open: bool,
+    pub strategy_select: Entity<SelectState<Vec<FailoverStrategySelectItem>>>,
+    pub strategy_select_sub: Option<Subscription>,
     pub max_retries_input: Entity<InputState>,
     pub initial_delay_input: Entity<InputState>,
     pub max_delay_input: Entity<InputState>,
     pub max_attempts_input: Entity<InputState>,
     pub ttl_minutes_input: Entity<InputState>,
+    /// AstrLink FailureRulesEditor: add HTTP status code field.
+    pub http_status_input: Entity<InputState>,
+    pub http_status_input_sub: Option<Subscription>,
+    /// Keep InputEvent subscriptions alive for numeric recovery / session fields.
+    pub number_input_subs: Vec<Subscription>,
 }
 
 impl SmartRoutingState {
@@ -98,6 +139,18 @@ impl SmartRoutingState {
         let ttl_minutes_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("smart_routing.ttl_minutes").to_string())
         });
+        let http_status_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("smart_routing.add_status_placeholder").to_string())
+        });
+        let strategy_select = cx.new(|cx| {
+            SelectState::new(
+                failover_strategy_select_items(),
+                Some(gpui_component::IndexPath::default().row(1)),
+                window,
+                cx,
+            )
+        });
         Self {
             draft: RoutingSettings::default(),
             baseline: String::new(),
@@ -116,11 +169,16 @@ impl SmartRoutingState {
             redirect_filter_active: false,
             redirect_filter_baseline: String::new(),
             redirect_block_open: false,
+            strategy_select,
+            strategy_select_sub: None,
             max_retries_input,
             initial_delay_input,
             max_delay_input,
             max_attempts_input,
             ttl_minutes_input,
+            http_status_input,
+            http_status_input_sub: None,
+            number_input_subs: Vec::new(),
         }
     }
 }
@@ -147,20 +205,30 @@ fn redirect_issue_message(issue: ModelRedirectIssue) -> String {
     }
 }
 
-fn failure_action_label(a: FailureAction) -> String {
-    match a {
-        FailureAction::Stop => t!("smart_routing.action_stop").to_string(),
-        FailureAction::Retry => t!("smart_routing.action_retry").to_string(),
-        FailureAction::Failover => t!("smart_routing.action_failover").to_string(),
-        FailureAction::RetryAndFailover => t!("smart_routing.action_retry_failover").to_string(),
+fn http_status_label(code: &str) -> String {
+    match code {
+        "401" => t!("smart_routing.status_401").to_string(),
+        "403" => t!("smart_routing.status_403").to_string(),
+        "408" => t!("smart_routing.status_408").to_string(),
+        "429" => t!("smart_routing.status_429").to_string(),
+        "500" => t!("smart_routing.status_500").to_string(),
+        "502" => t!("smart_routing.status_502").to_string(),
+        "503" => t!("smart_routing.status_503").to_string(),
+        "504" => t!("smart_routing.status_504").to_string(),
+        "529" => t!("smart_routing.status_529").to_string(),
+        _ => String::new(),
     }
 }
 
-fn strategy_label(s: FailoverStrategy) -> String {
-    match s {
-        FailoverStrategy::RetryFirst => t!("smart_routing.strategy_retry_first").to_string(),
-        FailoverStrategy::FailoverFirst => t!("smart_routing.strategy_failover_first").to_string(),
-        FailoverStrategy::FailoverOnly => t!("smart_routing.strategy_failover_only").to_string(),
+fn parse_http_status_code(raw: &str) -> Option<String> {
+    let code = raw.trim();
+    if code.len() == 3
+        && code.chars().all(|c| c.is_ascii_digit())
+        && (code.starts_with('4') || code.starts_with('5'))
+    {
+        Some(code.to_string())
+    } else {
+        None
     }
 }
 
@@ -172,6 +240,9 @@ impl RouterApp {
             .unwrap_or_else(|_| RoutingSettings::default());
         ensure_builtin_redirects(&mut settings);
         self.smart_routing.model_options = self.collect_routing_model_options();
+        self.ensure_routing_number_input_subs(window, cx);
+        self.ensure_routing_strategy_select_sub(window, cx);
+        self.ensure_routing_http_status_input_sub(window, cx);
         self.sync_routing_inputs_from_settings(&settings, window, cx);
         self.smart_routing.baseline =
             serde_json::to_string(&settings).unwrap_or_else(|_| "{}".into());
@@ -180,6 +251,135 @@ impl RouterApp {
         self.smart_routing.save_error = None;
         self.smart_routing.show_redirect_issues = false;
         cx.notify();
+    }
+
+    fn ensure_routing_number_input_subs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.smart_routing.number_input_subs.is_empty() {
+            return;
+        }
+        let fields = [
+            self.smart_routing.max_attempts_input.clone(),
+            self.smart_routing.max_retries_input.clone(),
+            self.smart_routing.initial_delay_input.clone(),
+            self.smart_routing.max_delay_input.clone(),
+            self.smart_routing.ttl_minutes_input.clone(),
+        ];
+        for input in fields {
+            let view = cx.entity().downgrade();
+            let sub = window.subscribe(&input, cx, move |_, event: &InputEvent, window, cx| {
+                if !matches!(
+                    event,
+                    InputEvent::Change | InputEvent::Blur | InputEvent::PressEnter { .. }
+                ) {
+                    return;
+                }
+                if let Some(entity) = view.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        this.mark_routing_dirty(window, cx);
+                    });
+                }
+            });
+            self.smart_routing.number_input_subs.push(sub);
+        }
+    }
+
+    fn ensure_routing_strategy_select_sub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.smart_routing.strategy_select_sub.is_some() {
+            return;
+        }
+        let select = self.smart_routing.strategy_select.clone();
+        let view = cx.entity().downgrade();
+        let sub = window.subscribe(
+            &select,
+            cx,
+            move |_, event: &SelectEvent<Vec<FailoverStrategySelectItem>>, window, cx| {
+                if let SelectEvent::Confirm(Some(strategy)) = event {
+                    if let Some(entity) = view.upgrade() {
+                        let strategy = *strategy;
+                        entity.update(cx, |this, cx| {
+                            this.smart_routing.draft.strategy = strategy;
+                            this.mark_routing_dirty(window, cx);
+                        });
+                    }
+                }
+            },
+        );
+        self.smart_routing.strategy_select_sub = Some(sub);
+    }
+
+    fn ensure_routing_http_status_input_sub(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.smart_routing.http_status_input_sub.is_some() {
+            return;
+        }
+        let input = self.smart_routing.http_status_input.clone();
+        let view = cx.entity().downgrade();
+        let sub = window.subscribe(
+            &input,
+            cx,
+            move |_, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => {
+                    if let Some(entity) = view.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            this.try_add_routing_http_status_rule(window, cx);
+                        });
+                    }
+                }
+                InputEvent::Change => {
+                    if let Some(entity) = view.upgrade() {
+                        entity.update(cx, |_this, cx| {
+                            cx.notify();
+                        });
+                    }
+                }
+                _ => {}
+            },
+        );
+        self.smart_routing.http_status_input_sub = Some(sub);
+    }
+
+    fn try_add_routing_http_status_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self
+            .smart_routing
+            .http_status_input
+            .read(cx)
+            .value()
+            .to_string();
+        let Some(code) = parse_http_status_code(&raw) else {
+            return;
+        };
+        if self
+            .smart_routing
+            .draft
+            .default_failure_policy
+            .http_status
+            .contains_key(&code)
+        {
+            return;
+        }
+        self.smart_routing
+            .draft
+            .default_failure_policy
+            .http_status
+            .insert(code, FailureAction::RetryAndFailover);
+        self.smart_routing
+            .http_status_input
+            .update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        self.mark_routing_dirty(window, cx);
+    }
+
+    fn reset_routing_rules_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let defaults = default_failure_policy();
+        let policy = &mut self.smart_routing.draft.default_failure_policy;
+        policy.network_error = defaults.network_error;
+        policy.response_timeout = defaults.response_timeout;
+        policy.http_status = defaults.http_status;
+        self.mark_routing_dirty(window, cx);
     }
 
     fn collect_routing_model_options(&self) -> Vec<String> {
@@ -221,6 +421,16 @@ impl RouterApp {
             .update(cx, |input, cx| {
                 input.set_value(settings.max_attempts.to_string(), window, cx);
             });
+        let select_strategy = match settings.strategy {
+            FailoverStrategy::FailoverOnly => FailoverStrategy::FailoverOnly,
+            FailoverStrategy::RetryFirst | FailoverStrategy::FailoverFirst => {
+                FailoverStrategy::RetryFirst
+            }
+        };
+        self.smart_routing.strategy_select.update(cx, |select, cx| {
+            select.set_items(failover_strategy_select_items(), window, cx);
+            select.set_selected_value(&select_strategy, window, cx);
+        });
         let minutes = (settings.channel_stickiness.ttl_seconds / 60).max(1);
         self.smart_routing
             .ttl_minutes_input
@@ -654,14 +864,16 @@ impl RouterApp {
                     ),
             )
             .child(
-                div()
+                // Match gateway: vertical scrollbar only; content height = last panel
+                // (overflow_scroll allowed unbounded empty scroll past the bottom).
+                v_flex()
                     .id("smart-routing-body")
                     .flex_1()
                     .min_h(px(0.))
                     .w_full()
                     .px(px(24.))
                     .pb(px(24.))
-                    .overflow_scroll()
+                    .overflow_y_scrollbar()
                     .child(match self.smart_routing.tab {
                         SmartRoutingTab::Redirects => {
                             self.render_routing_redirects_tab(cx).into_any_element()
@@ -1204,204 +1416,617 @@ impl RouterApp {
     }
 
     fn render_routing_recovery_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // AstrLink RoutingSettingsPanel recovery tab:
+        // Panel「失败恢复与切换」→ Switch + Select + max attempts
+        // → Panel「重试次数与等待时间」→ Panel「推理内容修复」
         let theme = cx.theme().clone();
         let allow = self.smart_routing.draft.allow_unmatched_failover;
-        let strategy = self.smart_routing.draft.strategy;
+        let failover_only = self.smart_routing.draft.strategy == FailoverStrategy::FailoverOnly;
         let thinking = self
             .smart_routing
             .draft
             .default_failure_policy
             .thinking_signature_recovery
-            .unwrap_or(false);
+            .unwrap_or(true);
         let reasoning = self
             .smart_routing
             .draft
             .default_failure_policy
             .openai_reasoning_recovery
-            .unwrap_or(false);
-        let fn_out = self
+            .unwrap_or(true);
+        let function_out = self
             .smart_routing
             .draft
             .default_failure_policy
             .openai_function_output_recovery
             .unwrap_or(false);
+        let retry_hint = if failover_only {
+            t!("smart_routing.retry_once_hint").to_string()
+        } else {
+            t!("smart_routing.retry_all_services_hint").to_string()
+        };
 
+        // Full-bleed panels (no max_w) so every card shares the same right edge.
         v_flex()
             .w_full()
-            .gap(px(16.))
-            .child(self.routing_section_title(
-                t!("smart_routing.recovery_title").to_string(),
-                t!("smart_routing.recovery_hint").to_string(),
-                cx,
-            ))
+            .gap(px(12.))
+            // Panel 1: 失败恢复与切换
             .child(
-                h_flex()
-                    .gap(px(10.))
-                    .items_center()
-                    .child(
-                        Checkbox::new("sr-allow-failover")
-                            .checked(allow)
-                            .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                this.smart_routing.draft.allow_unmatched_failover = *checked;
-                                this.mark_routing_dirty(window, cx);
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .child(t!("smart_routing.allow_unmatched_failover").to_string()),
-                    ),
+                self.routing_settings_panel(
+                    t!("smart_routing.order_title").to_string(),
+                    t!("smart_routing.order_hint").to_string(),
+                    v_flex()
+                        .w_full()
+                        .gap(px(16.))
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .gap(px(8.))
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap(px(8.))
+                                        .items_center()
+                                        .child(
+                                            Switch::new("sr-allow-failover")
+                                                .checked(allow)
+                                                .on_click(cx.listener(
+                                                    |this, checked: &bool, window, cx| {
+                                                        this.smart_routing
+                                                            .draft
+                                                            .allow_unmatched_failover = *checked;
+                                                        this.mark_routing_dirty(window, cx);
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(theme.foreground)
+                                                .child(
+                                                    t!("smart_routing.global_switch").to_string(),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(t!("smart_routing.global_off_hint").to_string()),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.))
+                                .items_start()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .w_full()
+                                        .gap(px(6.))
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.foreground)
+                                                .child(t!("smart_routing.order").to_string()),
+                                        )
+                                        .child(
+                                            Select::new(&self.smart_routing.strategy_select)
+                                                .small()
+                                                .w_full(),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .w_full()
+                                        .gap(px(6.))
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(theme.foreground)
+                                                .child(
+                                                    t!("smart_routing.max_attempts").to_string(),
+                                                ),
+                                        )
+                                        .child(
+                                            Input::new(&self.smart_routing.max_attempts_input)
+                                                .small()
+                                                .cleanable(true)
+                                                .w_full(),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(11.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(
+                                                    t!("smart_routing.max_attempts_hint")
+                                                        .to_string(),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .into_any_element(),
+                    cx,
+                ),
             )
+            // Panel 2: 重试次数与等待时间 — same 2-col grid as AstrLink
+            .child(
+                self.routing_settings_panel(
+                    t!("smart_routing.retry_title").to_string(),
+                    retry_hint,
+                    v_flex()
+                        .w_full()
+                        .gap(px(12.))
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.))
+                                .items_start()
+                                .child(self.routing_field_input(
+                                    t!("smart_routing.max_retries").to_string(),
+                                    Some(t!("smart_routing.max_retries_hint").to_string()),
+                                    &self.smart_routing.max_retries_input,
+                                    cx,
+                                ))
+                                .child(self.routing_field_input(
+                                    t!("smart_routing.initial_delay").to_string(),
+                                    None,
+                                    &self.smart_routing.initial_delay_input,
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            // AstrLink: max_delay sits in left half of the 2-col grid.
+                            h_flex()
+                                .w_full()
+                                .gap(px(12.))
+                                .items_start()
+                                .child(self.routing_field_input(
+                                    t!("smart_routing.max_delay").to_string(),
+                                    Some(t!("smart_routing.max_delay_hint").to_string()),
+                                    &self.smart_routing.max_delay_input,
+                                    cx,
+                                ))
+                                .child(div().flex_1().min_w(px(0.))),
+                        )
+                        .into_any_element(),
+                    cx,
+                ),
+            )
+            // Panel 3: 推理内容修复
+            .child(
+                self.routing_settings_panel(
+                    t!("smart_routing.repair_title").to_string(),
+                    t!("smart_routing.repair_hint").to_string(),
+                    v_flex()
+                        .w_full()
+                        .gap(px(14.))
+                        .child(self.routing_switch_field(
+                            "sr-think-repair",
+                            thinking,
+                            t!("smart_routing.repair_thinking").to_string(),
+                            t!("smart_routing.repair_thinking_hint").to_string(),
+                            |draft, v| {
+                                draft.default_failure_policy.thinking_signature_recovery = Some(v);
+                            },
+                            cx,
+                        ))
+                        .child(self.routing_switch_field(
+                            "sr-reason-repair",
+                            reasoning,
+                            t!("smart_routing.repair_reasoning").to_string(),
+                            t!("smart_routing.repair_reasoning_hint").to_string(),
+                            |draft, v| {
+                                draft.default_failure_policy.openai_reasoning_recovery = Some(v);
+                            },
+                            cx,
+                        ))
+                        .child(self.routing_switch_field(
+                            "sr-function-repair",
+                            function_out,
+                            t!("smart_routing.repair_function").to_string(),
+                            t!("smart_routing.repair_function_hint").to_string(),
+                            |draft, v| {
+                                draft.default_failure_policy.openai_function_output_recovery =
+                                    Some(v);
+                            },
+                            cx,
+                        ))
+                        .into_any_element(),
+                    cx,
+                ),
+            )
+    }
+
+    fn routing_settings_panel(
+        &self,
+        title: String,
+        hint: String,
+        body: impl IntoElement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        v_flex()
+            .w_full()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .overflow_hidden()
             .child(
                 v_flex()
-                    .gap(px(8.))
+                    .w_full()
+                    .gap(px(4.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
+                            .child(title),
+                    )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(t!("smart_routing.strategy").to_string()),
-                    )
-                    .child(
-                        h_flex()
-                            .gap(px(6.))
-                            .children(FailoverStrategy::all().iter().map(|s| {
-                                let selected = strategy == *s;
-                                let label = strategy_label(*s);
-                                let s = *s;
-                                Button::new(SharedString::from(format!("sr-strat-{}", s.as_str())))
-                                    .when(selected, |b| b.primary())
-                                    .when(!selected, |b| b.outline())
-                                    .label(label)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.smart_routing.draft.strategy = s;
-                                        this.mark_routing_dirty(window, cx);
-                                    }))
-                            })),
+                            .text_color(theme.muted_foreground)
+                            .child(hint),
                     ),
             )
-            .child(self.routing_labeled_input(
-                t!("smart_routing.max_attempts").to_string(),
-                &self.smart_routing.max_attempts_input,
-                cx,
-            ))
-            .child(self.routing_labeled_input(
-                t!("smart_routing.max_retries").to_string(),
-                &self.smart_routing.max_retries_input,
-                cx,
-            ))
-            .child(self.routing_labeled_input(
-                t!("smart_routing.initial_delay").to_string(),
-                &self.smart_routing.initial_delay_input,
-                cx,
-            ))
-            .child(self.routing_labeled_input(
-                t!("smart_routing.max_delay").to_string(),
-                &self.smart_routing.max_delay_input,
-                cx,
-            ))
+            .child(div().w_full().p(px(16.)).child(body))
+    }
+
+    fn routing_field_input(
+        &self,
+        label: String,
+        hint: Option<String>,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        v_flex()
+            .flex_1()
+            .w_full()
+            .gap(px(6.))
+            .min_w(px(0.))
             .child(
                 div()
                     .text_size(px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.foreground)
-                    .child(t!("smart_routing.repair_title").to_string()),
+                    .child(label),
             )
-            .child(self.routing_checkbox_row(
-                "sr-think-repair",
-                thinking,
-                t!("smart_routing.repair_thinking").to_string(),
-                |draft, v| {
-                    draft.default_failure_policy.thinking_signature_recovery = Some(v);
-                },
-                cx,
-            ))
-            .child(self.routing_checkbox_row(
-                "sr-reason-repair",
-                reasoning,
-                t!("smart_routing.repair_reasoning").to_string(),
-                |draft, v| {
-                    draft.default_failure_policy.openai_reasoning_recovery = Some(v);
-                },
-                cx,
-            ))
-            .child(self.routing_checkbox_row(
-                "sr-fn-repair",
-                fn_out,
-                t!("smart_routing.repair_function").to_string(),
-                |draft, v| {
-                    draft.default_failure_policy.openai_function_output_recovery = Some(v);
-                },
-                cx,
-            ))
+            .child(Input::new(input).small().cleanable(true).w_full())
+            .when_some(hint, |this, hint| {
+                this.child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.muted_foreground)
+                        .child(hint),
+                )
+            })
+    }
+
+    fn routing_switch_field(
+        &self,
+        id: &'static str,
+        checked: bool,
+        label: String,
+        hint: String,
+        set: impl Fn(&mut RoutingSettings, bool) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        // Label+hint stretch left; Switch sits in a fixed right column so every
+        // row shares one vertical edge flush with the panel.
+        h_flex()
+            .w_full()
+            .items_start()
+            .justify_between()
+            .gap(px(16.))
             .child(
-                Button::new("sr-recovery-apply")
-                    .outline()
-                    .label(t!("smart_routing.apply_number_edits").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.mark_routing_dirty(window, cx);
-                        this.persist_smart_routing(window, cx);
-                    })),
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.foreground)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme.muted_foreground)
+                            .child(hint),
+                    ),
             )
+            .child(div().flex_shrink_0().pt(px(2.)).child(
+                Switch::new(id).checked(checked).on_click(cx.listener(
+                    move |this, checked: &bool, window, cx| {
+                        set(&mut this.smart_routing.draft, *checked);
+                        this.mark_routing_dirty(window, cx);
+                    },
+                )),
+            ))
     }
 
     fn render_routing_rules_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let network = self
+        // AstrLink FailureRulesEditor: title + help + reset → table → add row.
+        let theme = cx.theme().clone();
+        let policy = &self.smart_routing.draft.default_failure_policy;
+        let help_body = format!(
+            "{}\n\n{}\n\n{}",
+            t!("smart_routing.rules_hint"),
+            t!("smart_routing.retry_rules_hint"),
+            t!("smart_routing.other_errors")
+        );
+
+        let mut rows: Vec<(String, Option<String>, FailureAction)> = Vec::new();
+        rows.push(("network_error".into(), None, policy.network_error));
+        rows.push(("response_timeout".into(), None, policy.response_timeout));
+        let mut codes: Vec<_> = policy.http_status.keys().cloned().collect();
+        codes.sort_by(|a, b| {
+            a.parse::<u16>()
+                .unwrap_or(0)
+                .cmp(&b.parse::<u16>().unwrap_or(0))
+        });
+        for code in codes {
+            let action = policy
+                .http_status
+                .get(&code)
+                .copied()
+                .unwrap_or(FailureAction::Stop);
+            rows.push((code.clone(), Some(code), action));
+        }
+
+        let raw_status = self
             .smart_routing
-            .draft
-            .default_failure_policy
-            .network_error;
-        let timeout = self
-            .smart_routing
-            .draft
-            .default_failure_policy
-            .response_timeout;
-        let codes = [
-            "401", "403", "408", "429", "500", "502", "503", "504", "529",
-        ];
+            .http_status_input
+            .read(cx)
+            .value()
+            .to_string();
+        let can_add = parse_http_status_code(&raw_status)
+            .map(|code| !policy.http_status.contains_key(&code))
+            .unwrap_or(false);
 
         v_flex()
             .w_full()
-            .gap(px(16.))
-            .child(self.routing_section_title(
-                t!("smart_routing.rules_title").to_string(),
-                t!("smart_routing.rules_hint").to_string(),
-                cx,
-            ))
-            .child(self.routing_action_picker(
-                "network",
-                t!("smart_routing.network_error").to_string(),
-                network,
-                |p, a| p.network_error = a,
-                cx,
-            ))
-            .child(self.routing_action_picker(
-                "timeout",
-                t!("smart_routing.response_timeout").to_string(),
-                timeout,
-                |p, a| p.response_timeout = a,
-                cx,
-            ))
-            .children(codes.iter().map(|code| {
-                let action = self
-                    .smart_routing
-                    .draft
-                    .default_failure_policy
-                    .http_status
-                    .get(*code)
-                    .copied()
-                    .unwrap_or(FailureAction::Stop);
-                let code_owned = (*code).to_string();
-                self.routing_action_picker(
-                    *code,
-                    format!("HTTP {code}"),
-                    action,
-                    move |p, a| {
-                        p.http_status.insert(code_owned.clone(), a);
-                    },
-                    cx,
-                )
-                .into_any_element()
+            .gap(px(8.))
+            // Header: title + help | reset
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.foreground)
+                                    .child(t!("smart_routing.rules_title").to_string()),
+                            )
+                            .child(
+                                Button::new("sr-rules-help")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(CustomIcon::HelpCircle)
+                                    .tooltip(help_body),
+                            ),
+                    )
+                    .child(
+                        Button::new("sr-rules-reset")
+                            .ghost()
+                            .small()
+                            .icon(CustomIcon::RotateCw)
+                            .label(t!("smart_routing.reset_section").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_routing_rules_section(window, cx);
+                            })),
+                    ),
+            )
+            // Table header
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .h(px(36.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.muted_foreground)
+                            .child(t!("smart_routing.error_type").to_string()),
+                    )
+                    .child(
+                        div()
+                            .w(px(96.))
+                            .flex_shrink_0()
+                            .text_center()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.muted_foreground)
+                            .child(t!("smart_routing.allow_retry").to_string()),
+                    )
+                    .child(div().w(px(40.)).flex_shrink_0()),
+            )
+            // Rows
+            .children(rows.into_iter().map(|(key, code, action)| {
+                self.routing_rule_row(key, code, action, cx)
+                    .into_any_element()
             }))
+            // Add rule footer
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap(px(8.))
+                    .pt(px(8.))
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        div().w(px(128.)).child(
+                            Input::new(&self.smart_routing.http_status_input)
+                                .small()
+                                .cleanable(true)
+                                .w_full(),
+                        ),
+                    )
+                    .child(
+                        Button::new("sr-rules-add")
+                            .outline()
+                            .small()
+                            .icon(IconName::Plus)
+                            .label(t!("smart_routing.add_rule").to_string())
+                            .disabled(!can_add)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.try_add_routing_http_status_rule(window, cx);
+                            })),
+                    ),
+            )
+    }
+
+    fn routing_rule_row(
+        &self,
+        key: String,
+        code: Option<String>,
+        action: FailureAction,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let allow = action != FailureAction::Stop;
+        let is_http = code.is_some();
+        let label_el: gpui::AnyElement = if let Some(ref code) = code {
+            let status = http_status_label(code);
+            h_flex()
+                .items_baseline()
+                .gap(px(12.))
+                .flex_wrap()
+                .child(
+                    div()
+                        .font_family("Menlo")
+                        .text_size(px(12.))
+                        .text_color(theme.foreground)
+                        .child(t!("smart_routing.http_code", code = code.as_str()).to_string()),
+                )
+                .when(!status.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme.muted_foreground)
+                            .child(status),
+                    )
+                })
+                .into_any_element()
+        } else {
+            let label = if key == "network_error" {
+                t!("smart_routing.network_error").to_string()
+            } else {
+                t!("smart_routing.response_timeout").to_string()
+            };
+            div()
+                .text_size(px(12.))
+                .text_color(theme.foreground)
+                .child(label)
+                .into_any_element()
+        };
+        let code_for_switch = code.clone();
+        let key_for_switch = key.clone();
+        let code_for_remove = code.clone();
+
+        h_flex()
+            .id(SharedString::from(format!("sr-rule-{key}")))
+            .w_full()
+            .items_center()
+            .h(px(36.))
+            .border_b_1()
+            .border_color(theme.border.opacity(0.7))
+            .child(div().flex_1().min_w(px(0.)).child(label_el))
+            .child(
+                h_flex()
+                    .w(px(96.))
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        Switch::new(SharedString::from(format!("sr-rule-sw-{key}")))
+                            .checked(allow)
+                            .xsmall()
+                            .on_click(cx.listener(move |this, checked: &bool, window, cx| {
+                                let next = if *checked {
+                                    FailureAction::RetryAndFailover
+                                } else {
+                                    FailureAction::Stop
+                                };
+                                let policy = &mut this.smart_routing.draft.default_failure_policy;
+                                if let Some(ref code) = code_for_switch {
+                                    policy.http_status.insert(code.clone(), next);
+                                } else if key_for_switch == "network_error" {
+                                    policy.network_error = next;
+                                } else {
+                                    policy.response_timeout = next;
+                                }
+                                this.mark_routing_dirty(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .w(px(40.))
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .when(is_http, |el| {
+                        el.child(
+                            Button::new(SharedString::from(format!(
+                                "sr-rule-del-{}",
+                                code_for_remove.as_deref().unwrap_or("")
+                            )))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(
+                                t!(
+                                    "smart_routing.remove_code",
+                                    code = code_for_remove.as_deref().unwrap_or("")
+                                )
+                                .to_string(),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    if let Some(ref code) = code_for_remove {
+                                        this.smart_routing
+                                            .draft
+                                            .default_failure_policy
+                                            .http_status
+                                            .remove(code);
+                                        this.mark_routing_dirty(window, cx);
+                                    }
+                                },
+                            )),
+                        )
+                    }),
+            )
     }
 
     fn render_routing_session_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1437,15 +2062,6 @@ impl RouterApp {
                 &self.smart_routing.ttl_minutes_input,
                 cx,
             ))
-            .child(
-                Button::new("sr-session-apply")
-                    .outline()
-                    .label(t!("smart_routing.apply_number_edits").to_string())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.mark_routing_dirty(window, cx);
-                        this.persist_smart_routing(window, cx);
-                    })),
-            )
     }
 
     fn render_routing_identity_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1512,7 +2128,7 @@ impl RouterApp {
         let theme = cx.theme().clone();
         v_flex()
             .gap(px(6.))
-            .max_w(px(320.))
+            .w_full()
             .child(
                 div()
                     .text_size(px(12.))
@@ -1520,7 +2136,7 @@ impl RouterApp {
                     .text_color(theme.foreground)
                     .child(label),
             )
-            .child(Input::new(input).cleanable(true))
+            .child(Input::new(input).small().cleanable(true))
     }
 
     fn routing_checkbox_row(
@@ -1541,44 +2157,5 @@ impl RouterApp {
                 },
             )))
             .child(div().text_size(px(13.)).child(label))
-    }
-
-    fn routing_action_picker(
-        &self,
-        id: &str,
-        label: String,
-        current: FailureAction,
-        set: impl Fn(&mut FailurePolicy, FailureAction) + Clone + 'static,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        v_flex()
-            .gap(px(8.))
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.foreground)
-                    .child(label),
-            )
-            .child(
-                h_flex()
-                    .gap(px(6.))
-                    .flex_wrap()
-                    .children(FailureAction::all().iter().map(|a| {
-                        let selected = current == *a;
-                        let a = *a;
-                        let set = set.clone();
-                        Button::new(SharedString::from(format!("sr-act-{id}-{}", a.as_str())))
-                            .when(selected, |b| b.primary())
-                            .when(!selected, |b| b.outline())
-                            .xsmall()
-                            .label(failure_action_label(a))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                set(&mut this.smart_routing.draft.default_failure_policy, a);
-                                this.mark_routing_dirty(window, cx);
-                            }))
-                    })),
-            )
     }
 }
