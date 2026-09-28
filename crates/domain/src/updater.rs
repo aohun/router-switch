@@ -287,8 +287,7 @@ pub fn download_release_asset(
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok());
     let mut reader = resp.into_reader();
-    let mut file =
-        std::fs::File::create(&dest).map_err(|e| format!("写入更新文件失败: {e}"))?;
+    let mut file = std::fs::File::create(&dest).map_err(|e| format!("写入更新文件失败: {e}"))?;
     let mut buf = [0u8; 64 * 1024];
     let mut downloaded: u64 = 0;
     loop {
@@ -399,16 +398,14 @@ fn install_macos_dmg(dmg: &Path) -> Result<ApplyUpdateOutcome, String> {
                     .unwrap_or("RouterSwitch.app")
             ));
             let _ = std::fs::remove_dir_all(&backup);
-            std::fs::rename(&dest, &backup)
-                .map_err(|e| format!("备份旧版本失败: {e}"))?;
+            std::fs::rename(&dest, &backup).map_err(|e| format!("备份旧版本失败: {e}"))?;
             if let Err(err) = std::fs::rename(&staging, &dest) {
                 let _ = std::fs::rename(&backup, &dest);
                 return Err(format!("替换应用失败: {err}"));
             }
             let _ = std::fs::remove_dir_all(&backup);
         } else {
-            std::fs::rename(&staging, &dest)
-                .map_err(|e| format!("安装应用失败: {e}"))?;
+            std::fs::rename(&staging, &dest).map_err(|e| format!("安装应用失败: {e}"))?;
         }
 
         let _ = std::process::Command::new("open").arg(&dest).spawn();

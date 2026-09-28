@@ -41,6 +41,11 @@
 - 导航位置：仪表盘组下独立菜单 **API 服务商**（`Route::ApiProviders`），列表交互对齐 AstrLink：状态分段（全部 / 已启用 / 已停用）、搜索、按模型筛选、拖拽排序、启用开关、测试 / 编辑 / 更多菜单。
 - 能力面：创建 / 编辑（连接 · 模型 · 协议 · 失败处理）、订阅类 OAuth / Device Code、HTTP 密钥、模型探测、用量 / 费用展示——逐步对齐 AstrLink，数据落在 `~/.router-switch/app.db` 的 `api_providers` 表，**不得**把 AstrLink 本机密钥或数据库拷进本仓库。
 - 术语：对外文案用「**API 服务商**」；与既有 `provider.*`（各 Agent Live 配置）命名空间分开，使用 `api_providers.*`。
+- **列表顺序 = 上游优先级**（对齐 AstrLink `service-order` / `StoreResolver`）：
+  - UI：行左侧 Grip + 全局序号；拖拽 / ↑↓ 调整顺序；筛选视图重排时只改可见项在全局序列中的槽位（停用项仍占位）。
+  - 持久化：`api_providers.sort_index`（及 `data_json` 内字段）由 `Store::replace_api_provider_order` 原子重写；全量 ID 必须一一对应。
+  - 路由真相源：`domain::resolve_upstream_candidates`（按 `sort_index`、跳过停用、按模型/协议过滤）；`Workspace::resolve_api_upstream_candidates` 供后续网关故障转移接入。对照：`AstrLink` 的 `OrderedList` / `use-service-order` / `store_resolver.go`。
+- **智能路由**（`Route::SmartRouting`，位于 API 服务商正下方）对齐 AstrLink `RouteManager` / `RoutingSettingsPanel`：五页签（模型重定向 / 恢复与重试 / 错误规则 / 会话粘性 / 转发身份）+ 500ms 自动保存；配置落在 `kv.routing_settings`（`domain::RoutingSettings`）。网关运行时消费（重定向 / 故障转移 / 粘性 / 身份头）另开任务，本阶段仅 UI + 持久化。
 
 ---
 
@@ -105,6 +110,10 @@ router-switch/
 - **UI 开发规范**：实现 UI 界面时，优先使用 [GPUI Component](https://longbridge.github.io/gpui-component)。
 - **国际化维护**：若在 UI 中增加新文本或修改文案，必须同步更新 `crates/ui/locales/zh-CN.yml` 与 `crates/ui/locales/en.yml`。
 - **术语规范**：统一使用“**服务商**”（Provider），不再使用“供应商”。
+- **完成后必须重启应用（强制）**：凡改动可影响桌面端行为的任务（UI / session / store / domain / gateway / 文案资源等），在一轮实现或修复结束后，Agent **必须**结束旧进程并用最新代码重新启动应用，便于用户立刻验证，不得只编译不启动：
+  1. `pkill -f 'target/debug/router-switch' 2>/dev/null || true`（或等价方式结束本仓 debug 实例）
+  2. 在仓库根目录执行：`cargo run -p router-switch`
+  3. 确认日志出现 `Running \`target/debug/router-switch\`` 后再向用户汇报完成
 
 ---
 

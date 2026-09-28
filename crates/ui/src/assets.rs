@@ -208,6 +208,29 @@ const BOOK_OPEN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
   <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
 </svg>"#;
 
+/// AstrLink list action: SquarePen (edit).
+const SQUARE_PEN_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+  <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>
+</svg>"#;
+
+/// AstrLink list action: Flask / FlaskConical (connectivity test).
+const FLASK_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/>
+  <path d="M6.453 15h11.094"/>
+  <path d="M8.5 2h7"/>
+</svg>"#;
+
+/// AstrLink OrderedList drag handle.
+const GRIP_VERTICAL_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="9" cy="12" r="1"/>
+  <circle cx="9" cy="5" r="1"/>
+  <circle cx="9" cy="19" r="1"/>
+  <circle cx="15" cy="12" r="1"/>
+  <circle cx="15" cy="5" r="1"/>
+  <circle cx="15" cy="19" r="1"/>
+</svg>"#;
+
 const MONITOR_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <rect width="20" height="14" x="2" y="3" rx="2"/>
   <line x1="8" x2="16" y1="21" y2="21"/>
@@ -256,6 +279,12 @@ pub enum CustomIcon {
     HelpCircle,
     Download,
     ArrowUpDown,
+    /// AstrLink service-row edit (SquarePen).
+    SquarePen,
+    /// AstrLink service-row connectivity test (Flask).
+    Flask,
+    /// AstrLink OrderedList drag handle.
+    GripVertical,
 }
 
 impl IconNamed for CustomIcon {
@@ -290,6 +319,9 @@ impl IconNamed for CustomIcon {
             Self::HelpCircle => "icons/custom/help-circle.svg",
             Self::Download => "icons/custom/download.svg",
             Self::ArrowUpDown => "icons/custom/arrow-up-down.svg",
+            Self::SquarePen => "icons/custom/square-pen.svg",
+            Self::Flask => "icons/custom/flask.svg",
+            Self::GripVertical => "icons/custom/grip-vertical.svg",
         }
         .into()
     }
@@ -314,6 +346,11 @@ impl AssetSource for AppAssets {
             "icons/custom/download.svg" => Ok(Some(Cow::Borrowed(DOWNLOAD_SVG.as_bytes()))),
             "icons/custom/arrow-up-down.svg" => {
                 Ok(Some(Cow::Borrowed(ARROW_UP_DOWN_SVG.as_bytes())))
+            }
+            "icons/custom/square-pen.svg" => Ok(Some(Cow::Borrowed(SQUARE_PEN_SVG.as_bytes()))),
+            "icons/custom/flask.svg" => Ok(Some(Cow::Borrowed(FLASK_SVG.as_bytes()))),
+            "icons/custom/grip-vertical.svg" => {
+                Ok(Some(Cow::Borrowed(GRIP_VERTICAL_SVG.as_bytes())))
             }
             "brands/newapi-logo.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/brands/newapi-logo.svg"
@@ -361,6 +398,9 @@ impl AssetSource for AppAssets {
             list.push("icons/custom/book-open.svg".into());
             list.push("icons/custom/chart-curve.svg".into());
             list.push("icons/custom/activity.svg".into());
+            list.push("icons/custom/square-pen.svg".into());
+            list.push("icons/custom/flask.svg".into());
+            list.push("icons/custom/grip-vertical.svg".into());
         }
         Ok(list)
     }

@@ -1,17 +1,17 @@
 use domain::{
-    apply_downloaded_update, check_app_update, download_release_asset,
-    extract_claude_base_url, extract_claude_model, extract_codex_base_url,
-    extract_codex_model, extract_cursor_base_url, extract_cursor_model, extract_grok_base_url,
-    extract_grok_model, extract_opencode_base_url, extract_opencode_model, extract_zcode_base_url,
-    extract_zcode_model, is_workbuddy_upstream, parse_clipboard_provider_info,
-    workbuddy_model_context_length, AppKind, AppRelease, ApplyUpdateOutcome, ClaudeForm,
-    ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo, CodexForm, CodexKind, CodexModelMapping,
-    CursorForm, CursorKind, CursorModelMapping, GrokForm, GrokKind, GrokModelMapping, OpenCodeForm,
-    OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind, PiModelMapping, Provider, ProviderForm,
-    ProviderSettings, RequestProtocol, ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind,
-    ZCodeForm, ZCodeKind, ZCodeModelMapping, CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL,
-    DEFAULT_CODEX_MODEL, DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL,
-    DEFAULT_PI_MODEL, DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
+    apply_downloaded_update, check_app_update, download_release_asset, extract_claude_base_url,
+    extract_claude_model, extract_codex_base_url, extract_codex_model, extract_cursor_base_url,
+    extract_cursor_model, extract_grok_base_url, extract_grok_model, extract_opencode_base_url,
+    extract_opencode_model, extract_zcode_base_url, extract_zcode_model, is_workbuddy_upstream,
+    parse_clipboard_provider_info, workbuddy_model_context_length, AppKind, AppRelease,
+    ApplyUpdateOutcome, ClaudeForm, ClaudeKind, ClaudeModelMapping, ClipboardProviderInfo,
+    CodexForm, CodexKind, CodexModelMapping, CursorForm, CursorKind, CursorModelMapping, GrokForm,
+    GrokKind, GrokModelMapping, OpenCodeForm, OpenCodeKind, OpenCodeModelMapping, PiForm, PiKind,
+    PiModelMapping, Provider, ProviderForm, ProviderSettings, RequestProtocol,
+    ToolEnvironmentStatus, WorkBuddyForm, WorkBuddyKind, ZCodeForm, ZCodeKind, ZCodeModelMapping,
+    CLAUDE_PRESETS, CURSOR_PRESETS, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL,
+    DEFAULT_CURSOR_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OPENCODE_MODEL, DEFAULT_PI_MODEL,
+    DEFAULT_THINKING_EFFORT, DEFAULT_WORKBUDDY_MODEL, DEFAULT_WORKBUDDY_VENDOR,
     DEFAULT_ZCODE_MODEL, DEFAULT_ZCODE_PROVIDER_KIND, GROK_PRESETS, OPENCODE_PRESETS, PI_PRESETS,
     RESPONSES_PRESETS, THINKING_EFFORTS, WORKBUDDY_CODEBUDDY_PRESET_ID, WORKBUDDY_PRESETS,
     WORKBUDDY_UPSTREAM_BASE, ZCODE_PRESETS,
@@ -791,6 +791,8 @@ pub enum Route {
     Dashboard,
     /// Gateway upstream registry (AstrLink ServiceManager alignment).
     ApiProviders,
+    /// AstrLink RoutingSettingsPanel (UI + autosave; runtime apply later).
+    SmartRouting,
     Skills,
     Sessions,
     Prompts,
@@ -1055,6 +1057,8 @@ pub struct RouterApp {
     pub(crate) preferred_open_target: Option<session::session_index::OpenTarget>,
     /// AstrLink-aligned gateway API providers page state.
     pub(crate) api_providers: crate::api_providers_view::ApiProvidersState,
+    /// AstrLink-aligned smart routing settings page state.
+    pub(crate) smart_routing: crate::smart_routing_view::SmartRoutingState,
     prompts_app: AppKind,
     prompts_list: Vec<domain::Prompt>,
     prompts_loading: bool,
@@ -1405,6 +1409,7 @@ impl RouterApp {
             open_target_icons: std::collections::HashMap::new(),
             preferred_open_target: None,
             api_providers: crate::api_providers_view::ApiProvidersState::new(window, cx),
+            smart_routing: crate::smart_routing_view::SmartRoutingState::new(window, cx),
             prompts_app: AppKind::Codex,
             prompts_list: Vec::new(),
             prompts_loading: false,
@@ -1608,7 +1613,7 @@ impl RouterApp {
         app
     }
 
-    fn reload_oauth_statuses(&mut self) {
+    pub(crate) fn reload_oauth_statuses(&mut self) {
         self.codex_oauth_status = self.workspace.oauth_status(session::CODEX_PROVIDER).ok();
         self.xai_oauth_status = self.workspace.oauth_status(session::XAI_PROVIDER).ok();
         self.workbuddy_oauth_status = self
@@ -1617,19 +1622,29 @@ impl RouterApp {
             .ok();
     }
 
-    fn start_oauth_login(
+    pub(crate) fn start_oauth_login(
         &mut self,
         provider: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.oauth_pending.is_some() {
+            if let Some(id) = self.api_providers.pending_oauth_provider_id.take() {
+                self.mark_api_provider_auth_error(
+                    &id,
+                    "已有登录流程进行中, 请先完成或等待超时".into(),
+                    cx,
+                );
+            }
             notify_info("已有登录流程进行中, 请先完成或等待超时", window, cx);
             return;
         }
         let start = match self.workspace.oauth_start_login(provider) {
             Ok(start) => start,
             Err(err) => {
+                if let Some(id) = self.api_providers.pending_oauth_provider_id.take() {
+                    self.mark_api_provider_auth_error(&id, err.to_string(), cx);
+                }
                 self.fail(err, window, cx);
                 return;
             }
@@ -1679,6 +1694,15 @@ impl RouterApp {
                             .unwrap_or(0);
                         if now >= login.deadline {
                             let _ = view.update(&mut cx, |this, cx| {
+                                if let Some(id) =
+                                    this.api_providers.pending_oauth_provider_id.take()
+                                {
+                                    this.mark_api_provider_auth_error(
+                                        &id,
+                                        t!("auth.login_expired").to_string(),
+                                        cx,
+                                    );
+                                }
                                 this.oauth_pending = None;
                                 cx.notify();
                             });
@@ -1720,30 +1744,75 @@ impl RouterApp {
                                         this.workspace.oauth_complete(login.provider, &tokens)
                                     })
                                     .map(|inner| inner);
-                                let _ = view.update(&mut cx, |this, cx| {
-                                    this.oauth_pending = None;
-                                    this.reload_oauth_statuses();
-                                    cx.notify();
-                                });
-                                let _ = cx.update(|window: &mut Window, cx: &mut App| match save {
-                                    Ok(Ok(())) => window.push_notification(
-                                        Notification::success(t!("auth.login_success").to_string()),
-                                        cx,
-                                    ),
-                                    Ok(Err(err)) => window.push_notification(
-                                        Notification::error(err.to_string()),
-                                        cx,
-                                    ),
-                                    Err(err) => window.push_notification(
-                                        Notification::error(err.to_string()),
-                                        cx,
-                                    ),
+                                let _ = cx.update(|window: &mut Window, cx: &mut App| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        if let Some(id) =
+                                            this.api_providers.pending_oauth_provider_id.take()
+                                        {
+                                            match &save {
+                                                Ok(Ok(())) => {
+                                                    let hint =
+                                                        Self::account_hint_from_tokens(&tokens);
+                                                    this.mark_api_provider_connected(
+                                                        &id, hint, window, cx,
+                                                    );
+                                                }
+                                                Ok(Err(err)) => {
+                                                    this.mark_api_provider_auth_error(
+                                                        &id,
+                                                        err.to_string(),
+                                                        cx,
+                                                    );
+                                                }
+                                                Err(err) => {
+                                                    this.mark_api_provider_auth_error(
+                                                        &id,
+                                                        err.to_string(),
+                                                        cx,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        this.oauth_pending = None;
+                                        this.reload_oauth_statuses();
+                                        cx.notify();
+                                    });
+                                    match save {
+                                        Ok(Ok(())) => window.push_notification(
+                                            Notification::success(
+                                                t!("auth.login_success").to_string(),
+                                            ),
+                                            cx,
+                                        ),
+                                        Ok(Err(err)) => window.push_notification(
+                                            Notification::error(err.to_string()),
+                                            cx,
+                                        ),
+                                        Err(err) => window.push_notification(
+                                            Notification::error(err.to_string()),
+                                            cx,
+                                        ),
+                                    }
                                 });
                                 break;
                             }
                             session::DevicePollStatus::Expired
                             | session::DevicePollStatus::AccessDenied => {
                                 let _ = view.update(&mut cx, |this, cx| {
+                                    if let Some(id) =
+                                        this.api_providers.pending_oauth_provider_id.take()
+                                    {
+                                        this.mark_api_provider_auth_error(
+                                            &id,
+                                            match status {
+                                                session::DevicePollStatus::Expired => {
+                                                    t!("auth.login_expired").to_string()
+                                                }
+                                                _ => t!("auth.login_denied").to_string(),
+                                            },
+                                            cx,
+                                        );
+                                    }
                                     this.oauth_pending = None;
                                     cx.notify();
                                 });
@@ -1762,6 +1831,11 @@ impl RouterApp {
                             }
                             session::DevicePollStatus::Failed { message } => {
                                 let _ = view.update(&mut cx, |this, cx| {
+                                    if let Some(id) =
+                                        this.api_providers.pending_oauth_provider_id.take()
+                                    {
+                                        this.mark_api_provider_auth_error(&id, message.clone(), cx);
+                                    }
                                     this.oauth_pending = None;
                                     cx.notify();
                                 });
@@ -1910,7 +1984,7 @@ impl RouterApp {
         for (input, value) in updates {
             input.update(cx, |state, cx| state.set_value(value, window, cx));
         }
-        self.set_route(Route::UsageScript, cx);
+        self.set_route(Route::UsageScript, window, cx);
     }
 
     fn collect_usage_config(&self, cx: &Context<Self>) -> domain::UsageScriptConfig {
@@ -1959,7 +2033,7 @@ impl RouterApp {
         } else {
             self.previous_route
         };
-        self.set_route(back, cx);
+        self.set_route(back, window, cx);
     }
 
     fn test_usage_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2128,7 +2202,7 @@ impl RouterApp {
             .collect()
     }
 
-    fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
+    fn set_route(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         // Skills / Prompts / Notifications are hidden from the sidebar during
         // the Wake sessions migration — bounce any stray navigation home.
         let route = match route {
@@ -2146,6 +2220,8 @@ impl RouterApp {
             self.ensure_open_target_icons(cx);
         } else if route == Route::ApiProviders {
             self.refresh_api_providers(cx);
+        } else if route == Route::SmartRouting {
+            self.load_smart_routing(window, cx);
         }
         self.route = route;
         cx.notify();
@@ -3819,7 +3895,9 @@ impl RouterApp {
                 )
             })
             .when(!disabled, |this| {
-                this.on_click(cx.listener(move |this, _, _, cx| this.set_route(route, cx)))
+                this.on_click(
+                    cx.listener(move |this, _, window, cx| this.set_route(route, window, cx)),
+                )
             })
     }
 
@@ -3888,7 +3966,9 @@ impl RouterApp {
                 )
             })
             .when(!disabled, |this| {
-                this.on_click(cx.listener(move |this, _, _, cx| this.set_route(route, cx)))
+                this.on_click(
+                    cx.listener(move |this, _, window, cx| this.set_route(route, window, cx)),
+                )
             })
             .on_drag(DragAppId(app_id_str), {
                 let ghost_label = SharedString::from(label);
@@ -4122,6 +4202,16 @@ impl RouterApp {
                 false,
                 cx,
             ))
+            .child(self.nav_item(
+                "nav-smart-routing",
+                IconName::Settings2,
+                Some(rgb(0x0A84FF).into()),
+                t!("nav.smart_routing").to_string(),
+                Route::SmartRouting,
+                None,
+                false,
+                cx,
+            ))
             .children(app_nav_items)
             .child(div().flex_1())
             // Skills / Prompts / Notifications: hidden during Wake sessions migration.
@@ -4172,8 +4262,8 @@ impl RouterApp {
                         this.bg(accent).font_weight(FontWeight::SEMIBOLD)
                     })
                     .when(!active, |this| this.hover(|this| this.bg(accent)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_route(Route::Settings, cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_route(Route::Settings, window, cx);
                     }))
                     .child(
                         Icon::new(IconName::Settings)
@@ -4215,9 +4305,7 @@ impl RouterApp {
                         })
                         .cursor_pointer()
                         .when(!installing, |el| el.hover(|s| s.bg(rgb(0x1D4ED8))))
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(tip.clone()).build(window, cx)
-                        })
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                         .when(!installing, |el| {
                             el.on_click(cx.listener(|this, _, window, cx| {
                                 this.start_install_pending_update(window, cx);
@@ -4239,11 +4327,7 @@ impl RouterApp {
     }
 
     /// Download the pending release asset, install it, then relaunch (cc-switch style).
-    pub fn start_install_pending_update(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn start_install_pending_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(release) = self.pending_app_update.clone() else {
             return;
         };
@@ -4252,10 +4336,7 @@ impl RouterApp {
         }
         self.is_installing_update = true;
         cx.notify();
-        window.push_notification(
-            Notification::info(t!("update.installing").to_string()),
-            cx,
-        );
+        window.push_notification(Notification::info(t!("update.installing").to_string()), cx);
 
         let url = release.download_url.clone();
         let html_url = release.html_url.clone();
@@ -4275,10 +4356,11 @@ impl RouterApp {
                         .await;
 
                     let outcome = match download_res {
-                        Ok(path) => cx
-                            .background_executor()
-                            .spawn(async move { apply_downloaded_update(&path) })
-                            .await,
+                        Ok(path) => {
+                            cx.background_executor()
+                                .spawn(async move { apply_downloaded_update(&path) })
+                                .await
+                        }
                         Err(err) => Err(err),
                     };
 
@@ -4288,9 +4370,7 @@ impl RouterApp {
                             match outcome {
                                 Ok(ApplyUpdateOutcome::Relunched) => {
                                     this.pending_app_update = None;
-                                    this.logs.push(format!(
-                                        "已安装并启动新版本 v{version}"
-                                    ));
+                                    this.logs.push(format!("已安装并启动新版本 v{version}"));
                                     window.push_notification(
                                         Notification::success(
                                             t!("update.install_success").to_string(),
@@ -4302,9 +4382,7 @@ impl RouterApp {
                                     cx.quit();
                                 }
                                 Ok(ApplyUpdateOutcome::OpenedPackage) => {
-                                    this.logs.push(format!(
-                                        "已打开更新安装包 v{version}"
-                                    ));
+                                    this.logs.push(format!("已打开更新安装包 v{version}"));
                                     window.push_notification(
                                         Notification::success(
                                             t!("update.install_opened").to_string(),
@@ -5240,9 +5318,9 @@ impl RouterApp {
                                 .icon(CustomIcon::BookOpen)
                                 .tooltip(t!("prompts.manage").to_string())
                                 .on_click(cx.listener(
-                                    move |this, _, _window, cx| {
+                                    move |this, _, window, cx| {
                                         this.prompts_app = app;
-                                        this.set_route(Route::Prompts, cx);
+                                        this.set_route(Route::Prompts, window, cx);
                                     },
                                 )),
                             )
@@ -5255,9 +5333,9 @@ impl RouterApp {
                                 .icon(CustomIcon::History)
                                 .tooltip(t!("nav.sessions").to_string())
                                 .on_click(cx.listener(
-                                    move |this, _, _window, cx| {
+                                    move |this, _, window, cx| {
                                         this.sessions_filter = None;
-                                        this.set_route(Route::Sessions, cx);
+                                        this.set_route(Route::Sessions, window, cx);
                                     },
                                 )),
                             )
@@ -7344,8 +7422,8 @@ impl RouterApp {
                         Button::new("skills-back")
                             .ghost()
                             .icon(IconName::ArrowLeft)
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.set_route(Route::Dashboard, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_route(Route::Dashboard, window, cx);
                             })),
                     )
                     .child(
@@ -7579,8 +7657,8 @@ impl RouterApp {
                         Button::new("sessions-back")
                             .ghost()
                             .icon(IconName::ArrowLeft)
-                            .on_click(cx.listener(|this, _, _window, cx| {
-                                this.set_route(Route::Dashboard, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.set_route(Route::Dashboard, window, cx);
                             })),
                     )
                     .child(
@@ -8935,8 +9013,8 @@ impl RouterApp {
                                 Button::new("prompts-back")
                                     .ghost()
                                     .icon(IconName::ArrowLeft)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.set_route(Route::Dashboard, cx);
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.set_route(Route::Dashboard, window, cx);
                                     })),
                             )
                             .child(
@@ -9340,13 +9418,13 @@ impl RouterApp {
                         Button::new("usage-script-back")
                             .ghost()
                             .icon(IconName::ArrowLeft)
-                            .on_click(cx.listener(|this, _, _window, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 let back = if this.previous_route == Route::UsageScript {
                                     Route::Dashboard
                                 } else {
                                     this.previous_route
                                 };
-                                this.set_route(back, cx);
+                                this.set_route(back, window, cx);
                             })),
                     )
                     .child(
@@ -9610,13 +9688,13 @@ impl RouterApp {
                         Button::new("usage-script-cancel")
                             .outline()
                             .label(t!("usage_script.cancel").to_string())
-                            .on_click(cx.listener(|this, _, _window, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 let back = if this.previous_route == Route::UsageScript {
                                     Route::Dashboard
                                 } else {
                                     this.previous_route
                                 };
-                                this.set_route(back, cx);
+                                this.set_route(back, window, cx);
                             })),
                     )
                     .child(
@@ -13883,6 +13961,7 @@ impl Render for RouterApp {
             match self.route {
                 Route::Dashboard => self.render_dashboard_page(cx).into_any_element(),
                 Route::ApiProviders => self.render_api_providers_page(cx).into_any_element(),
+                Route::SmartRouting => self.render_smart_routing_page(cx).into_any_element(),
                 Route::Sessions => crate::sessions_workbench::render_sessions_workbench(self, cx)
                     .into_any_element(),
                 Route::Skills => self.render_skills_page(cx).into_any_element(),

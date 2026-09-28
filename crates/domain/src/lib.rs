@@ -17,14 +17,18 @@ mod pi;
 mod prompt;
 mod protocol;
 mod provider;
+mod routing_settings;
 mod updater;
 mod usage_script;
 mod workbuddy;
 mod zcode;
 
 pub use api_provider::{
-    ApiAuthScheme, ApiCapability, ApiProvider, ApiProviderKind, ApiProviderKindGroup,
-    HttpConnection, SubscriptionConnection, SubscriptionStatus,
+    api_protocol_descriptor, fetch_http_connection_models, merge_discovered_api_models,
+    merge_visible_api_provider_order, resolve_upstream_candidates, supports_local_conversion,
+    ApiAuthScheme, ApiCapability, ApiProtocolDescriptor, ApiProvider, ApiProviderKind,
+    ApiProviderKindGroup, HttpConnection, SubscriptionConnection, SubscriptionStatus,
+    API_PROTOCOL_CATALOG, CONVERTIBLE_PROTOCOL_IDS,
 };
 pub use app_kind::AppKind;
 pub use claude::{
@@ -87,6 +91,13 @@ pub use protocol::{
     normalize_thinking_effort, RequestProtocol, DEFAULT_THINKING_EFFORT, THINKING_EFFORTS,
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
+pub use routing_settings::{
+    default_failure_policy, ensure_builtin_redirects, is_builtin_model_redirect,
+    model_redirect_issues, validate_routing_settings, ChannelStickiness, FailoverStrategy,
+    FailureAction, FailurePolicy, ModelRedirect, ModelRedirectIssue, RoutingSettings,
+    BUILTIN_CODEX_AUTO_REVIEW_DEFAULT_TO, BUILTIN_CODEX_AUTO_REVIEW_FROM, MAX_MODEL_REDIRECTS,
+    MAX_REDIRECT_MODEL_LEN,
+};
 pub use updater::{
     apply_downloaded_update, check_app_update, download_release_asset, parse_release_notes,
     sample_app_release, AppRelease, ApplyUpdateOutcome,

@@ -102,7 +102,6 @@ struct OAuthTokenResponse {
     #[serde(default)]
     id_token: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     expires_in: Option<i64>,
 }
 
@@ -270,6 +269,359 @@ pub async fn codex_poll_device(
         email,
         ..AuthTokens::default()
     }))
+}
+
+const CODEX_CALLBACK_PORTS: [u16; 2] = [1455, 1457];
+const CODEX_BROWSER_SCOPES: &str =
+    "openid profile email offline_access api.connectors.read api.connectors.invoke";
+const CODEX_BROWSER_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Browser OAuth could not bind loopback callback ports.
+#[derive(Debug, Clone)]
+pub struct CallbackPortsBusy;
+
+impl std::fmt::Display for CallbackPortsBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OAuth 回调端口 1455 和 1457 均不可用")
+    }
+}
+
+fn pkce_pair() -> (String, String) {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let verifier = URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes())
+        + &URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+fn listen_codex_callback() -> Result<(std::net::TcpListener, u16), CallbackPortsBusy> {
+    for port in CODEX_CALLBACK_PORTS {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => {
+                let _ = listener.set_nonblocking(false);
+                return Ok((listener, port));
+            }
+            Err(_) => continue,
+        }
+    }
+    Err(CallbackPortsBusy)
+}
+
+fn build_codex_authorize_url(redirect_uri: &str, state: &str, challenge: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("https://auth.openai.com/oauth/authorize?");
+    let _ = write!(
+        out,
+        "response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256&codex_cli_simplified_flow=true",
+        urlencoding_encode(CODEX_CLIENT_ID),
+        urlencoding_encode(redirect_uri),
+        urlencoding_encode(CODEX_BROWSER_SCOPES),
+        urlencoding_encode(state),
+        urlencoding_encode(challenge),
+    );
+    out
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
+fn read_http_request_line(stream: &mut impl std::io::Read) -> Result<String, String> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut byte = [0u8; 1];
+    while buf.len() < 8192 {
+        let n = stream
+            .read(&mut byte)
+            .map_err(|e| format!("读取回调失败: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+        if buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(buf).map_err(|e| format!("回调不是合法 UTF-8: {e}"))
+}
+
+fn parse_callback_query(
+    request: &str,
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+    let first = request.lines().next().unwrap_or("");
+    let path = first
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "回调请求行无效".to_string())?;
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+    for pair in query.split('&') {
+        let mut it = pair.splitn(2, '=');
+        let k = it.next().unwrap_or("");
+        let v = it.next().unwrap_or("");
+        let decoded = urlencoding_decode(v);
+        match k {
+            "code" => code = Some(decoded),
+            "state" => state = Some(decoded),
+            "error" => error = Some(decoded),
+            _ => {}
+        }
+    }
+    Ok((code, state, error))
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = &s[i + 1..i + 3];
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v as char);
+                    i += 3;
+                } else {
+                    out.push('%');
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(c as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn write_callback_page(stream: &mut impl std::io::Write, ok: bool, message: &str) {
+    let body = format!(
+        "<!doctype html><html><body style=\"font-family:system-ui;padding:2rem\"><h2>{}</h2><p>{}</p></body></html>",
+        if ok {
+            "Router Switch connected"
+        } else {
+            "Authorization failed"
+        },
+        message
+    );
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+}
+
+async fn exchange_codex_auth_code(
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+) -> Result<AuthTokens, String> {
+    let token_response = http_client()
+        .post(CODEX_OAUTH_TOKEN_URL)
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("User-Agent", "router-switch-codex-oauth")
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("client_id", CODEX_CLIENT_ID),
+            ("code_verifier", code_verifier),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Token 交换失败: {e}"))?;
+
+    if !token_response.status().is_success() {
+        let status = token_response.status();
+        let text = token_response.text().await.unwrap_or_default();
+        return Err(format!("Token 交换失败: {status} - {text}"));
+    }
+
+    let tokens: OAuthTokenResponse = token_response
+        .json()
+        .await
+        .map_err(|e| format!("Token 响应解析失败: {e}"))?;
+    Ok(auth_tokens_from_oauth_response(tokens))
+}
+
+/// Refresh ChatGPT / Codex access token (AstrLink TokenClient.Refresh).
+/// Caller must persist the returned tokens — OpenAI may rotate refresh_token.
+pub async fn refresh_codex_access_token(refresh_token: &str) -> Result<AuthTokens, String> {
+    let refresh_token = refresh_token.trim();
+    if refresh_token.is_empty() {
+        return Err("缺少 refresh_token".into());
+    }
+    let token_response = http_client()
+        .post(CODEX_OAUTH_TOKEN_URL)
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
+        .header("originator", "codex-tui")
+        .header(
+            "User-Agent",
+            "codex-tui/0.155.1 (Ubuntu 22.4.0; x86_64) xterm-256color",
+        )
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", CODEX_CLIENT_ID),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("Token 刷新失败: {e}"))?;
+
+    let status = token_response.status();
+    let text = token_response
+        .text()
+        .await
+        .map_err(|e| format!("Token 刷新读取失败: {e}"))?;
+    if !status.is_success() {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("invalid_grant") || lower.contains("refresh_token_reused") {
+            return Err("refresh_token_invalid".into());
+        }
+        return Err(format!("Token 刷新失败: {status} - {text}"));
+    }
+    let tokens: OAuthTokenResponse =
+        serde_json::from_str(&text).map_err(|e| format!("Token 刷新解析失败: {e}"))?;
+    if tokens.access_token.trim().is_empty() {
+        return Err("Token 刷新响应缺少 access_token".into());
+    }
+    let mut auth = auth_tokens_from_oauth_response(tokens);
+    if auth.refresh_token.is_none() {
+        auth.refresh_token = Some(refresh_token.to_string());
+    }
+    Ok(auth)
+}
+
+fn auth_tokens_from_oauth_response(tokens: OAuthTokenResponse) -> AuthTokens {
+    let claims = tokens.id_token.as_deref().and_then(jwt_claims);
+    let account_id = claims
+        .as_ref()
+        .and_then(|claims| claims.pointer("/https://api.openai.com/auth/chatgpt_account_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let email = claims
+        .as_ref()
+        .and_then(|claims| claims.get("email"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    // Prefer OAuth expires_in; fall back to access_token JWT exp (AstrLink ExpiresAt).
+    let expires_at = tokens
+        .expires_in
+        .filter(|s| *s > 0)
+        .map(|s| chrono::Utc::now().timestamp() + s)
+        .or_else(|| {
+            jwt_claims(&tokens.access_token)
+                .as_ref()
+                .and_then(|c| c.get("exp"))
+                .and_then(|v| v.as_i64())
+        });
+    AuthTokens {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        id_token: tokens.id_token,
+        account_id,
+        email,
+        expires_at,
+        ..AuthTokens::default()
+    }
+}
+
+/// Start Codex browser OAuth (loopback 1455/1457). Returns authorize URL + a
+/// receiver that yields tokens when the callback completes (or an error).
+///
+/// If both ports are busy, returns [`CallbackPortsBusy`] so the caller can fall
+/// back to Device Code (AstrLink behavior).
+pub fn codex_begin_browser_flow() -> Result<
+    (
+        String,
+        std::sync::mpsc::Receiver<Result<AuthTokens, String>>,
+    ),
+    CallbackPortsBusy,
+> {
+    let (listener, port) = listen_codex_callback()?;
+    let (verifier, challenge) = pkce_pair();
+    let state = uuid::Uuid::new_v4().to_string();
+    let redirect_uri = format!("http://localhost:{port}/auth/callback");
+    let auth_url = build_codex_authorize_url(&redirect_uri, &state, &challenge);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::Builder::new()
+        .name("codex-oauth-callback".into())
+        .spawn(move || {
+            let _ = listener.set_nonblocking(true);
+            let result = (|| -> Result<AuthTokens, String> {
+                let deadline = std::time::Instant::now() + CODEX_BROWSER_TIMEOUT;
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(pair) => break pair,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= deadline {
+                                return Err("等待 OAuth 回调超时".into());
+                            }
+                            std::thread::sleep(Duration::from_millis(200));
+                        }
+                        Err(e) => {
+                            return Err(format!("等待 OAuth 回调超时或失败: {e}"));
+                        }
+                    }
+                };
+                let _ = stream.set_nonblocking(false);
+                let request = read_http_request_line(&mut stream)?;
+                let (code, got_state, error) = parse_callback_query(&request)?;
+                if let Some(err) = error {
+                    write_callback_page(&mut stream, false, &err);
+                    return Err(format!("授权被拒绝: {err}"));
+                }
+                if got_state.as_deref() != Some(state.as_str()) {
+                    write_callback_page(&mut stream, false, "state mismatch");
+                    return Err("OAuth state 不匹配".into());
+                }
+                let Some(code) = code else {
+                    write_callback_page(&mut stream, false, "missing code");
+                    return Err("回调缺少 authorization code".into());
+                };
+                write_callback_page(
+                    &mut stream,
+                    true,
+                    "Router Switch is connected. You can close this window.",
+                );
+                // Exchange on a tiny runtime — avoid depending on caller's runtime.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("创建运行时失败: {e}"))?;
+                rt.block_on(exchange_codex_auth_code(&code, &verifier, &redirect_uri))
+            })();
+            let _ = tx.send(result);
+        })
+        .map_err(|_| CallbackPortsBusy)?;
+
+    Ok((auth_url, rx))
 }
 
 /// 启动 xAI (Grok) 设备码流程

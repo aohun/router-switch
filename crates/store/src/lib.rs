@@ -483,6 +483,25 @@ impl Store {
         Ok(())
     }
 
+    /// AstrLink routing settings document (singleton JSON in kv).
+    pub fn routing_settings(&self) -> Result<domain::RoutingSettings, StoreError> {
+        match self.kv_get("routing_settings")? {
+            Some(text) => serde_json::from_str(&text)
+                .map_err(|err| StoreError::Corrupt(format!("routing_settings: {err}"))),
+            None => Ok(domain::RoutingSettings::default()),
+        }
+    }
+
+    pub fn save_routing_settings(
+        &self,
+        settings: &domain::RoutingSettings,
+    ) -> Result<(), StoreError> {
+        domain::validate_routing_settings(settings).map_err(|err| StoreError::Conflict(err))?;
+        let value =
+            serde_json::to_string(settings).map_err(|err| StoreError::Corrupt(err.to_string()))?;
+        self.kv_set("routing_settings", &value)
+    }
+
     /// 通用 KV 写入(认证凭据等)
     pub fn kv_set(&self, key: &str, value: &str) -> Result<(), StoreError> {
         self.conn
@@ -866,14 +885,46 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically rewrite `sort_index` for every API provider.
+    ///
+    /// `ordered_ids` must list each existing provider id exactly once (AstrLink service-order).
     pub fn replace_api_provider_order(&self, ordered_ids: &[String]) -> Result<(), StoreError> {
-        for (i, id) in ordered_ids.iter().enumerate() {
-            let Some(mut p) = self.get_api_provider(id)? else {
-                continue;
-            };
-            p.sort_index = i as i64;
-            self.upsert_api_provider(&p)?;
+        let existing = self.list_api_providers()?;
+        if ordered_ids.len() != existing.len() {
+            return Err(StoreError::Conflict(format!(
+                "API 服务商顺序不完整: 期望 {} 项，收到 {}",
+                existing.len(),
+                ordered_ids.len()
+            )));
         }
+        let mut by_id: std::collections::HashMap<String, ApiProvider> =
+            existing.into_iter().map(|p| (p.id.clone(), p)).collect();
+        let mut seen = std::collections::HashSet::with_capacity(ordered_ids.len());
+        for id in ordered_ids {
+            if !seen.insert(id.as_str()) {
+                return Err(StoreError::Conflict(format!(
+                    "API 服务商顺序含重复 id: {id}"
+                )));
+            }
+            if !by_id.contains_key(id) {
+                return Err(StoreError::Conflict(format!(
+                    "API 服务商顺序含未知 id: {id}"
+                )));
+            }
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        for (i, id) in ordered_ids.iter().enumerate() {
+            let p = by_id.get_mut(id).expect("id checked above");
+            p.sort_index = i as i64;
+            let data_json = serde_json::to_string(&*p)
+                .map_err(|e| StoreError::Corrupt(format!("serialize api_provider: {e}")))?;
+            tx.execute(
+                "UPDATE api_providers SET sort_index = ?1, data_json = ?2, updated_at = ?3 WHERE id = ?4",
+                params![p.sort_index, data_json, p.updated_at, id],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1194,5 +1245,39 @@ mod tests {
         // Delete
         store.delete_prompt(AppKind::Codex, "p1").unwrap();
         assert!(store.list_prompts(AppKind::Codex).unwrap().is_empty());
+    }
+
+    #[test]
+    fn api_provider_order_is_atomic_and_complete() {
+        use domain::{ApiProvider, ApiProviderKind};
+        let (_dir, store) = temp_store();
+        let mut a = ApiProvider::new_from_kind(ApiProviderKind::OpenaiCompatible, "A", 1);
+        a.id = "api_a".into();
+        a.sort_index = 0;
+        a.enabled = false;
+        let mut b = ApiProvider::new_from_kind(ApiProviderKind::OpenaiCompatible, "B", 2);
+        b.id = "api_b".into();
+        b.sort_index = 1;
+        let mut c = ApiProvider::new_from_kind(ApiProviderKind::OpenaiCompatible, "C", 3);
+        c.id = "api_c".into();
+        c.sort_index = 2;
+        store.upsert_api_provider(&a).unwrap();
+        store.upsert_api_provider(&b).unwrap();
+        store.upsert_api_provider(&c).unwrap();
+
+        store
+            .replace_api_provider_order(&["api_c".into(), "api_a".into(), "api_b".into()])
+            .unwrap();
+        let list = store.list_api_providers().unwrap();
+        assert_eq!(
+            list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["api_c", "api_a", "api_b"]
+        );
+        assert!(!list[1].enabled); // disabled still occupies its slot
+
+        let err = store
+            .replace_api_provider_order(&["api_c".into(), "api_a".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("不完整"));
     }
 }

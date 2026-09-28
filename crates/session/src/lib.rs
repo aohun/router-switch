@@ -41,7 +41,11 @@ use adapters_zcode::{
     resolve_zcode_paths, write_live_for_provider as write_zcode_live, ZCodeAdapterError,
     ZCodePaths,
 };
-pub use auth_native::NativeAuthStatus;
+mod auth_native;
+pub use auth_native::{
+    fetch_codex_models_and_usage, fetch_codex_models_with_refresh, fetch_codex_usage_with_refresh,
+    NativeAuthStatus,
+};
 pub use cursor_gateway::{CaState, LoadedCa};
 use cursor_gateway::{
     CompatGateway, CompatTarget, CursorGatewayRuntime, GatewayError, COMPAT_DEFAULT_PORT,
@@ -71,8 +75,8 @@ pub use store::{
 use thiserror::Error;
 pub use usage_query::UsageQueryError;
 
-mod auth_native;
 pub mod codex_history;
+pub mod codex_subscription;
 pub mod oauth;
 pub mod prompts;
 pub mod session_index;
@@ -80,6 +84,10 @@ pub mod sessions;
 pub mod skills;
 mod workbuddy_auth;
 
+pub use codex_subscription::{
+    format_reset_countdown, mask_account_hint, plan_type_label, window_label, CodexRateLimitWindow,
+    CodexStoredTokens, CodexSubscriptionUsage,
+};
 pub use prompts::PromptService;
 
 /// 会话/Skills 模块使用的应用标识字符串(与 cc-switch 的 provider id 对齐)
@@ -383,6 +391,18 @@ impl Workspace {
         Ok(())
     }
 
+    pub fn routing_settings(&self) -> Result<domain::RoutingSettings, SessionError> {
+        Ok(self.store.routing_settings()?)
+    }
+
+    pub fn save_routing_settings(
+        &self,
+        settings: &domain::RoutingSettings,
+    ) -> Result<(), SessionError> {
+        self.store.save_routing_settings(settings)?;
+        Ok(())
+    }
+
     // ---- Gateway API providers (AstrLink alignment) ----
 
     pub fn list_api_providers(&self) -> Result<Vec<domain::ApiProvider>, SessionError> {
@@ -420,6 +440,21 @@ impl Workspace {
     pub fn reorder_api_providers(&self, ordered_ids: &[String]) -> Result<(), SessionError> {
         self.store.replace_api_provider_order(ordered_ids)?;
         Ok(())
+    }
+
+    /// Enabled API providers that can serve `model`/`protocol`, in list priority order.
+    pub fn resolve_api_upstream_candidates(
+        &self,
+        model: Option<&str>,
+        protocol: Option<&str>,
+    ) -> Result<Vec<domain::ApiProvider>, SessionError> {
+        let providers = self.store.list_api_providers()?;
+        Ok(
+            domain::resolve_upstream_candidates(&providers, model, protocol)
+                .into_iter()
+                .cloned()
+                .collect(),
+        )
     }
 
     pub fn log_config(&self) -> Result<LogConfig, SessionError> {
@@ -1453,6 +1488,19 @@ impl Workspace {
         crate::auth_native::read_status(provider, &self.store, &self.codex_paths)
     }
 
+    /// 启动 Codex 浏览器 OAuth（本机回调 1455/1457）。端口都被占用时返回 Busy。
+    pub fn oauth_start_codex_browser(
+        &self,
+    ) -> Result<
+        (
+            String,
+            std::sync::mpsc::Receiver<Result<oauth::AuthTokens, String>>,
+        ),
+        SessionError,
+    > {
+        oauth::codex_begin_browser_flow().map_err(|e| SessionError::Message(e.to_string()))
+    }
+
     /// 启动设备码登录(短网络调用, 内部 block_on)
     pub fn oauth_start_login(
         &self,
@@ -1477,6 +1525,43 @@ impl Workspace {
         tokens: &oauth::AuthTokens,
     ) -> Result<(), SessionError> {
         crate::auth_native::persist_tokens(provider, tokens, &self.store, &self.codex_paths)
+    }
+
+    /// Read Codex tokens for ChatGPT backend-api (usage / models).
+    pub fn codex_subscription_tokens(
+        &self,
+    ) -> Result<Option<crate::codex_subscription::CodexStoredTokens>, SessionError> {
+        crate::auth_native::read_codex_tokens(&self.codex_paths)
+    }
+
+    /// DB path + Codex home paths for background ChatGPT API calls (opens a fresh Store).
+    pub fn codex_subscription_fetch_context(&self) -> (PathBuf, CodexPaths) {
+        (
+            self.store.data_dir().join("app.db"),
+            self.codex_paths.clone(),
+        )
+    }
+
+    /// Fetch Codex subscription usage (`/wham/usage`), refreshing tokens when needed.
+    pub fn fetch_codex_subscription_usage(
+        &self,
+    ) -> Result<crate::codex_subscription::CodexSubscriptionUsage, SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(crate::auth_native::fetch_codex_usage_with_refresh(
+            &self.store,
+            &self.codex_paths,
+        ))
+        .map_err(SessionError::Message)
+    }
+
+    /// Fetch Codex model allow-list from official `/models`, refreshing tokens when needed.
+    pub fn fetch_codex_subscription_models(&self) -> Result<Vec<String>, SessionError> {
+        let rt = tokio_runtime();
+        rt.block_on(crate::auth_native::fetch_codex_models_with_refresh(
+            &self.store,
+            &self.codex_paths,
+        ))
+        .map_err(SessionError::Message)
     }
 
     /// 退出登录(清除本地存储的凭据; Codex 原生 auth.json 一并移除)

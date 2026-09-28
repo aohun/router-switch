@@ -3,6 +3,7 @@ mod app_view;
 pub mod assets;
 mod insights_view;
 mod sessions_workbench;
+mod smart_routing_view;
 mod theme;
 pub mod tray;
 pub mod update_dialog;
