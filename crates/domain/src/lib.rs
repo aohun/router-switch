@@ -67,7 +67,7 @@ pub use cursor::{
     CursorPreset, CursorSettings, CURSOR_PRESETS, DEFAULT_CURSOR_MODEL,
     DEFAULT_CURSOR_PROVIDER_TYPE, OFFICIAL_CURSOR_ID,
 };
-pub use deeplink::{parse_deeplink_url, DeepLinkImportRequest};
+pub use deeplink::{build_cc_switch_import_url, parse_deeplink_url, DeepLinkImportRequest};
 pub use env_checker::{
     build_tool_search_paths, compare_semver, extract_version, fetch_remote_latest_version,
     infer_install_source, inspect_all_tools, inspect_tool_environment, is_version_outdated,
@@ -98,11 +98,11 @@ pub use protocol::{
 };
 pub use provider::{new_provider_id, Provider, ProviderSettings};
 pub use routing_settings::{
-    default_failure_policy, ensure_builtin_redirects, is_builtin_model_redirect,
-    model_redirect_issues, validate_routing_settings, ChannelStickiness, FailoverStrategy,
-    FailureAction, FailurePolicy, ModelRedirect, ModelRedirectIssue, RoutingSettings,
-    BUILTIN_CODEX_AUTO_REVIEW_DEFAULT_TO, BUILTIN_CODEX_AUTO_REVIEW_FROM, MAX_MODEL_REDIRECTS,
-    MAX_REDIRECT_MODEL_LEN,
+    apply_model_redirect, default_failure_policy, ensure_builtin_redirects,
+    is_builtin_model_redirect, model_redirect_issues, validate_routing_settings, ChannelStickiness,
+    FailoverStrategy, FailureAction, FailurePolicy, ModelRedirect, ModelRedirectIssue,
+    RoutingSettings, ASTRLINK_AUTO_MODEL_ID, BUILTIN_CODEX_AUTO_REVIEW_DEFAULT_TO,
+    BUILTIN_CODEX_AUTO_REVIEW_FROM, MAX_MODEL_REDIRECTS, MAX_REDIRECT_MODEL_LEN,
 };
 pub use updater::{
     apply_downloaded_update, check_app_update, download_release_asset, parse_release_notes,

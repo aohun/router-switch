@@ -21,7 +21,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
-use domain::{AppKind, RequestProtocol};
+use domain::{ApiAuthScheme, ApiProvider, AppKind, RequestProtocol, ACCESS_TOKEN_PREFIX};
 use futures_util::StreamExt;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
@@ -51,12 +51,97 @@ pub struct CompatTarget {
     pub extra_headers: Vec<(String, String)>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct CompatRegistry {
     targets: Arc<RwLock<Vec<CompatTarget>>>,
+    gateway_resolver: Arc<RwLock<Option<GatewayResolver>>>,
+    gateway_logger: Arc<RwLock<Option<GatewayLogger>>>,
+}
+
+type GatewayLogger = Arc<dyn Fn(&str) + Send + Sync>;
+type GatewayResolver =
+    Arc<dyn Fn(&str, &str) -> std::result::Result<ApiProvider, String> + Send + Sync>;
+
+impl std::fmt::Debug for CompatRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompatRegistry")
+            .field("targets", &self.targets)
+            .finish()
+    }
 }
 
 impl CompatRegistry {
+    pub fn set_gateway_logger(&self, logger: impl Fn(&str) + Send + Sync + 'static) {
+        *self.gateway_logger.write() = Some(Arc::new(logger));
+    }
+
+    fn log_gateway(&self, message: &str) {
+        if let Some(logger) = self.gateway_logger.read().as_ref() {
+            logger(message);
+        }
+    }
+
+    pub fn set_gateway_resolver(
+        &self,
+        resolver: impl Fn(&str, &str) -> std::result::Result<ApiProvider, String>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        *self.gateway_resolver.write() = Some(Arc::new(resolver));
+    }
+
+    fn resolve_gateway(
+        &self,
+        key: &str,
+        model: &str,
+    ) -> std::result::Result<(CompatTarget, String), String> {
+        let resolver = self
+            .gateway_resolver
+            .read()
+            .clone()
+            .ok_or("gateway is not configured")?;
+        let provider = resolver(key, model)?;
+        let http = provider.http.ok_or("provider has no HTTP connection")?;
+        if http.base_url.trim().is_empty() {
+            return Err("provider has no base URL".into());
+        }
+        let protocol = if provider
+            .capabilities
+            .iter()
+            .any(|c| c.protocol == "openai.responses" && c.convert_to.is_none())
+        {
+            RequestProtocol::OpenAiResponses
+        } else if provider
+            .capabilities
+            .iter()
+            .any(|c| c.protocol == "openai.chat" && c.convert_to.is_none())
+        {
+            RequestProtocol::OpenAiChat
+        } else {
+            return Err("provider has no supported upstream protocol".into());
+        };
+        if http.auth_scheme != ApiAuthScheme::Bearer {
+            return Err("provider authentication is not supported by this gateway".into());
+        }
+        let api_key = http
+            .api_key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or("provider has no API key")?;
+        Ok((
+            CompatTarget {
+                app: AppKind::Codex,
+                base_url: http.base_url,
+                api_key,
+                model: model.to_string(),
+                protocol,
+                model_mappings: Vec::new(),
+                extra_headers: Vec::new(),
+            },
+            provider.id,
+        ))
+    }
+
     pub fn set_target(&self, target: CompatTarget) {
         let mut targets = self.targets.write();
         targets.retain(|existing| existing.app != target.app);
@@ -285,19 +370,66 @@ async fn route_compat(
         .await
         .map_err(|err| crate::GatewayError::Protocol(format!("read body: {err}")))?;
     let presented_key = presented_api_key(&parts.headers);
-    let Some(target) = registry.resolve(presented_key.as_deref()) else {
-        return Err(crate::GatewayError::Config(
-            "no routed provider registered on the compat gateway; switch to a provider whose \
-             request protocol differs from the tool's native one first"
-                .into(),
-        ));
-    };
-
     let payload: Value = if bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&bytes)?
     };
+    let requested_model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let request_id = new_id();
+    let route = if presented_key
+        .as_deref()
+        .is_some_and(|key| key.starts_with(ACCESS_TOKEN_PREFIX))
+    {
+        "gateway"
+    } else {
+        "live"
+    };
+    registry.log_gateway(&format!(
+        "request={request_id} route={route} dialect={dialect:?} model={requested_model:?}"
+    ));
+    let (target, provider_id) = if let Some(key) = presented_key
+        .as_deref()
+        .filter(|key| key.starts_with(ACCESS_TOKEN_PREFIX))
+    {
+        match registry.resolve_gateway(key, requested_model) {
+            Ok((target, provider_id)) => (target, provider_id),
+            Err(message) => {
+                registry.log_gateway(&format!(
+                    "request={request_id} route=gateway rejected={}",
+                    if message == "invalid access token" {
+                        "invalid_token"
+                    } else {
+                        "no_supported_provider_or_store_error"
+                    }
+                ));
+                let status = if message == "invalid access token" {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                return Ok(json_response(
+                    status,
+                    &json!({"error": {"message": message}}),
+                ));
+            }
+        }
+    } else {
+        let Some(target) = registry.resolve(presented_key.as_deref()) else {
+            registry.log_gateway(&format!("request={request_id} route=live no_target"));
+            return Err(crate::GatewayError::Config(
+                "no routed provider registered on the compat gateway; switch to a provider whose \
+                 request protocol differs from the tool's native one first"
+                    .into(),
+            ));
+        };
+        let provider_id = format!("live:{:?}", target.app);
+        (target, provider_id)
+    };
+    registry.log_gateway(&format!("request={request_id} route={route} provider={provider_id:?} upstream_protocol={} upstream_model={:?}", target.protocol.as_str(), map_model(&target, requested_model)));
 
     let mut parsed = match dialect {
         InboundDialect::Anthropic => anthropic_in::parse(&payload)?,
@@ -333,6 +465,27 @@ async fn route_compat(
         target.extra_headers.clone(),
     );
     let events = provider.stream(invocation, CancellationToken::new());
+    let log_registry = registry.clone();
+    let events: ProviderStream = Box::pin(events.map(move |event| {
+        if let Err(err) = &event {
+            let summary = match err {
+                crate::GatewayError::Provider(message) => message
+                    .split(" error ")
+                    .nth(1)
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .filter(|status| {
+                        status.len() == 3 && status.bytes().all(|c| c.is_ascii_digit())
+                    })
+                    .map(|status| format!("upstream_status={status}"))
+                    .unwrap_or_else(|| "upstream_failure=provider".into()),
+                _ => "upstream_failure=transport_or_protocol".into(),
+            };
+            log_registry.log_gateway(&format!(
+                "request={request_id} route={route} provider={provider_id:?} {summary}"
+            ));
+        }
+        event
+    }));
     let display_model = if requested_model.is_empty() {
         target.model.clone()
     } else {
@@ -765,6 +918,73 @@ mod tests {
         assert!(text.contains("\"content\":\"hi\""), "{text}");
         assert!(text.contains("\"finish_reason\":\"stop\""), "{text}");
         assert!(text.contains("[DONE]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn gateway_token_uses_provider_instead_of_live_target() {
+        let live_upstream = spawn_chat_upstream(false).await;
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post_route(|| async {
+                (
+                    [("content-type", "text/event-stream")],
+                    chat_upstream_body("gateway-only", false),
+                )
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway_upstream = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut gateway = routed_gateway(live_upstream);
+        let logs = Arc::new(RwLock::new(Vec::<String>::new()));
+        let captured = logs.clone();
+        gateway.registry().set_gateway_logger(move |message| {
+            captured.write().push(message.to_string());
+        });
+        gateway.registry().set_gateway_resolver(move |key, model| {
+            if key != "rsw_mock-token" {
+                return Err("invalid access token".into());
+            }
+            assert_eq!(model, "gpt-6-sol");
+            let mut provider = ApiProvider::new_from_kind(
+                domain::ApiProviderKind::OpenaiCompatible,
+                "first provider",
+                1,
+            );
+            provider.http.as_mut().unwrap().base_url = gateway_upstream.clone();
+            provider.http.as_mut().unwrap().api_key = Some("sk-mock-key-12345".into());
+            Ok(provider)
+        });
+        let port = gateway.start(0).await.unwrap();
+        let client = reqwest::Client::new();
+        let response = client
+            .post(format!("http://127.0.0.1:{port}/v1/responses"))
+            .bearer_auth("rsw_mock-token")
+            .json(&json!({"model": "gpt-6-sol", "stream": false, "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = response.json::<Value>().await.unwrap();
+        assert_eq!(result["object"], "response");
+        assert!(result.to_string().contains("gateway-only"), "{result}");
+        let invalid = client
+            .post(format!("http://127.0.0.1:{port}/v1/responses"))
+            .bearer_auth("rsw_invalid")
+            .json(&json!({"model": "gpt-6-sol", "stream": false, "input": "hello"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+        let captured = logs.read().join("\n");
+        assert!(captured.contains("route=gateway"), "{captured}");
+        assert!(
+            captured.contains("provider=\"api_openai_compatible_"),
+            "{captured}"
+        );
+        assert!(captured.contains("rejected=invalid_token"), "{captured}");
+        assert!(!captured.contains("rsw_mock-token"));
+        assert!(!captured.contains("sk-mock-key-12345"));
     }
 
     #[tokio::test]

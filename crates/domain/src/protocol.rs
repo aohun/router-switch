@@ -54,6 +54,24 @@ impl RequestProtocol {
             Self::OpenAiChat | Self::OpenAiResponses => "OPENAI",
         }
     }
+
+    /// AstrLink capability protocol id for this ingress dialect.
+    pub fn capability_id(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic.messages",
+            Self::OpenAiChat => "openai.chat",
+            Self::OpenAiResponses => "openai.responses",
+        }
+    }
+
+    pub fn from_capability_id(id: &str) -> Option<Self> {
+        match id.trim() {
+            "anthropic.messages" => Some(Self::Anthropic),
+            "openai.chat" | "openai.completions" => Some(Self::OpenAiChat),
+            "openai.responses" | "openai.responses.compact" => Some(Self::OpenAiResponses),
+            _ => None,
+        }
+    }
 }
 
 pub const THINKING_EFFORTS: [(&str, &str); 5] = [

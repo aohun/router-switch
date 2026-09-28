@@ -514,9 +514,137 @@ impl DeepLinkImportRequest {
     }
 }
 
+/// Build `ccswitch://v1/import?...` for opening CC Switch (AstrLink `cc_switch::import_url`).
+///
+/// Does not echo `api_key` in error messages.
+pub fn build_cc_switch_import_url(
+    app: &str,
+    name: &str,
+    inference_url: &str,
+    api_key: &str,
+    model: Option<&str>,
+    haiku_model: Option<&str>,
+    sonnet_model: Option<&str>,
+    opus_model: Option<&str>,
+) -> Result<String, String> {
+    let app = app.trim().to_ascii_lowercase();
+    let app = match app.as_str() {
+        "claude" | "codex" | "gemini" | "opencode" | "openclaw" => app,
+        _ => return Err("unsupported client".into()),
+    };
+
+    let mut endpoint = Url::parse(inference_url.trim()).map_err(|_| "invalid inference URL")?;
+    if endpoint.scheme() != "http"
+        || endpoint.host_str() != Some("127.0.0.1")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err("invalid local inference URL".into());
+    }
+    // Accept bare origin or `/` / `/v1`; normalize path before client-specific rewrite.
+    let path = endpoint.path();
+    if path != "/" && path != "" && path != "/v1" {
+        return Err("invalid local inference URL".into());
+    }
+    endpoint.set_path("/");
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 128 || name.chars().any(char::is_control) {
+        return Err("invalid provider name".into());
+    }
+    if api_key.is_empty() {
+        return Err("access token is unavailable".into());
+    }
+
+    let mut model_params: Vec<(&str, String)> = Vec::new();
+    let push_model = |key: &'static str, value: Option<&str>, out: &mut Vec<(&str, String)>| {
+        let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(());
+        };
+        if value.chars().count() > 256 || value.chars().any(char::is_control) {
+            return Err(format!("invalid {key}"));
+        }
+        out.push((key, value.to_string()));
+        Ok(())
+    };
+    push_model("model", model, &mut model_params)?;
+    if app == "claude" {
+        push_model("haikuModel", haiku_model, &mut model_params)?;
+        push_model("sonnetModel", sonnet_model, &mut model_params)?;
+        push_model("opusModel", opus_model, &mut model_params)?;
+    }
+    if app != "claude" && model_params.is_empty() {
+        return Err("model is required for this client".into());
+    }
+
+    if matches!(app.as_str(), "codex" | "opencode" | "openclaw") {
+        endpoint.set_path("/v1");
+    } else {
+        endpoint.set_path("/");
+    }
+
+    let mut url = Url::parse("ccswitch://v1/import").expect("static CC Switch URL");
+    {
+        let mut params = url.query_pairs_mut();
+        params
+            .append_pair("resource", "provider")
+            .append_pair("app", &app)
+            .append_pair("name", name)
+            .append_pair("endpoint", endpoint.as_str().trim_end_matches('/'))
+            .append_pair("apiKey", api_key)
+            .append_pair("enabled", "false");
+        for (key, value) in &model_params {
+            params.append_pair(key, value);
+        }
+    }
+    Ok(url.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builds_cc_switch_import_url_like_astrlink() {
+        let url = build_cc_switch_import_url(
+            "codex",
+            "Router Switch · 默认令牌",
+            "http://127.0.0.1:8787",
+            "rsw_test+token",
+            Some("gpt-5.6"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(url.starts_with("ccswitch://v1/import?"));
+        let parsed = Url::parse(&url).unwrap();
+        let params: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(params["app"], "codex");
+        assert_eq!(params["endpoint"], "http://127.0.0.1:8787/v1");
+        assert_eq!(params["model"], "gpt-5.6");
+        assert_eq!(params["enabled"], "false");
+        assert_eq!(params["apiKey"], "rsw_test+token");
+    }
+
+    #[test]
+    fn cc_switch_non_claude_requires_model() {
+        assert!(build_cc_switch_import_url(
+            "codex",
+            "name",
+            "http://127.0.0.1:8787",
+            "key",
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_parse_router_switch_claude_url() {

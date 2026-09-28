@@ -1,21 +1,19 @@
 //! Gateway page with AstrLink-aligned access token management.
 
-use domain::{
-    AccessTokenSummary, AccessTokenUsage, AppKind, ClaudeForm, ClaudeKind, ClaudeModelMapping,
-    CodexForm, CodexKind, OpenCodeForm, OpenCodeKind, ProviderForm, RequestProtocol,
-    DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL, DEFAULT_OPENCODE_MODEL,
-};
+use std::collections::BTreeSet;
+
+use domain::{AccessTokenSummary, AccessTokenUsage, AppKind};
 use gpui::{
-    div, img, prelude::FluentBuilder, px, rgb, AppContext, Context, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled, Window,
+    anchored, canvas, deferred, div, img, prelude::FluentBuilder, px, rgb, AppContext, Bounds,
+    Context, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     scroll::ScrollableElement as _,
-    v_flex, ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,
+    v_flex, ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, StyledExt,
 };
 use rust_i18n::t;
 use session::access_token::format_created_at;
@@ -27,6 +25,8 @@ use crate::assets::{brand_img, CustomIcon};
 const ASTRLINK_PRIMARY: u32 = 0x1D4D87;
 const CC_SWITCH_HOVER_BG: u32 = 0xE8F1FF;
 const CC_SWITCH_HOVER_FG: u32 = 0x1D4D87;
+const ASTRLINK_AUTO_MODEL_ID: &str = "astrlink/auto";
+const IMPORT_MODEL_MENU_MAX: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GatewayPane {
@@ -41,6 +41,55 @@ impl GatewayPane {
             Self::Import(id) => Some(id.as_str()),
             _ => None,
         }
+    }
+}
+
+/// Which CC Switch model field has an open suggestion dropdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ImportModelField {
+    Model,
+    Haiku,
+    Sonnet,
+    Opus,
+}
+
+impl ImportModelField {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Haiku => "haiku",
+            Self::Sonnet => "sonnet",
+            Self::Opus => "opus",
+        }
+    }
+}
+
+/// AstrLink CCSwitchImportDialog protocol map for each target client.
+fn cc_switch_protocol(app: AppKind) -> &'static str {
+    match app {
+        AppKind::Claude => "anthropic.messages",
+        AppKind::Codex => "openai.responses",
+        AppKind::OpenCode => "openai.chat",
+        _ => "openai.chat",
+    }
+}
+
+fn model_brand_id(model: &str) -> &'static str {
+    let m = model.to_lowercase();
+    if m.contains("claude") || m.contains("anthropic") {
+        "claude"
+    } else if m.contains("gemini") || m.contains("gemma") {
+        "gemini"
+    } else if m.contains("grok") {
+        "grok"
+    } else if m.contains("kimi") || m.contains("moonshot") {
+        "kimi"
+    } else if m.contains("deepseek") {
+        "deepseek"
+    } else if m.contains("qwen") || m.contains("qwq") {
+        "opencode"
+    } else {
+        "codex"
     }
 }
 
@@ -65,6 +114,15 @@ pub struct GatewayState {
     pub import_sonnet: Entity<InputState>,
     pub import_opus: Entity<InputState>,
     pub importing: bool,
+    /// Models from enabled API providers (+ redirects) for the selected client protocol.
+    pub import_model_options: Vec<String>,
+    pub import_model_dropdown: Option<ImportModelField>,
+    /// AstrLink: opening shows every option; typing after open filters.
+    pub import_model_filter_active: bool,
+    /// Keep Change subscriptions so the open dropdown refilters while typing.
+    pub import_model_subs: Vec<gpui::Subscription>,
+    /// Input bounds for the open combobox overlay (`Select`-style anchored menu).
+    import_combo_bounds: std::collections::HashMap<ImportModelField, Bounds<Pixels>>,
 }
 
 impl GatewayState {
@@ -96,6 +154,11 @@ impl GatewayState {
             import_sonnet: cx.new(|cx| InputState::new(window, cx).placeholder(model_ph.clone())),
             import_opus: cx.new(|cx| InputState::new(window, cx).placeholder(model_ph)),
             importing: false,
+            import_model_options: Vec::new(),
+            import_model_dropdown: None,
+            import_model_filter_active: false,
+            import_model_subs: Vec::new(),
+            import_combo_bounds: std::collections::HashMap::new(),
         }
     }
 }
@@ -693,9 +756,309 @@ impl RouterApp {
         ] {
             field.update(cx, |s, cx| s.set_value(String::new(), window, cx));
         }
+        self.gateway.import_model_dropdown = None;
+        self.refresh_cc_switch_model_options();
+        self.ensure_import_model_input_subs(window, cx);
         self.gateway.pane = GatewayPane::Import(token.id.clone());
         self.gateway.error = None;
         cx.notify();
+    }
+
+    fn ensure_import_model_input_subs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.gateway.import_model_subs.is_empty() {
+            return;
+        }
+        let fields = [
+            self.gateway.import_model.clone(),
+            self.gateway.import_haiku.clone(),
+            self.gateway.import_sonnet.clone(),
+            self.gateway.import_opus.clone(),
+        ];
+        for input in fields {
+            let view = cx.entity().downgrade();
+            let sub = window.subscribe(&input, cx, move |_, event: &InputEvent, _, cx| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                if let Some(entity) = view.upgrade() {
+                    entity.update(cx, |this, cx| {
+                        if this.gateway.import_model_dropdown.is_some() {
+                            this.gateway.import_model_filter_active = true;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+            self.gateway.import_model_subs.push(sub);
+        }
+    }
+
+    /// AstrLink CCSwitchImportDialog `modelOptions`: enabled providers for the
+    /// client protocol, plus redirect `from` ids whose `to` is served by those providers.
+    fn refresh_cc_switch_model_options(&mut self) {
+        self.gateway.import_model_options =
+            self.collect_cc_switch_model_options(self.gateway.import_app);
+    }
+
+    fn collect_cc_switch_model_options(&self, app: AppKind) -> Vec<String> {
+        let protocol = cc_switch_protocol(app);
+        let providers = self.workspace.list_api_providers().unwrap_or_default();
+        let enabled: Vec<_> = providers.into_iter().filter(|p| p.enabled).collect();
+        let mut set = BTreeSet::new();
+        for p in &enabled {
+            if !p.supports_protocol(protocol) {
+                continue;
+            }
+            for m in &p.models {
+                let m = m.trim();
+                if !m.is_empty() {
+                    set.insert(m.to_string());
+                }
+            }
+        }
+        if let Ok(settings) = self.workspace.routing_settings() {
+            for r in settings.model_redirects.iter().filter(|r| r.enabled) {
+                if r.from == ASTRLINK_AUTO_MODEL_ID || r.from.trim().is_empty() {
+                    continue;
+                }
+                let to = r.to.trim();
+                if to.is_empty() {
+                    continue;
+                }
+                let reachable = enabled
+                    .iter()
+                    .any(|p| p.supports_protocol(protocol) && p.models.iter().any(|m| m == to));
+                if reachable {
+                    set.insert(r.from.clone());
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    fn open_import_model_dropdown(&mut self, field: ImportModelField, cx: &mut Context<Self>) {
+        self.gateway.import_model_dropdown = Some(field);
+        self.gateway.import_model_filter_active = false;
+        cx.notify();
+    }
+
+    fn close_import_model_dropdown(&mut self, cx: &mut Context<Self>) {
+        self.gateway.import_model_dropdown = None;
+        self.gateway.import_model_filter_active = false;
+        cx.notify();
+    }
+
+    fn import_model_input(&self, field: ImportModelField) -> Entity<InputState> {
+        match field {
+            ImportModelField::Model => self.gateway.import_model.clone(),
+            ImportModelField::Haiku => self.gateway.import_haiku.clone(),
+            ImportModelField::Sonnet => self.gateway.import_sonnet.clone(),
+            ImportModelField::Opus => self.gateway.import_opus.clone(),
+        }
+    }
+
+    fn render_import_model_combobox(
+        &self,
+        field: ImportModelField,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let input = self.import_model_input(field);
+        let open = self.gateway.import_model_dropdown == Some(field);
+        let current = input.read(cx).value().to_string();
+        let filter_l = if open && self.gateway.import_model_filter_active {
+            current.trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let filtered: Vec<String> = self
+            .gateway
+            .import_model_options
+            .iter()
+            .filter(|m| filter_l.is_empty() || m.to_lowercase().contains(&filter_l))
+            .take(IMPORT_MODEL_MENU_MAX)
+            .cloned()
+            .collect();
+        let empty_catalog = self.gateway.import_model_options.is_empty();
+        let no_match = !empty_catalog && filtered.is_empty() && !filter_l.is_empty();
+        let view = cx.entity().downgrade();
+        let input_for_toggle = input.clone();
+        let chevron_id = SharedString::from(format!("gateway-import-chevron-{}", field.as_str()));
+
+        div()
+            .id(SharedString::from(format!(
+                "gateway-import-combo-{}",
+                field.as_str()
+            )))
+            .w_full()
+            .relative()
+            .on_mouse_down(MouseButton::Left, {
+                let view = view.clone();
+                move |_, _, cx| {
+                    if let Some(entity) = view.upgrade() {
+                        entity.update(cx, |this, cx| {
+                            if this.gateway.import_model_dropdown == Some(field) {
+                                return;
+                            }
+                            this.open_import_model_dropdown(field, cx);
+                        });
+                    }
+                }
+            })
+            .child(
+                Input::new(&input)
+                    .small()
+                    .cleanable(true)
+                    .prefix(
+                        Icon::new(IconName::Search)
+                            .size(px(14.))
+                            .text_color(theme.muted_foreground),
+                    )
+                    .suffix(
+                        Button::new(chevron_id)
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::ChevronDown)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .on_click({
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    if let Some(entity) = view.upgrade() {
+                                        entity.update(cx, |this, cx| {
+                                            if this.gateway.import_model_dropdown == Some(field) {
+                                                this.close_import_model_dropdown(cx);
+                                            } else {
+                                                this.open_import_model_dropdown(field, cx);
+                                                input_for_toggle.update(cx, |s, cx| {
+                                                    s.focus(window, cx);
+                                                });
+                                            }
+                                        });
+                                    }
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                canvas(
+                    {
+                        let view = view.clone();
+                        move |bounds, _, cx| {
+                            if let Some(entity) = view.upgrade() {
+                                entity.update(cx, |this, _| {
+                                    this.gateway.import_combo_bounds.insert(field, bounds);
+                                });
+                            }
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .when(open, |el| {
+                let view = view.clone();
+                let menu_w = self
+                    .gateway
+                    .import_combo_bounds
+                    .get(&field)
+                    .map(|b| b.size.width)
+                    .filter(|w| *w > px(0.))
+                    .unwrap_or(px(280.));
+                el.child(
+                    deferred(
+                        anchored().snap_to_window_with_margin(px(8.)).child(
+                            v_flex()
+                                .id(SharedString::from(format!(
+                                    "gateway-import-menu-{}",
+                                    field.as_str()
+                                )))
+                                .occlude()
+                                .w(menu_w)
+                                .mt(px(4.))
+                                .max_h(px(220.))
+                                .overflow_y_scroll()
+                                .popover_style(cx)
+                                .p(px(4.))
+                                .gap(px(2.))
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
+                                .when(empty_catalog, |menu| {
+                                    menu.child(
+                                        div()
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .text_size(px(12.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(t!("gateway.import_models_empty").to_string()),
+                                    )
+                                })
+                                .when(no_match, |menu| {
+                                    menu.child(
+                                        div()
+                                            .px(px(8.))
+                                            .py(px(6.))
+                                            .text_size(px(12.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(
+                                                t!("gateway.import_no_matching_models").to_string(),
+                                            ),
+                                    )
+                                })
+                                .children(filtered.into_iter().enumerate().map(|(row, model)| {
+                                    let chosen = model.clone();
+                                    let inp = input.clone();
+                                    let view = view.clone();
+                                    let selected = model == current;
+                                    let brand = model_brand_id(&model);
+                                    h_flex()
+                                        .id(SharedString::from(format!(
+                                            "gateway-import-opt-{}-{row}",
+                                            field.as_str()
+                                        )))
+                                        .w_full()
+                                        .px(px(8.))
+                                        .py(px(6.))
+                                        .gap(px(8.))
+                                        .items_center()
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .text_size(px(13.))
+                                        .when(selected, |row| row.bg(theme.accent.opacity(0.35)))
+                                        .hover(|s| s.bg(theme.accent.opacity(0.25)))
+                                        .on_click({
+                                            let view = view.clone();
+                                            move |_, window, cx| {
+                                                if let Some(entity) = view.upgrade() {
+                                                    let chosen = chosen.clone();
+                                                    let inp = inp.clone();
+                                                    entity.update(cx, |this, cx| {
+                                                        inp.update(cx, |s, cx| {
+                                                            s.set_value(chosen, window, cx);
+                                                        });
+                                                        this.close_import_model_dropdown(cx);
+                                                    });
+                                                }
+                                            }
+                                        })
+                                        .child(brand_img(brand, dark, px(16.)))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .truncate()
+                                                .font_family("ui-monospace")
+                                                .child(model),
+                                        )
+                                })),
+                        ),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 
     fn copy_gateway_token(
@@ -1023,6 +1386,8 @@ impl RouterApp {
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.gateway.import_app = app;
+                                        this.gateway.import_model_dropdown = None;
+                                        this.refresh_cc_switch_model_options();
                                         cx.notify();
                                     }))
                                     .child(brand_img(brand, dark, px(26.)))
@@ -1110,6 +1475,7 @@ impl RouterApp {
                     )
                     .child(
                         h_flex()
+                            .items_start()
                             .gap(px(12.))
                             .child(
                                 v_flex()
@@ -1140,13 +1506,11 @@ impl RouterApp {
                                                 .to_string(),
                                             ),
                                     )
-                                    .child(
-                                        Input::new(&self.gateway.import_model).small().prefix(
-                                            Icon::new(IconName::Search)
-                                                .size(px(14.))
-                                                .text_color(theme.muted_foreground),
-                                        ),
-                                    ),
+                                    .child(self.render_import_model_combobox(
+                                        ImportModelField::Model,
+                                        dark,
+                                        cx,
+                                    )),
                             ),
                     )
                     .when(is_claude, |el| {
@@ -1154,23 +1518,20 @@ impl RouterApp {
                             h_flex().gap(px(12.)).children(
                                 [
                                     (
-                                        &self.gateway.import_haiku,
+                                        ImportModelField::Haiku,
                                         t!("gateway.import_haiku").to_string(),
-                                        "gateway-import-haiku",
                                     ),
                                     (
-                                        &self.gateway.import_sonnet,
+                                        ImportModelField::Sonnet,
                                         t!("gateway.import_sonnet").to_string(),
-                                        "gateway-import-sonnet",
                                     ),
                                     (
-                                        &self.gateway.import_opus,
+                                        ImportModelField::Opus,
                                         t!("gateway.import_opus").to_string(),
-                                        "gateway-import-opus",
                                     ),
                                 ]
                                 .into_iter()
-                                .map(|(input, label, _id)| {
+                                .map(|(field, label)| {
                                     v_flex()
                                         .flex_1()
                                         .gap(px(6.))
@@ -1180,16 +1541,13 @@ impl RouterApp {
                                                 .text_color(theme.muted_foreground)
                                                 .child(label),
                                         )
-                                        .child(
-                                            Input::new(input).small().prefix(
-                                                Icon::new(IconName::Search)
-                                                    .size(px(14.))
-                                                    .text_color(theme.muted_foreground),
-                                            ),
-                                        )
+                                        .child(self.render_import_model_combobox(field, dark, cx))
                                 }),
                             ),
                         )
+                    })
+                    .when_some(self.gateway.error.clone(), |el, msg| {
+                        el.child(div().text_size(px(12.)).text_color(theme.danger).child(msg))
                     })
                     .child(
                         h_flex()
@@ -1206,6 +1564,7 @@ impl RouterApp {
                                     .disabled(self.gateway.importing)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.gateway.pane = GatewayPane::List;
+                                        this.gateway.error = None;
                                         cx.notify();
                                     })),
                             )
@@ -1328,13 +1687,33 @@ impl RouterApp {
             cx.notify();
             return;
         }
-        self.gateway.importing = true;
-        cx.notify();
-        let mut api_url = self.gateway_api_url();
         let app = self.gateway.import_app;
-        if matches!(app, AppKind::Codex | AppKind::OpenCode) && !api_url.ends_with("/v1") {
-            api_url = format!("{}/v1", api_url.trim_end_matches('/'));
+        let app_key = match app {
+            AppKind::Claude | AppKind::ClaudeDesktop => "claude",
+            AppKind::Codex => "codex",
+            AppKind::OpenCode => "opencode",
+            _ => {
+                self.gateway.error = Some(t!("gateway.import_unsupported_app").to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if app_key != "claude" && model.is_empty() {
+            self.gateway.error = Some(t!("gateway.import_model_required").to_string());
+            cx.notify();
+            return;
         }
+        if !self.gateway_ready() {
+            self.gateway.error = Some(t!("gateway.import_gateway_not_ready").to_string());
+            cx.notify();
+            return;
+        }
+
+        self.gateway.importing = true;
+        self.gateway.import_model_dropdown = None;
+        cx.notify();
+
+        let inference_url = self.gateway_api_url();
         let token_value = match self.workspace.reveal_access_token(&token_id) {
             Ok(v) => v,
             Err(err) => {
@@ -1344,106 +1723,57 @@ impl RouterApp {
                 return;
             }
         };
-        let result = self.import_gateway_token_as_provider(
-            app,
+
+        let url = match domain::build_cc_switch_import_url(
+            app_key,
             &name,
-            &api_url,
+            &inference_url,
             &token_value,
-            &model,
-            &haiku,
-            &sonnet,
-            &opus,
-            cx,
-        );
+            if model.is_empty() {
+                None
+            } else {
+                Some(model.as_str())
+            },
+            if haiku.is_empty() {
+                None
+            } else {
+                Some(haiku.as_str())
+            },
+            if sonnet.is_empty() {
+                None
+            } else {
+                Some(sonnet.as_str())
+            },
+            if opus.is_empty() {
+                None
+            } else {
+                Some(opus.as_str())
+            },
+        ) {
+            Ok(url) => url,
+            Err(err) => {
+                self.gateway.importing = false;
+                // Never surface the raw deeplink (contains apiKey).
+                let msg = if err.contains("model is required") {
+                    t!("gateway.import_model_required").to_string()
+                } else if err.contains("name") {
+                    t!("gateway.import_name_required").to_string()
+                } else if err.contains("inference") {
+                    t!("gateway.import_gateway_not_ready").to_string()
+                } else {
+                    t!("gateway.import_failed").to_string()
+                };
+                self.gateway.error = Some(msg);
+                cx.notify();
+                return;
+            }
+        };
+
+        // AstrLink: open ccswitch:// via OS handler; URL holds the token — do not log it.
+        crate::update_dialog::open_url(&url);
         self.gateway.importing = false;
-        match result {
-            Ok(()) => {
-                self.gateway.pane = GatewayPane::List;
-                notify_success(t!("gateway.import_success").to_string(), window, cx);
-            }
-            Err(err) => self.gateway.error = Some(err),
-        }
+        self.gateway.pane = GatewayPane::List;
+        notify_success(t!("gateway.import_opened").to_string(), window, cx);
         cx.notify();
-    }
-
-    fn import_gateway_token_as_provider(
-        &mut self,
-        app: AppKind,
-        name: &str,
-        base_url: &str,
-        api_key: &str,
-        model: &str,
-        haiku: &str,
-        sonnet: &str,
-        opus: &str,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let model = if model.is_empty() {
-            match app {
-                AppKind::Codex => DEFAULT_CODEX_MODEL.to_string(),
-                AppKind::Claude | AppKind::ClaudeDesktop => DEFAULT_CLAUDE_MODEL.to_string(),
-                AppKind::OpenCode => DEFAULT_OPENCODE_MODEL.to_string(),
-                _ => String::new(),
-            }
-        } else {
-            model.to_string()
-        };
-
-        let form = match app {
-            AppKind::Codex => ProviderForm::Codex(CodexForm {
-                name: name.to_string(),
-                website_url: String::new(),
-                kind: CodexKind::ResponsesThirdParty,
-                api_key: api_key.to_string(),
-                base_url: base_url.to_string(),
-                model,
-                request_protocol: RequestProtocol::OpenAiResponses.as_str().into(),
-                model_mappings: Vec::new(),
-            }),
-            AppKind::Claude | AppKind::ClaudeDesktop => {
-                let mut mappings = Vec::new();
-                for (display_name, value) in [("Haiku", haiku), ("Sonnet", sonnet), ("Opus", opus)]
-                {
-                    if !value.is_empty() {
-                        mappings.push(ClaudeModelMapping {
-                            display_name: display_name.into(),
-                            model: value.to_string(),
-                            context_window: None,
-                            reasoning_effort: None,
-                        });
-                    }
-                }
-                ProviderForm::Claude(ClaudeForm {
-                    name: name.to_string(),
-                    website_url: String::new(),
-                    kind: ClaudeKind::ThirdParty,
-                    api_key: api_key.to_string(),
-                    base_url: base_url.to_string(),
-                    model,
-                    request_protocol: RequestProtocol::Anthropic.as_str().into(),
-                    model_mappings: mappings,
-                    desktop_mode: None,
-                })
-            }
-            AppKind::OpenCode => ProviderForm::OpenCode(OpenCodeForm {
-                name: name.to_string(),
-                website_url: String::new(),
-                kind: OpenCodeKind::ThirdParty,
-                api_key: api_key.to_string(),
-                base_url: base_url.to_string(),
-                model,
-                npm: domain::DEFAULT_OPENCODE_NPM.to_string(),
-                request_protocol: RequestProtocol::OpenAiChat.as_str().into(),
-                model_mappings: Vec::new(),
-            }),
-            _ => return Err(t!("gateway.import_unsupported_app").to_string()),
-        };
-
-        self.workspace
-            .save_form(app, None, form)
-            .map_err(|e| e.to_string())?;
-        self.reload();
-        cx.notify();
-        Ok(())
     }
 }

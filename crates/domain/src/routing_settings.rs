@@ -8,7 +8,7 @@ pub const MAX_MODEL_REDIRECTS: usize = 200;
 pub const MAX_REDIRECT_MODEL_LEN: usize = 256;
 pub const BUILTIN_CODEX_AUTO_REVIEW_FROM: &str = "codex-auto-review";
 pub const BUILTIN_CODEX_AUTO_REVIEW_DEFAULT_TO: &str = "gpt-5.6-luna";
-const ASTRLINK_AUTO_MODEL_ID: &str = "astrlink/auto";
+pub const ASTRLINK_AUTO_MODEL_ID: &str = "astrlink/auto";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -338,6 +338,20 @@ pub fn ensure_builtin_redirects(settings: &mut RoutingSettings) {
 
 /// The locked built-in row is only the first `codex-auto-review` entry.
 /// A duplicate with the same `from` stays editable so the user can fix the conflict.
+/// Apply the first enabled exact `from` match (AstrLink model redirects).
+pub fn apply_model_redirect(redirects: &[ModelRedirect], model: &str) -> String {
+    let model = model.trim();
+    if model.is_empty() || model == ASTRLINK_AUTO_MODEL_ID {
+        return String::new();
+    }
+    for redirect in redirects {
+        if redirect.enabled && redirect.from == model {
+            return redirect.to.clone();
+        }
+    }
+    model.to_string()
+}
+
 pub fn is_builtin_model_redirect(redirects: &[ModelRedirect], index: usize) -> bool {
     redirects
         .iter()

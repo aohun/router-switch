@@ -322,6 +322,54 @@ impl Workspace {
         // session routed them) must find it listening again after a restart.
         ws.restore_routing_gateways();
         access_token::ensure_default_access_tokens(&ws.store)?;
+        let logger_db_path = db_path.as_ref().to_path_buf();
+        ws.compat_gateway
+            .lock()
+            .registry()
+            .set_gateway_logger(move |message| {
+                if let Ok(store) = Store::open(&logger_db_path) {
+                    write_diagnostic_log_to_store(&store, LogLevel::Info, "gateway", message);
+                }
+            });
+        let gateway_db_path = db_path.as_ref().to_path_buf();
+        ws.compat_gateway
+            .lock()
+            .registry()
+            .set_gateway_resolver(move |key, model| {
+                let store = Store::open(&gateway_db_path).map_err(|err| err.to_string())?;
+                access_token::authenticate_access_token(&store, key)
+                    .map_err(|_| "invalid access token".to_string())?;
+                let providers = store.list_api_providers().map_err(|err| err.to_string())?;
+                domain::resolve_upstream_candidates(&providers, Some(model), None)
+                    .into_iter()
+                    .find(|provider| {
+                        let Some(http) = &provider.http else {
+                            return false;
+                        };
+                        !http.base_url.trim().is_empty()
+                            && http
+                                .api_key
+                                .as_ref()
+                                .is_some_and(|key| !key.trim().is_empty())
+                            && http.auth_scheme == domain::ApiAuthScheme::Bearer
+                            && provider.capabilities.iter().any(|cap| {
+                                cap.convert_to.is_none()
+                                    && (cap.protocol == "openai.responses"
+                                        || cap.protocol == "openai.chat")
+                            })
+                    })
+                    .cloned()
+                    .ok_or_else(|| format!("no configured HTTP provider supports model {model}"))
+            });
+        let gateway_port = ws.ensure_compat_gateway()?;
+        ws.write_diagnostic_log(
+            LogLevel::Info,
+            "gateway",
+            &format!(
+                "listener_started port={gateway_port} pid={}",
+                std::process::id()
+            ),
+        );
         ws.write_diagnostic_log(
             LogLevel::Info,
             "workspace",
@@ -577,38 +625,7 @@ impl Workspace {
     }
 
     pub fn write_diagnostic_log(&self, level: LogLevel, tag: &str, message: &str) {
-        let config = match self.store.settings() {
-            Ok(s) => s.log_config,
-            Err(_) => return,
-        };
-        if !config.enabled {
-            return;
-        }
-        if level.priority() > config.level.priority() {
-            return;
-        }
-
-        let log_dir = self.log_dir();
-        let _ = std::fs::create_dir_all(&log_dir);
-        let log_path = self.main_log_path();
-
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let line = format!(
-            "[{}] [{:<5}] [{}] {}\n",
-            timestamp,
-            level.as_str().to_uppercase(),
-            tag,
-            message
-        );
-
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            use std::io::Write;
-            let _ = file.write_all(line.as_bytes());
-        }
+        write_diagnostic_log_to_store(&self.store, level, tag, message);
     }
 
     pub fn apply_codex_home(&mut self, home: Option<PathBuf>) -> Result<(), SessionError> {
@@ -2416,6 +2433,34 @@ impl Workspace {
         self.store
             .get_provider(id)?
             .ok_or_else(|| SessionError::Message("服务商不存在".into()))
+    }
+}
+
+fn write_diagnostic_log_to_store(store: &Store, level: LogLevel, tag: &str, message: &str) {
+    let config = match store.settings() {
+        Ok(s) => s.log_config,
+        Err(_) => return,
+    };
+    if !config.enabled || level.priority() > config.level.priority() {
+        return;
+    }
+    let log_dir = store.data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = format!(
+        "[{}] [{:<5}] [{}] {}\n",
+        timestamp,
+        level.as_str().to_uppercase(),
+        tag,
+        message
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("router-switch.log"))
+    {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
     }
 }
 

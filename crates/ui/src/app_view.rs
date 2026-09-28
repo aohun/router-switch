@@ -4290,13 +4290,7 @@ impl RouterApp {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.set_route(Route::Gateway, window, cx);
                     }))
-                    .child(
-                        div()
-                            .size(px(6.))
-                            .rounded_full()
-                            .flex_shrink_0()
-                            .bg(dot),
-                    )
+                    .child(div().size(px(6.)).rounded_full().flex_shrink_0().bg(dot))
                     .child(
                         h_flex()
                             .min_w(px(0.))
